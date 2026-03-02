@@ -21,6 +21,8 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+import ccxt
+
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -105,12 +107,17 @@ async def cmd_signal_gen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _reply(update, "Usage: `/signal_gen SYMBOL LONG|SHORT`")
         return
 
-    symbol = args[0].upper().replace("/USDT", "").replace("USDT", "")
+    raw_symbol = args[0].upper()
     side_str = args[1].upper()
     if side_str not in ("LONG", "SHORT"):
         await _reply(update, "Side must be `LONG` or `SHORT`.")
         return
     side = Side(side_str)
+
+    # Normalise to CCXT futures format, e.g. BTC/USDT:USDT
+    ccxt_symbol = _normalise_symbol(raw_symbol)
+    # Short name used in signal messages (e.g. "BTC")
+    symbol = ccxt_symbol.split("/")[0]
 
     if not risk_manager.can_open_signal(side):
         await _reply(
@@ -119,22 +126,25 @@ async def cmd_signal_gen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    # ── Placeholder candle data (replace with live Binance API calls) ─────────
-    # In production inject real OHLCV data from the Binance Futures REST API.
-    dummy_candles = _make_demo_candles(side)
+    try:
+        candles = _fetch_binance_candles(ccxt_symbol, side)
+    except Exception as exc:
+        logger.error("Binance fetch failed for %s: %s", ccxt_symbol, exc)
+        await _reply(update, f"⚠️ Failed to fetch market data for `{ccxt_symbol}`: {exc}")
+        return
 
     result = run_confluence_check(
         symbol=symbol,
-        current_price=dummy_candles["price"],
+        current_price=candles["price"],
         side=side,
-        range_low=dummy_candles["range_low"],
-        range_high=dummy_candles["range_high"],
-        key_liquidity_level=dummy_candles["key_level"],
-        five_min_candles=dummy_candles["5m"],
-        daily_candles=dummy_candles["1D"],
-        four_hour_candles=dummy_candles["4H"],
+        range_low=candles["range_low"],
+        range_high=candles["range_high"],
+        key_liquidity_level=candles["key_level"],
+        five_min_candles=candles["5m"],
+        daily_candles=candles["1D"],
+        four_hour_candles=candles["4H"],
         news_in_window=news_calendar.is_high_impact_imminent(),
-        stop_loss=dummy_candles["stop_loss"],
+        stop_loss=candles["stop_loss"],
     )
 
     if result is None:
@@ -328,6 +338,114 @@ def process_webhook(payload: dict) -> Optional[str]:
 
     risk_manager.add_signal(result)
     return result.format_message()
+
+
+# ── Binance live data helpers ─────────────────────────────────────────────────
+
+def _normalise_symbol(raw: str) -> str:
+    """
+    Normalise a user-supplied symbol string to the CCXT Binance Futures
+    format ``BASE/QUOTE:SETTLE``.
+
+    Examples
+    --------
+    ``BTCUSDT``    → ``BTC/USDT:USDT``
+    ``BTC/USDT``   → ``BTC/USDT:USDT``
+    ``BTC``        → ``BTC/USDT:USDT``
+    ``ETH/BTC``    → ``ETH/BTC:BTC``  (non-USDT quote preserved)
+    """
+    raw = raw.upper().strip()
+
+    # Already in CCXT futures format
+    if ":" in raw:
+        return raw
+
+    if "/" in raw:
+        base, quote = raw.split("/", 1)
+    elif raw.endswith("USDT"):
+        base = raw[:-4]
+        quote = "USDT"
+    elif raw.endswith("BTC") and len(raw) > 3:
+        base = raw[:-3]
+        quote = "BTC"
+    else:
+        base = raw
+        quote = "USDT"
+
+    return f"{base}/{quote}:{quote}"
+
+
+def _fetch_binance_candles(symbol: str, side: Side) -> dict:
+    """
+    Fetch live OHLCV data from Binance Futures via CCXT for the given
+    *symbol* (CCXT format, e.g. ``BTC/USDT:USDT``).
+
+    Returns a dict with the same keys as :func:`_make_demo_candles`:
+    ``price``, ``range_low``, ``range_high``, ``key_level``, ``stop_loss``,
+    ``5m``, ``1D``, ``4H``.
+    """
+    exchange = ccxt.binance({"options": {"defaultType": "future"}})
+
+    # Fetch OHLCV for each required timeframe
+    # CCXT returns [[timestamp, open, high, low, close, volume], ...]
+    raw_1d = exchange.fetch_ohlcv(symbol, "1d", limit=30)
+    raw_4h = exchange.fetch_ohlcv(symbol, "4h", limit=10)
+    raw_5m = exchange.fetch_ohlcv(symbol, "5m", limit=50)
+
+    def _to_candles(rows: list) -> list[CandleData]:
+        return [
+            CandleData(
+                open=row[1],
+                high=row[2],
+                low=row[3],
+                close=row[4],
+                volume=row[5],
+            )
+            for row in rows
+        ]
+
+    daily_candles = _to_candles(raw_1d)
+    four_h_candles = _to_candles(raw_4h)
+    five_m_candles = _to_candles(raw_5m)
+
+    if len(daily_candles) < 2 or len(four_h_candles) < 2 or len(five_m_candles) < 3:
+        raise ValueError(
+            f"Insufficient candle data for {symbol}: "
+            f"1D={len(daily_candles)}, 4H={len(four_h_candles)}, 5m={len(five_m_candles)}"
+        )
+
+    # Current price from ticker
+    ticker = exchange.fetch_ticker(symbol)
+    current_price = float(ticker["last"])
+
+    # range_low / range_high from 4H recent swings (last 10 candles)
+    recent_4h = four_h_candles[-10:] if len(four_h_candles) >= 10 else four_h_candles
+    range_low = min(c.low for c in recent_4h)
+    range_high = max(c.high for c in recent_4h)
+
+    # key_level based on the requested trade side:
+    #   LONG  → lowest low of last 10 5m candles (stop-hunt of longs)
+    #   SHORT → highest high of last 10 5m candles (stop-hunt of shorts)
+    recent_5m = five_m_candles[-10:] if len(five_m_candles) >= 10 else five_m_candles
+    if side == Side.LONG:
+        key_level = min(c.low for c in recent_5m)
+    else:
+        key_level = max(c.high for c in recent_5m)
+
+    # stop_loss: a small buffer beyond the key_level
+    atr_proxy = (range_high - range_low) * 0.01  # 1% of range as buffer
+    stop_loss = key_level - atr_proxy if side == Side.LONG else key_level + atr_proxy
+
+    return {
+        "price": current_price,
+        "range_low": range_low,
+        "range_high": range_high,
+        "key_level": key_level,
+        "stop_loss": stop_loss,
+        "5m": five_m_candles,
+        "1D": daily_candles,
+        "4H": four_h_candles,
+    }
 
 
 # ── Demo candle factory (replace with live Binance API in production) ─────────
