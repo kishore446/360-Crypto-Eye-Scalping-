@@ -1,0 +1,204 @@
+"""
+Tests for bot/dashboard.py and bot/news_filter.py
+"""
+
+from __future__ import annotations
+
+import time
+
+import pytest
+
+from bot.dashboard import Dashboard, TradeResult
+from bot.news_filter import NewsCalendar, NewsEvent
+
+
+# ── Dashboard fixtures ────────────────────────────────────────────────────────
+
+def _make_trade(
+    symbol: str = "BTC",
+    side: str = "LONG",
+    outcome: str = "WIN",
+    pnl_pct: float = 2.5,
+    timeframe: str = "5m",
+    tmp_path=None,
+) -> TradeResult:
+    return TradeResult(
+        symbol=symbol,
+        side=side,
+        entry_price=100.0,
+        exit_price=102.5 if outcome != "OPEN" else None,
+        stop_loss=95.0,
+        tp1=107.5,
+        tp2=112.5,
+        tp3=120.0,
+        opened_at=time.time() - 3600,
+        closed_at=time.time() if outcome != "OPEN" else None,
+        outcome=outcome,
+        pnl_pct=pnl_pct,
+        timeframe=timeframe,
+    )
+
+
+# ── Dashboard tests ───────────────────────────────────────────────────────────
+
+class TestDashboard:
+    @pytest.fixture(autouse=True)
+    def _tmp_dashboard(self, tmp_path):
+        self.db = Dashboard(log_file=str(tmp_path / "test_dashboard.json"))
+
+    def test_empty_win_rate(self):
+        assert self.db.win_rate() == 0.0
+
+    def test_win_rate_all_wins(self):
+        for _ in range(3):
+            self.db.record_result(_make_trade(outcome="WIN", pnl_pct=2.0))
+        assert self.db.win_rate() == pytest.approx(100.0)
+
+    def test_win_rate_mixed(self):
+        self.db.record_result(_make_trade(outcome="WIN", pnl_pct=2.0))
+        self.db.record_result(_make_trade(outcome="LOSS", pnl_pct=-1.0))
+        assert self.db.win_rate() == pytest.approx(50.0)
+
+    def test_win_rate_by_timeframe(self):
+        self.db.record_result(_make_trade(outcome="WIN", pnl_pct=2.0, timeframe="5m"))
+        self.db.record_result(_make_trade(outcome="LOSS", pnl_pct=-1.0, timeframe="15m"))
+        assert self.db.win_rate("5m") == pytest.approx(100.0)
+        assert self.db.win_rate("15m") == pytest.approx(0.0)
+
+    def test_profit_factor_no_loss(self):
+        """Profit factor returns 0.0 when there are no losing trades (avoid division by zero)."""
+        self.db.record_result(_make_trade(outcome="WIN", pnl_pct=3.0))
+        assert self.db.profit_factor() == 0.0
+
+    def test_profit_factor_calculated(self):
+        self.db.record_result(_make_trade(outcome="WIN", pnl_pct=3.0))
+        self.db.record_result(_make_trade(outcome="LOSS", pnl_pct=-1.0))
+        # Gross profit = 3.0, gross loss = 1.0 → PF = 3.0
+        assert self.db.profit_factor() == pytest.approx(3.0)
+
+    def test_current_open_pnl_sums_open_trades(self):
+        self.db.record_result(_make_trade(outcome="OPEN", pnl_pct=1.5))
+        self.db.record_result(_make_trade(outcome="OPEN", pnl_pct=-0.5))
+        assert self.db.current_open_pnl() == pytest.approx(1.0)
+
+    def test_open_trades_excluded_from_win_rate(self):
+        self.db.record_result(_make_trade(outcome="OPEN", pnl_pct=1.5))
+        assert self.db.win_rate() == 0.0
+
+    def test_update_open_pnl(self):
+        self.db.record_result(_make_trade(symbol="ETH", outcome="OPEN", pnl_pct=0.0))
+        # Long trade: current_price 105 vs entry 100 → +5 %
+        self.db.update_open_pnl("ETH", current_price=105.0)
+        open_trades = [r for r in self.db._results if r.symbol == "ETH"]
+        assert open_trades[0].pnl_pct == pytest.approx(5.0, rel=1e-4)
+
+    def test_total_trades_excludes_open(self):
+        self.db.record_result(_make_trade(outcome="WIN"))
+        self.db.record_result(_make_trade(outcome="OPEN"))
+        assert self.db.total_trades() == 1
+
+    def test_persistence_across_instances(self, tmp_path):
+        """Records saved to disk should reload correctly."""
+        log_file = str(tmp_path / "persist.json")
+        db1 = Dashboard(log_file=log_file)
+        db1.record_result(_make_trade(outcome="WIN", pnl_pct=2.5))
+
+        db2 = Dashboard(log_file=log_file)
+        assert db2.total_trades() == 1
+        assert db2.win_rate() == pytest.approx(100.0)
+
+    def test_summary_contains_key_sections(self):
+        self.db.record_result(_make_trade(outcome="WIN", pnl_pct=2.0))
+        summary = self.db.summary()
+        assert "Win Rate" in summary
+        assert "Profit Factor" in summary
+        assert "Open PnL" in summary
+
+
+# ── NewsCalendar tests ────────────────────────────────────────────────────────
+
+class TestNewsCalendar:
+    def setup_method(self):
+        self.cal = NewsCalendar(skip_window_minutes=60)
+
+    def test_no_events_returns_false(self):
+        assert self.cal.is_high_impact_imminent() is False
+
+    def test_high_impact_event_within_window(self):
+        event = NewsEvent(
+            title="FOMC",
+            timestamp=time.time() + 1800,  # 30 min from now
+            impact="HIGH",
+            currency="USD",
+        )
+        self.cal.add_event(event)
+        assert self.cal.is_high_impact_imminent() is True
+
+    def test_high_impact_event_outside_window(self):
+        event = NewsEvent(
+            title="FOMC",
+            timestamp=time.time() + 7200,  # 2 hours from now
+            impact="HIGH",
+            currency="USD",
+        )
+        self.cal.add_event(event)
+        assert self.cal.is_high_impact_imminent() is False
+
+    def test_medium_impact_event_not_counted(self):
+        event = NewsEvent(
+            title="Retail Sales",
+            timestamp=time.time() + 1800,
+            impact="MEDIUM",
+            currency="USD",
+        )
+        self.cal.add_event(event)
+        assert self.cal.is_high_impact_imminent() is False
+
+    def test_past_event_not_counted(self):
+        event = NewsEvent(
+            title="CPI",
+            timestamp=time.time() - 3600,  # 1 hour ago
+            impact="HIGH",
+            currency="USD",
+        )
+        self.cal.add_event(event)
+        assert self.cal.is_high_impact_imminent() is False
+
+    def test_clear_removes_all_events(self):
+        self.cal.add_event(
+            NewsEvent("FOMC", time.time() + 1800, "HIGH", "USD")
+        )
+        self.cal.clear()
+        assert self.cal.is_high_impact_imminent() is False
+
+    def test_upcoming_high_impact_sorted(self):
+        now = time.time()
+        self.cal.load_events([
+            NewsEvent("CPI", now + 3000, "HIGH", "USD"),
+            NewsEvent("FOMC", now + 1000, "HIGH", "USD"),
+        ])
+        upcoming = self.cal.upcoming_high_impact()
+        assert upcoming[0].title == "FOMC"
+        assert upcoming[1].title == "CPI"
+
+    def test_format_caution_message_no_events(self):
+        msg = self.cal.format_caution_message()
+        assert "No high-impact" in msg
+
+    def test_format_caution_message_with_events(self):
+        self.cal.add_event(
+            NewsEvent("FOMC Rate Decision", time.time() + 1800, "HIGH", "USD")
+        )
+        msg = self.cal.format_caution_message()
+        assert "FOMC" in msg
+        assert "FROZEN" in msg
+
+    def test_from_dict(self):
+        event = NewsEvent.from_dict({
+            "title": "CPI",
+            "timestamp": 1700000000.0,
+            "impact": "high",
+            "currency": "usd",
+        })
+        assert event.impact == "HIGH"
+        assert event.currency == "USD"

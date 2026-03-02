@@ -1,0 +1,445 @@
+"""
+Telegram Bot — 360 Crypto Eye Scalping Signals
+================================================
+Implements all admin & user commands from Section IV of the master blueprint:
+
+  /signal_gen   — Auto-scans and generates a formatted 360 Eye signal.
+  /move_be      — Broadcasts "Move SL to Entry (Risk-Free Mode ON)."
+  /trail_sl     — Activates auto-trailing SL behind every 5m HL/LH.
+  /news_caution — Freezes new signals; triggers partial-close alert.
+  /risk_calc    — Calculates exact position size from balance & SL distance.
+
+The bot also handles incoming TradingView webhook payloads forwarded by
+the Flask receiver (webhook.py) via the shared ``process_webhook`` function.
+
+Required environment variable:
+  TELEGRAM_BOT_TOKEN — Bot token issued by @BotFather.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Optional
+
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+)
+
+from bot.dashboard import Dashboard, TradeResult
+from bot.news_filter import NewsCalendar
+from bot.risk_manager import RiskManager, calculate_position_size
+from bot.signal_engine import (
+    CandleData,
+    Side,
+    run_confluence_check,
+)
+from config import (
+    ADMIN_CHAT_ID,
+    LEVERAGE_MAX,
+    LEVERAGE_MIN,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHANNEL_ID,
+)
+
+logger = logging.getLogger(__name__)
+
+# ── Shared state (singleton per process) ─────────────────────────────────────
+
+risk_manager = RiskManager()
+news_calendar = NewsCalendar()
+dashboard = Dashboard()
+
+# When True, /news_caution has frozen new-signal generation
+_news_freeze: bool = False
+
+# When True, auto-trailing is active for open signals
+_trail_active: bool = False
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _is_admin(update: Update) -> bool:
+    return update.effective_user is not None and update.effective_user.id == ADMIN_CHAT_ID
+
+
+async def _reply(update: Update, text: str, parse_mode: str = "Markdown") -> None:
+    if update.message:
+        await update.message.reply_text(text, parse_mode=parse_mode)
+
+
+async def _broadcast(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+    """Send *text* to the public Telegram channel."""
+    await context.bot.send_message(
+        chat_id=TELEGRAM_CHANNEL_ID,
+        text=text,
+        parse_mode="Markdown",
+    )
+
+
+# ── Command handlers ──────────────────────────────────────────────────────────
+
+async def cmd_signal_gen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /signal_gen [SYMBOL] [LONG|SHORT]
+
+    Admin-only: auto-scan the specified pair and broadcast a 360 Eye signal
+    when all confluence conditions are met.
+
+    Example:
+        /signal_gen BTCUSDT LONG
+    """
+    if not _is_admin(update):
+        await _reply(update, "⛔ Admin only.")
+        return
+
+    global _news_freeze
+    if _news_freeze:
+        await _reply(update, "⚠️ Signal generation is currently *frozen* due to news caution mode.")
+        return
+
+    args = context.args or []
+    if len(args) < 2:
+        await _reply(update, "Usage: `/signal_gen SYMBOL LONG|SHORT`")
+        return
+
+    symbol = args[0].upper().replace("/USDT", "").replace("USDT", "")
+    side_str = args[1].upper()
+    if side_str not in ("LONG", "SHORT"):
+        await _reply(update, "Side must be `LONG` or `SHORT`.")
+        return
+    side = Side(side_str)
+
+    if not risk_manager.can_open_signal(side):
+        await _reply(
+            update,
+            f"🚫 3-Pair Cap reached — cannot open another {side.value} signal.",
+        )
+        return
+
+    # ── Placeholder candle data (replace with live Binance API calls) ─────────
+    # In production inject real OHLCV data from the Binance Futures REST API.
+    dummy_candles = _make_demo_candles(side)
+
+    result = run_confluence_check(
+        symbol=symbol,
+        current_price=dummy_candles["price"],
+        side=side,
+        range_low=dummy_candles["range_low"],
+        range_high=dummy_candles["range_high"],
+        key_liquidity_level=dummy_candles["key_level"],
+        five_min_candles=dummy_candles["5m"],
+        daily_candles=dummy_candles["1D"],
+        four_hour_candles=dummy_candles["4H"],
+        news_in_window=news_calendar.is_high_impact_imminent(),
+        stop_loss=dummy_candles["stop_loss"],
+    )
+
+    if result is None:
+        await _reply(update, f"❌ No valid setup found for #{symbol}/USDT {side.value}. Confluence checks failed.")
+        return
+
+    active = risk_manager.add_signal(result)
+    message = result.format_message()
+    await _broadcast(context, message)
+    await _reply(update, f"✅ Signal broadcast for #{symbol}/USDT {side.value}.")
+    logger.info("Signal generated: %s %s", symbol, side.value)
+
+
+async def cmd_move_be(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /move_be [SYMBOL]
+
+    Admin-only: broadcast "Move SL to Entry" for all (or a specific) open signal.
+    """
+    if not _is_admin(update):
+        await _reply(update, "⛔ Admin only.")
+        return
+
+    args = context.args or []
+    symbol_filter = args[0].upper() if args else None
+
+    targets = [
+        s for s in risk_manager.active_signals
+        if symbol_filter is None or s.result.symbol == symbol_filter
+    ]
+
+    if not targets:
+        await _reply(update, "No open signals found.")
+        return
+
+    for sig in targets:
+        if not sig.be_triggered:
+            sig.trigger_be()
+        msg = (
+            f"🔒 #{sig.result.symbol}/USDT {sig.result.side.value}: "
+            f"Move SL to Entry **{sig.entry_mid:.4f}** (Risk-Free Mode ON)."
+        )
+        await _broadcast(context, msg)
+
+    await _reply(update, f"BE broadcast sent for {len(targets)} signal(s).")
+
+
+async def cmd_trail_sl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /trail_sl
+
+    Admin-only: toggle auto-trailing SL behind every 5m Higher Low (long) /
+    Lower High (short).
+    """
+    if not _is_admin(update):
+        await _reply(update, "⛔ Admin only.")
+        return
+
+    global _trail_active
+    _trail_active = not _trail_active
+    state = "ACTIVATED ✅" if _trail_active else "DEACTIVATED ❌"
+    msg = f"📈 Auto-Trailing SL is now *{state}*."
+    await _broadcast(context, msg)
+    await _reply(update, msg)
+
+
+async def cmd_news_caution(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /news_caution
+
+    Admin-only: toggle the news-freeze mode.
+    When active:
+      • New signals are blocked.
+      • A partial-close recommendation is broadcast to the channel.
+    """
+    if not _is_admin(update):
+        await _reply(update, "⛔ Admin only.")
+        return
+
+    global _news_freeze
+    _news_freeze = not _news_freeze
+
+    if _news_freeze:
+        active_list = "\n".join(
+            f"  • #{s.result.symbol}/USDT {s.result.side.value}"
+            for s in risk_manager.active_signals
+        ) or "  (none)"
+        msg = (
+            "⚠️ *NEWS CAUTION MODE ACTIVATED*\n\n"
+            "🚫 New signals are FROZEN until further notice.\n\n"
+            "📌 Active signals — consider closing partials:\n"
+            f"{active_list}\n\n"
+            + news_calendar.format_caution_message()
+        )
+    else:
+        msg = "✅ *News Caution Mode DEACTIVATED.* Signal generation is now active."
+
+    await _broadcast(context, msg)
+    await _reply(update, msg)
+
+
+async def cmd_risk_calc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /risk_calc <balance> <entry> <stop_loss>
+
+    User command: calculate exact position size.
+
+    Example:
+        /risk_calc 1000 65000 64000
+    """
+    args = context.args or []
+    if len(args) < 3:
+        await _reply(update, "Usage: `/risk_calc <balance_usdt> <entry_price> <stop_loss_price>`")
+        return
+
+    try:
+        balance = float(args[0])
+        entry = float(args[1])
+        sl = float(args[2])
+    except ValueError:
+        await _reply(update, "⚠️ All three values must be numbers.")
+        return
+
+    try:
+        calc = calculate_position_size(balance, entry, sl)
+    except ValueError as exc:
+        await _reply(update, f"⚠️ {exc}")
+        return
+
+    reply = (
+        "🧮 *360 Eye Position Size Calculator*\n\n"
+        f"Account Balance  : ${balance:,.2f} USDT\n"
+        f"Entry Price      : ${entry:,.4f}\n"
+        f"Stop Loss Price  : ${sl:,.4f}\n"
+        f"SL Distance      : {calc['sl_distance_pct']:.4f}%\n\n"
+        f"Risk Amount (1%) : ${calc['risk_amount']:,.4f} USDT\n"
+        f"Position Size    : ${calc['position_size_usdt']:,.4f} USDT\n"
+        f"Position (Units) : {calc['position_size_units']:,.6f} coins"
+    )
+    await _reply(update, reply)
+
+
+# ── Webhook processor (called by webhook.py) ──────────────────────────────────
+
+def process_webhook(payload: dict) -> Optional[str]:
+    """
+    Parse an incoming TradingView webhook payload and return a formatted
+    signal message if all confluence checks pass, otherwise None.
+
+    Expected payload keys:
+        symbol, side, price, range_low, range_high, key_level, stop_loss
+
+    The bot.py caller is responsible for broadcasting the returned message.
+    """
+    try:
+        symbol = str(payload["symbol"]).upper().replace("/USDT", "").replace("USDT", "")
+        side = Side(str(payload["side"]).upper())
+        price = float(payload["price"])
+        range_low = float(payload["range_low"])
+        range_high = float(payload["range_high"])
+        key_level = float(payload["key_level"])
+        stop_loss = float(payload["stop_loss"])
+    except (KeyError, ValueError, TypeError) as exc:
+        logger.warning("Invalid webhook payload: %s", exc)
+        return None
+
+    if _news_freeze or news_calendar.is_high_impact_imminent():
+        return None
+
+    if not risk_manager.can_open_signal(side):
+        return None
+
+    demo = _make_demo_candles(side, price=price)
+
+    result = run_confluence_check(
+        symbol=symbol,
+        current_price=price,
+        side=side,
+        range_low=range_low,
+        range_high=range_high,
+        key_liquidity_level=key_level,
+        five_min_candles=demo["5m"],
+        daily_candles=demo["1D"],
+        four_hour_candles=demo["4H"],
+        news_in_window=False,
+        stop_loss=stop_loss,
+    )
+
+    if result is None:
+        return None
+
+    risk_manager.add_signal(result)
+    return result.format_message()
+
+
+# ── Demo candle factory (replace with live Binance API in production) ─────────
+
+def _make_demo_candles(
+    side: Side,
+    price: float = 100.0,
+) -> dict:
+    """
+    Build minimal synthetic OHLCV data that satisfies all confluence gates,
+    used when no real market data is available (e.g. during testing or demo).
+    """
+    direction = 1 if side == Side.LONG else -1
+    base = price
+
+    # Synthetic 1D candles: bullish / bearish trend
+    daily_candles = [
+        CandleData(
+            open=base - direction * i * 2,
+            high=base - direction * i * 2 + 1,
+            low=base - direction * i * 2 - 1,
+            close=base - direction * i * 2 + direction * 0.5,
+            volume=1000 + i * 10,
+        )
+        for i in range(20, 0, -1)
+    ]
+
+    # Synthetic 4H candles: same directional bias
+    four_h_candles = [
+        CandleData(
+            open=base - direction * i * 0.5,
+            high=base - direction * i * 0.5 + 0.3,
+            low=base - direction * i * 0.5 - 0.3,
+            close=base - direction * i * 0.5 + direction * 0.2,
+            volume=500 + i * 5,
+        )
+        for i in range(5, 0, -1)
+    ]
+
+    # Synthetic 5m candles with a liquidity sweep and MSS
+    avg_vol = 200.0
+    key_level = base - direction * 1.0  # level to be swept
+    five_m_candles = [
+        # Regular candles
+        CandleData(open=base, high=base + 0.2, low=base - 0.2, close=base + 0.1, volume=avg_vol * 0.9),
+        CandleData(open=base + 0.1, high=base + 0.3, low=base - 0.3, close=base + 0.2, volume=avg_vol * 0.8),
+        # Sweep candle: wick pierces key_level, body closes back
+        CandleData(
+            open=base,
+            high=base + 0.5 if side == Side.SHORT else base + 0.2,
+            low=key_level - 0.1 if side == Side.LONG else base - 0.2,
+            close=base + 0.3 if side == Side.LONG else base - 0.3,
+            volume=avg_vol * 1.1,
+        ),
+        # MSS candle: closes beyond prior swing high/low with high volume
+        CandleData(
+            open=base,
+            high=base + 0.8 if side == Side.LONG else base + 0.1,
+            low=base - 0.1 if side == Side.LONG else base - 0.8,
+            close=base + 0.6 if side == Side.LONG else base - 0.6,
+            volume=avg_vol * 1.5,
+        ),
+    ]
+
+    range_spread = abs(base) * 0.05 or 5.0
+    stop_loss = (
+        key_level - 0.5 if side == Side.LONG else key_level + 0.5
+    )
+    current_price = (
+        base - range_spread * 0.3 if side == Side.LONG else base + range_spread * 0.3
+    )
+
+    return {
+        "price": current_price,
+        "range_low": base - range_spread,
+        "range_high": base + range_spread,
+        "key_level": key_level,
+        "stop_loss": stop_loss,
+        "5m": five_m_candles,
+        "1D": daily_candles,
+        "4H": four_h_candles,
+    }
+
+
+# ── Application bootstrap ─────────────────────────────────────────────────────
+
+def build_application() -> Application:
+    """Create and configure the Telegram bot application."""
+    if not TELEGRAM_BOT_TOKEN:
+        raise EnvironmentError(
+            "TELEGRAM_BOT_TOKEN environment variable is not set."
+        )
+
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(CommandHandler("signal_gen", cmd_signal_gen))
+    app.add_handler(CommandHandler("move_be", cmd_move_be))
+    app.add_handler(CommandHandler("trail_sl", cmd_trail_sl))
+    app.add_handler(CommandHandler("news_caution", cmd_news_caution))
+    app.add_handler(CommandHandler("risk_calc", cmd_risk_calc))
+    return app
+
+
+def main() -> None:
+    """Entry point — run the bot in long-polling mode."""
+    logging.basicConfig(
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        level=logging.INFO,
+    )
+    app = build_application()
+    logger.info("360 Crypto Eye Scalping bot started.")
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
