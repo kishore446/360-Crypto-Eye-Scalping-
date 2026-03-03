@@ -151,7 +151,7 @@ async def cmd_signal_gen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _reply(update, f"❌ No valid setup found for #{symbol}/USDT {side.value}. Confluence checks failed.")
         return
 
-    active = risk_manager.add_signal(result)
+    risk_manager.add_signal(result)
     message = result.format_message()
     await _broadcast(context, message)
     await _reply(update, f"✅ Signal broadcast for #{symbol}/USDT {side.value}.")
@@ -380,22 +380,24 @@ def _normalise_symbol(raw: str) -> str:
     return f"{base}/{quote}:{quote}"
 
 
+# Module-level singleton — created once, reused for all Binance API calls
+_exchange = ccxt.binance({"options": {"defaultType": "future"}})
+
+
 def _fetch_binance_candles(symbol: str, side: Side) -> dict:
     """
     Fetch live OHLCV data from Binance Futures via CCXT for the given
     *symbol* (CCXT format, e.g. ``BTC/USDT:USDT``).
 
-    Returns a dict with the same keys as :func:`_make_demo_candles`:
-    ``price``, ``range_low``, ``range_high``, ``key_level``, ``stop_loss``,
-    ``5m``, ``1D``, ``4H``.
+    Returns a dict with keys ``price``, ``range_low``, ``range_high``,
+    ``key_level``, ``stop_loss``, ``5m``, ``1D``, ``4H``.
     """
-    exchange = ccxt.binance({"options": {"defaultType": "future"}})
 
     # Fetch OHLCV for each required timeframe
     # CCXT returns [[timestamp, open, high, low, close, volume], ...]
-    raw_1d = exchange.fetch_ohlcv(symbol, "1d", limit=30)
-    raw_4h = exchange.fetch_ohlcv(symbol, "4h", limit=10)
-    raw_5m = exchange.fetch_ohlcv(symbol, "5m", limit=50)
+    raw_1d = _exchange.fetch_ohlcv(symbol, "1d", limit=30)
+    raw_4h = _exchange.fetch_ohlcv(symbol, "4h", limit=10)
+    raw_5m = _exchange.fetch_ohlcv(symbol, "5m", limit=50)
 
     def _to_candles(rows: list) -> list[CandleData]:
         return [
@@ -420,7 +422,7 @@ def _fetch_binance_candles(symbol: str, side: Side) -> dict:
         )
 
     # Current price from ticker
-    ticker = exchange.fetch_ticker(symbol)
+    ticker = _exchange.fetch_ticker(symbol)
     current_price = float(ticker["last"])
 
     # range_low / range_high from 4H recent swings (last 10 candles)
@@ -451,89 +453,6 @@ def _fetch_binance_candles(symbol: str, side: Side) -> dict:
         "1D": daily_candles,
         "4H": four_h_candles,
     }
-
-
-# ── Demo candle factory (replace with live Binance API in production) ─────────
-
-def _make_demo_candles(
-    side: Side,
-    price: float = 100.0,
-) -> dict:
-    """
-    Build minimal synthetic OHLCV data that satisfies all confluence gates,
-    used when no real market data is available (e.g. during testing or demo).
-    """
-    direction = 1 if side == Side.LONG else -1
-    base = price
-
-    # Synthetic 1D candles: bullish / bearish trend
-    daily_candles = [
-        CandleData(
-            open=base - direction * i * 2,
-            high=base - direction * i * 2 + 1,
-            low=base - direction * i * 2 - 1,
-            close=base - direction * i * 2 + direction * 0.5,
-            volume=1000 + i * 10,
-        )
-        for i in range(20, 0, -1)
-    ]
-
-    # Synthetic 4H candles: same directional bias
-    four_h_candles = [
-        CandleData(
-            open=base - direction * i * 0.5,
-            high=base - direction * i * 0.5 + 0.3,
-            low=base - direction * i * 0.5 - 0.3,
-            close=base - direction * i * 0.5 + direction * 0.2,
-            volume=500 + i * 5,
-        )
-        for i in range(5, 0, -1)
-    ]
-
-    # Synthetic 5m candles with a liquidity sweep and MSS
-    avg_vol = 200.0
-    key_level = base - direction * 1.0  # level to be swept
-    five_m_candles = [
-        # Regular candles
-        CandleData(open=base, high=base + 0.2, low=base - 0.2, close=base + 0.1, volume=avg_vol * 0.9),
-        CandleData(open=base + 0.1, high=base + 0.3, low=base - 0.3, close=base + 0.2, volume=avg_vol * 0.8),
-        # Sweep candle: wick pierces key_level, body closes back
-        CandleData(
-            open=base,
-            high=base + 0.5 if side == Side.SHORT else base + 0.2,
-            low=key_level - 0.1 if side == Side.LONG else base - 0.2,
-            close=base + 0.3 if side == Side.LONG else base - 0.3,
-            volume=avg_vol * 1.1,
-        ),
-        # MSS candle: closes beyond prior swing high/low with high volume
-        CandleData(
-            open=base,
-            high=base + 0.8 if side == Side.LONG else base + 0.1,
-            low=base - 0.1 if side == Side.LONG else base - 0.8,
-            close=base + 0.6 if side == Side.LONG else base - 0.6,
-            volume=avg_vol * 1.5,
-        ),
-    ]
-
-    range_spread = abs(base) * 0.05 or 5.0
-    stop_loss = (
-        key_level - 0.5 if side == Side.LONG else key_level + 0.5
-    )
-    current_price = (
-        base - range_spread * 0.3 if side == Side.LONG else base + range_spread * 0.3
-    )
-
-    return {
-        "price": current_price,
-        "range_low": base - range_spread,
-        "range_high": base + range_spread,
-        "key_level": key_level,
-        "stop_loss": stop_loss,
-        "5m": five_m_candles,
-        "1D": daily_candles,
-        "4H": four_h_candles,
-    }
-
 
 # ── Application bootstrap ─────────────────────────────────────────────────────
 
