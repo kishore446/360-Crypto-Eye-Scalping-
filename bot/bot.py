@@ -22,6 +22,7 @@ import logging
 from typing import Optional
 
 import ccxt
+from apscheduler.schedulers.background import BackgroundScheduler
 
 from telegram import Update
 from telegram.ext import (
@@ -31,6 +32,7 @@ from telegram.ext import (
 )
 
 from bot.dashboard import Dashboard, TradeResult
+from bot.news_fetcher import refresh_news_calendar
 from bot.news_filter import NewsCalendar
 from bot.risk_manager import RiskManager, calculate_position_size
 from bot.signal_engine import (
@@ -59,6 +61,9 @@ _news_freeze: bool = False
 
 # When True, auto-trailing is active for open signals
 _trail_active: bool = False
+
+# ── Background scheduler (news calendar refresh) ──────────────────────────────
+_scheduler = BackgroundScheduler(timezone="UTC")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -469,6 +474,21 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("trail_sl", cmd_trail_sl))
     app.add_handler(CommandHandler("news_caution", cmd_news_caution))
     app.add_handler(CommandHandler("risk_calc", cmd_risk_calc))
+
+    # ── Start background news calendar refresh (every 30 minutes) ──────────
+    # Do an immediate fetch on startup, then schedule recurring refresh
+    refresh_news_calendar(news_calendar)
+    _scheduler.add_job(
+        refresh_news_calendar,
+        "interval",
+        minutes=30,
+        args=[news_calendar],
+        id="news_refresh",
+        replace_existing=True,
+    )
+    _scheduler.start()
+    logger.info("News calendar scheduler started — refreshing every 30 minutes.")
+
     return app
 
 

@@ -40,6 +40,9 @@ BE_TRIGGER_FRACTION: float = 0.50
 # Skip any new signal when a high-impact event falls within this many minutes
 NEWS_SKIP_WINDOW_MINUTES: int = 60
 
+# CoinMarketCal API key for live economic calendar (https://coinmarketcal.com/en/api)
+COINMARKETCAL_API_KEY: str = os.environ.get("COINMARKETCAL_API_KEY", "")
+
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 DASHBOARD_LOG_FILE: str = os.environ.get("DASHBOARD_LOG_FILE", "dashboard.json")
 
