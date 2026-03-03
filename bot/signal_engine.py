@@ -329,7 +329,7 @@ def run_confluence_check(
         tp3=tp3,
         stop_loss=stop_loss,
         structure_note=structure_note or f"4H {'Bullish' if side == Side.LONG else 'Bearish'} OB + 5m MSS Confirmed.",
-        context_note=context_note or "BTC holding key VWAP; DXY showing weakness.",
+        context_note=context_note or f"{symbol} structure aligned with higher timeframe bias.",
         leverage_min=leverage_min,
         leverage_max=leverage_max,
     )
