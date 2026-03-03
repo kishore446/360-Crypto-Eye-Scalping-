@@ -11,15 +11,19 @@ Implements all safety protocols from Section V of the master blueprint:
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
-from bot.signal_engine import Side, SignalResult
+from bot.signal_engine import Confidence, Side, SignalResult
 from config import (
     BE_TRIGGER_FRACTION,
     DEFAULT_RISK_FRACTION,
     MAX_SAME_SIDE_SIGNALS,
+    SIGNALS_FILE,
     STALE_SIGNAL_HOURS,
 )
 
@@ -75,6 +79,76 @@ class RiskManager:
 
     def __init__(self) -> None:
         self._signals: list[ActiveSignal] = []
+        self._load()
+
+    # ── persistence ───────────────────────────────────────────────────────────
+
+    def _save(self) -> None:
+        """Serialise ``_signals`` to JSON for restart-safe persistence."""
+        data = []
+        for sig in self._signals:
+            d = dataclasses.asdict(sig)
+            # str-Enums serialise to their string value via json.dumps; store
+            # them explicitly so deserialisation is unambiguous.
+            d["result"]["side"] = sig.result.side.value
+            d["result"]["confidence"] = sig.result.confidence.value
+            data.append(d)
+        try:
+            Path(SIGNALS_FILE).write_text(
+                json.dumps(data, indent=2), encoding="utf-8"
+            )
+        except OSError as exc:
+            import logging
+            logging.getLogger(__name__).error(
+                "Failed to persist signals to %s: %s", SIGNALS_FILE, exc
+            )
+
+    def _load(self) -> None:
+        """Deserialise ``_signals`` from the JSON persistence file."""
+        path = Path(SIGNALS_FILE)
+        if not path.exists():
+            return
+        try:
+            raw: list[dict] = json.loads(path.read_text(encoding="utf-8"))
+            signals = []
+            for d in raw:
+                r = d["result"]
+                result = SignalResult(
+                    symbol=r["symbol"],
+                    side=Side(r["side"]),
+                    confidence=Confidence(r["confidence"]),
+                    entry_low=r["entry_low"],
+                    entry_high=r["entry_high"],
+                    tp1=r["tp1"],
+                    tp2=r["tp2"],
+                    tp3=r["tp3"],
+                    stop_loss=r["stop_loss"],
+                    structure_note=r["structure_note"],
+                    context_note=r["context_note"],
+                    leverage_min=r["leverage_min"],
+                    leverage_max=r["leverage_max"],
+                )
+                signals.append(
+                    ActiveSignal(
+                        result=result,
+                        opened_at=d["opened_at"],
+                        be_triggered=d["be_triggered"],
+                        closed=d["closed"],
+                        close_reason=d.get("close_reason"),
+                    )
+                )
+            self._signals = signals
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Could not load signals from %s (%s); starting with empty list.",
+                SIGNALS_FILE, exc
+            )
+            self._signals = []
+
+    def save(self) -> None:
+        """Public alias for ``_save`` — persist current signals to disk."""
+        self._save()
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -105,6 +179,7 @@ class RiskManager:
             )
         active = ActiveSignal(result=result)
         self._signals.append(active)
+        self._save()
         return active
 
     def update_prices(self, prices: dict[str, float]) -> list[str]:
@@ -150,6 +225,7 @@ class RiskManager:
         for signal in self._signals:
             if not signal.closed and signal.result.symbol == symbol:
                 signal.close(reason)
+                self._save()
                 return True
         return False
 
