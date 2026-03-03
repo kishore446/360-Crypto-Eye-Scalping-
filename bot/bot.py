@@ -44,6 +44,8 @@ from bot.signal_engine import (
 )
 from config import (
     ADMIN_CHAT_ID,
+    AUTO_SCAN_INTERVAL_SECONDS,
+    AUTO_SCAN_PAIRS,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHANNEL_ID,
 )
@@ -64,6 +66,9 @@ _news_freeze: bool = False
 
 # When True, auto-trailing is active for open signals
 _trail_active: bool = False
+
+# When True, the background auto-scanner is active
+_auto_scan_active: bool = False
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -235,6 +240,32 @@ async def cmd_trail_sl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _reply(update, msg)
 
 
+async def cmd_auto_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /auto_scan
+
+    Admin-only: toggle the background auto-scanner that periodically checks
+    all watchlist pairs and broadcasts signals when confluence is met.
+    """
+    if not _is_admin(update):
+        await _reply(update, "⛔ Admin only.")
+        return
+
+    global _auto_scan_active
+    _auto_scan_active = not _auto_scan_active
+
+    if _auto_scan_active:
+        msg = (
+            f"🔍 Auto-Scanner ACTIVATED ✅ — scanning {len(AUTO_SCAN_PAIRS)} pairs "
+            f"every {AUTO_SCAN_INTERVAL_SECONDS}s."
+        )
+    else:
+        msg = "🔍 Auto-Scanner DEACTIVATED ❌"
+
+    await _broadcast(context, msg)
+    await _reply(update, msg)
+
+
 async def cmd_news_caution(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     /news_caution
@@ -394,7 +425,112 @@ def _run_trailing_sl_job(context_or_bot=None) -> None:
         logger.error("Trailing SL job failed to send broadcasts: %s", exc)
 
 
-# ── /close_signal command ─────────────────────────────────────────────────────
+# ── Background auto-scan job ──────────────────────────────────────────────────
+
+def _run_auto_scan_job(context_or_bot=None) -> None:
+    """
+    APScheduler background job — runs every ``AUTO_SCAN_INTERVAL_SECONDS``
+    when ``_auto_scan_active`` is True.
+
+    For each symbol in ``AUTO_SCAN_PAIRS``:
+      • Checks both LONG and SHORT sides.
+      • Fetches live Binance candle data.
+      • Runs the full confluence engine.
+      • Broadcasts any qualifying signal to the Telegram channel.
+    """
+    if not _auto_scan_active:
+        return
+
+    signals_found: int = 0
+    pairs_scanned: int = 0
+    messages: list[str] = []
+
+    active_symbols = {sig.result.symbol for sig in risk_manager.active_signals}
+
+    logger.info("Auto-scan started — checking %d pairs.", len(AUTO_SCAN_PAIRS))
+
+    for base in AUTO_SCAN_PAIRS:
+        ccxt_symbol = _normalise_symbol(base)
+        symbol = ccxt_symbol.split("/")[0]
+
+        # Skip if a signal for this symbol is already active
+        if symbol in active_symbols:
+            logger.debug("Auto-scan skipping %s — signal already active.", symbol)
+            continue
+
+        for side in (Side.LONG, Side.SHORT):
+            try:
+                # Global guards
+                if _news_freeze or news_calendar.is_high_impact_imminent():
+                    logger.info("Auto-scan paused — news freeze/imminent event.")
+                    return  # Stop the entire scan cycle until next interval
+
+                if not risk_manager.can_open_signal(side):
+                    logger.info(
+                        "Auto-scan: 3-pair cap reached for %s — skipping.", side.value
+                    )
+                    continue
+
+                candles = _fetch_binance_candles(ccxt_symbol, side)
+                pairs_scanned += 1
+
+                result = run_confluence_check(
+                    symbol=symbol,
+                    current_price=candles["price"],
+                    side=side,
+                    range_low=candles["range_low"],
+                    range_high=candles["range_high"],
+                    key_liquidity_level=candles["key_level"],
+                    five_min_candles=candles["5m"],
+                    daily_candles=candles["1D"],
+                    four_hour_candles=candles["4H"],
+                    news_in_window=news_calendar.is_high_impact_imminent(),
+                    stop_loss=candles["stop_loss"],
+                )
+
+                if result is not None:
+                    risk_manager.add_signal(result)
+                    messages.append(result.format_message())
+                    active_symbols.add(symbol)  # prevent duplicate on opposite side
+                    signals_found += 1
+                    logger.info(
+                        "Auto-scan signal: %s %s", symbol, side.value
+                    )
+
+                # Small delay to avoid Binance rate-limiting
+                time.sleep(1)
+
+            except Exception as exc:
+                logger.error(
+                    "Auto-scan error for %s %s: %s", symbol, side.value, exc
+                )
+
+    logger.info(
+        "Auto-scan complete: scanned %d pairs, generated %d signal(s).",
+        pairs_scanned,
+        signals_found,
+    )
+
+    if not messages:
+        return
+
+    # Broadcast all new signals from the background thread
+    async def _send() -> None:
+        async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
+            for text in messages:
+                try:
+                    await bot.send_message(
+                        chat_id=TELEGRAM_CHANNEL_ID,
+                        text=text,
+                        parse_mode="Markdown",
+                    )
+                except Exception as exc:
+                    logger.error("Auto-scan broadcast error: %s", exc)
+
+    try:
+        asyncio.run(_send())
+    except Exception as exc:
+        logger.error("Auto-scan job failed to send broadcasts: %s", exc)
 
 async def cmd_close_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -653,6 +789,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("signal_gen", cmd_signal_gen))
     app.add_handler(CommandHandler("move_be", cmd_move_be))
     app.add_handler(CommandHandler("trail_sl", cmd_trail_sl))
+    app.add_handler(CommandHandler("auto_scan", cmd_auto_scan))
     app.add_handler(CommandHandler("news_caution", cmd_news_caution))
     app.add_handler(CommandHandler("risk_calc", cmd_risk_calc))
     app.add_handler(CommandHandler("close_signal", cmd_close_signal))
@@ -674,6 +811,15 @@ def build_application() -> Application:
         "interval",
         seconds=60,
         id="trailing_sl",
+        replace_existing=True,
+    )
+
+    # Auto-scan job — active only when _auto_scan_active is True
+    _scheduler.add_job(
+        _run_auto_scan_job,
+        "interval",
+        seconds=AUTO_SCAN_INTERVAL_SECONDS,
+        id="auto_scan",
         replace_existing=True,
     )
 
