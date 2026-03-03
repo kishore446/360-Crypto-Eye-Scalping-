@@ -77,10 +77,11 @@ Leverage: Cross 10x - 20x (Recommended)
 | Command | Access | Action |
 | :--- | :--- | :--- |
 | `/signal_gen SYMBOL LONG\|SHORT` | Admin | Auto-scans and generates a formatted 360 Eye signal. |
-| `/move_be [SYMBOL]` | Admin | Broadcasts "Move SL to Entry (Risk-Free Mode ON)." |
+| `/move_be [SYMBOL]` | Admin | Broadcasts "Move SL to Entry (Risk-Free Mode ON)." Records TP1 result in dashboard. |
 | `/trail_sl` | Admin | Toggles auto-trailing SL behind every 5m Higher Low / Lower High. |
 | `/news_caution` | Admin | Freezes new signals; triggers "Close Partials" recommendation on active trades. |
 | `/risk_calc <balance> <entry> <sl>` | User | Calculates exact position size based on SL distance and account balance. |
+| `/close_signal SYMBOL OUTCOME PNL` | Admin | Closes a signal, records WIN/LOSS/BE + PnL in the dashboard, broadcasts summary. |
 
 ---
 
@@ -105,7 +106,7 @@ Results are persisted to `dashboard.json` and survive process restarts.
 
 ---
 
-## VII. Quick Start
+## VII. Getting Started
 
 ### 1. Install dependencies
 
@@ -113,7 +114,27 @@ Results are persisted to `dashboard.json` and survive process restarts.
 pip install -r requirements.txt
 ```
 
-### 2. Set environment variables
+### 2. Configure environment variables
+
+Copy `.env.example` to `.env` and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+Required variables:
+
+| Variable | Description |
+| :--- | :--- |
+| `TELEGRAM_BOT_TOKEN` | Bot token issued by [@BotFather](https://t.me/BotFather) |
+| `TELEGRAM_CHANNEL_ID` | Numeric ID of the broadcast channel (e.g. `-1003851389127`) |
+| `ADMIN_CHAT_ID` | Your Telegram user ID (admin-only commands) |
+| `WEBHOOK_SECRET` | Random secret for TradingView webhook authentication |
+| `COINMARKETCAL_API_KEY` | Optional — enables live high-impact news filtering |
+| `SIGNALS_FILE` | Path for active-signal persistence (default: `signals.json`) |
+| `DASHBOARD_LOG_FILE` | Path for trade results log (default: `dashboard.json`) |
+
+Or export them directly:
 
 ```bash
 export TELEGRAM_BOT_TOKEN="your-bot-token-from-botfather"
@@ -125,7 +146,7 @@ export WEBHOOK_SECRET="your-strong-random-secret"
 ### 3. Run the Telegram bot (polling mode)
 
 ```bash
-python -m bot.bot
+python main.py
 ```
 
 ### 4. Run the TradingView webhook receiver
@@ -160,17 +181,21 @@ Include header: `X-Webhook-Secret: your-strong-random-secret`
 
 ```
 360-Crypto-Eye-Scalping/
+├── main.py                   # Entry point — starts the polling bot
+├── Procfile                  # Heroku/Render deployment (worker + web)
+├── .env.example              # Environment variable template
 ├── config.py                 # Centralised configuration (env-var backed)
 ├── requirements.txt          # Python dependencies
 ├── bot/
 │   ├── __init__.py
 │   ├── bot.py                # Telegram bot + command handlers
 │   ├── signal_engine.py      # Fractal Liquidity Engine (confluence logic)
-│   ├── risk_manager.py       # BE trigger · 3-pair cap · stale-close
+│   ├── risk_manager.py       # BE trigger · 3-pair cap · stale-close · JSON persistence
 │   ├── news_filter.py        # High-impact news calendar
 │   ├── dashboard.py          # Transparency log + statistics
 │   └── webhook.py            # TradingView webhook receiver (Flask)
 └── tests/
+    ├── conftest.py
     ├── test_signal_engine.py
     ├── test_risk_manager.py
     └── test_dashboard.py

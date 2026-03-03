@@ -46,6 +46,9 @@ COINMARKETCAL_API_KEY: str = os.environ.get("COINMARKETCAL_API_KEY", "")
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 DASHBOARD_LOG_FILE: str = os.environ.get("DASHBOARD_LOG_FILE", "dashboard.json")
 
+# ── Persistence ───────────────────────────────────────────────────────────────
+SIGNALS_FILE: str = os.environ.get("SIGNALS_FILE", "signals.json")
+
 # ── Webhook ───────────────────────────────────────────────────────────────────
 WEBHOOK_HOST: str = os.environ.get("WEBHOOK_HOST", "0.0.0.0")
 WEBHOOK_PORT: int = int(os.environ.get("WEBHOOK_PORT", "5000"))

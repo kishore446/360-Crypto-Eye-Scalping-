@@ -18,13 +18,15 @@ Required environment variable:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from typing import Optional
 
 import ccxt
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from telegram import Update
+from telegram import Bot, Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -42,8 +44,6 @@ from bot.signal_engine import (
 )
 from config import (
     ADMIN_CHAT_ID,
-    LEVERAGE_MAX,
-    LEVERAGE_MIN,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHANNEL_ID,
 )
@@ -188,6 +188,25 @@ async def cmd_move_be(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     for sig in targets:
         if not sig.be_triggered:
             sig.trigger_be()
+            # TP1 hit: record a partial WIN in the transparency dashboard
+            pnl_pct = abs(sig.result.tp1 - sig.entry_mid) / sig.entry_mid * 100
+            dashboard.record_result(
+                TradeResult(
+                    symbol=sig.result.symbol,
+                    side=sig.result.side.value,
+                    entry_price=sig.entry_mid,
+                    exit_price=sig.result.tp1,
+                    stop_loss=sig.result.stop_loss,
+                    tp1=sig.result.tp1,
+                    tp2=sig.result.tp2,
+                    tp3=sig.result.tp3,
+                    opened_at=sig.opened_at,
+                    closed_at=time.time(),
+                    outcome="WIN",
+                    pnl_pct=round(pnl_pct, 4),
+                    timeframe="5m",
+                )
+            )
         msg = (
             f"🔒 #{sig.result.symbol}/USDT {sig.result.side.value}: "
             f"Move SL to Entry **{sig.entry_mid:.4f}** (Risk-Free Mode ON)."
@@ -290,6 +309,168 @@ async def cmd_risk_calc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"Position (Units) : {calc['position_size_units']:,.6f} coins"
     )
     await _reply(update, reply)
+
+
+# ── Background trailing SL job ────────────────────────────────────────────────
+
+def _run_trailing_sl_job(context_or_bot=None) -> None:
+    """
+    APScheduler background job — runs every 60 s when ``_trail_active`` is True.
+
+    For each open signal:
+      • LONG  → trail SL to the minimum low of the last 3 × 5m candles
+                (Higher Low); only moves SL *upward*.
+      • SHORT → trail SL to the maximum high of the last 3 × 5m candles
+                (Lower High); only moves SL *downward*.
+
+    Broadcasts a Telegram message for each SL update.
+    """
+    if not _trail_active:
+        return
+
+    updates: list[str] = []
+    for sig in list(risk_manager.active_signals):
+        ccxt_symbol = f"{sig.result.symbol}/USDT:USDT"
+        try:
+            raw_5m = _exchange.fetch_ohlcv(ccxt_symbol, "5m", limit=5)
+        except Exception as exc:
+            logger.warning("Trailing SL fetch failed for %s: %s", sig.result.symbol, exc)
+            continue
+
+        if len(raw_5m) < 3:
+            continue
+
+        last_3 = raw_5m[-3:]
+        current_sl = sig.result.stop_loss
+
+        if sig.result.side == Side.LONG:
+            # Per the spec: "Higher Low" = min low of the last 3 candles.
+            # SL only moves up (never down) for LONG.
+            new_sl = min(row[3] for row in last_3)
+            if new_sl > current_sl:
+                sig.result.stop_loss = new_sl
+                updates.append(
+                    f"📈 #{sig.result.symbol}/USDT LONG: "
+                    f"Trailing SL raised {current_sl:.4f} → {new_sl:.4f} "
+                    f"(Higher Low trail)"
+                )
+        else:
+            # Per the spec: "Lower High" = max high of the last 3 candles.
+            # SL only moves down (never up) for SHORT.
+            new_sl = max(row[2] for row in last_3)
+            if new_sl < current_sl:
+                sig.result.stop_loss = new_sl
+                updates.append(
+                    f"📉 #{sig.result.symbol}/USDT SHORT: "
+                    f"Trailing SL lowered {current_sl:.4f} → {new_sl:.4f} "
+                    f"(Lower High trail)"
+                )
+
+    if not updates:
+        return
+
+    # Persist updated stop-losses via public API
+    try:
+        risk_manager.save()
+    except Exception as exc:
+        logger.error("Failed to persist trailing SL update: %s", exc)
+
+    # Broadcast from background thread using a fresh Bot instance
+    async def _send() -> None:
+        async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
+            for text in updates:
+                try:
+                    await bot.send_message(
+                        chat_id=TELEGRAM_CHANNEL_ID,
+                        text=text,
+                        parse_mode="Markdown",
+                    )
+                except Exception as exc:
+                    logger.error("Trailing SL broadcast error: %s", exc)
+
+    try:
+        asyncio.run(_send())
+    except Exception as exc:
+        logger.error("Trailing SL job failed to send broadcasts: %s", exc)
+
+
+# ── /close_signal command ─────────────────────────────────────────────────────
+
+async def cmd_close_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /close_signal SYMBOL OUTCOME PNL
+
+    Admin-only: close a signal, record it in the dashboard, and broadcast a
+    trade summary to the channel.
+
+    OUTCOME must be WIN, LOSS, or BE.
+    PNL is the percentage profit/loss (e.g. 2.5 for +2.5 %).
+
+    Example:
+        /close_signal BTC WIN 2.5
+    """
+    if not _is_admin(update):
+        await _reply(update, "⛔ Admin only.")
+        return
+
+    args = context.args or []
+    if len(args) < 3:
+        await _reply(
+            update,
+            "Usage: `/close_signal SYMBOL OUTCOME PNL`\n"
+            "Example: `/close_signal BTC WIN 2.5`",
+        )
+        return
+
+    symbol = args[0].upper()
+    outcome = args[1].upper()
+    if outcome not in ("WIN", "LOSS", "BE"):
+        await _reply(update, "⚠️ OUTCOME must be `WIN`, `LOSS`, or `BE`.")
+        return
+
+    try:
+        pnl = float(args[2])
+    except ValueError:
+        await _reply(update, "⚠️ PNL must be a number.")
+        return
+
+    sig = next(
+        (s for s in risk_manager.active_signals if s.result.symbol == symbol),
+        None,
+    )
+    if sig is None:
+        await _reply(update, f"No open signal found for `{symbol}`.")
+        return
+
+    direction = 1 if sig.result.side == Side.LONG else -1
+    exit_price = sig.entry_mid * (1 + direction * pnl / 100)
+
+    dashboard.record_result(
+        TradeResult(
+            symbol=sig.result.symbol,
+            side=sig.result.side.value,
+            entry_price=sig.entry_mid,
+            exit_price=round(exit_price, 4),
+            stop_loss=sig.result.stop_loss,
+            tp1=sig.result.tp1,
+            tp2=sig.result.tp2,
+            tp3=sig.result.tp3,
+            opened_at=sig.opened_at,
+            closed_at=time.time(),
+            outcome=outcome,
+            pnl_pct=pnl,
+            timeframe="5m",
+        )
+    )
+    risk_manager.close_signal(symbol, reason=outcome.lower())
+
+    summary = dashboard.summary()
+    msg = (
+        f"🔒 #{symbol}/USDT signal CLOSED — *{outcome}* | PnL: `{pnl:+.2f}%`\n\n"
+        f"{summary}"
+    )
+    await _broadcast(context, msg)
+    await _reply(update, f"✅ Signal `{symbol}` closed as {outcome} with {pnl:+.2f}% PnL.")
 
 
 # ── Webhook processor (called by webhook.py) ──────────────────────────────────
@@ -474,6 +655,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("trail_sl", cmd_trail_sl))
     app.add_handler(CommandHandler("news_caution", cmd_news_caution))
     app.add_handler(CommandHandler("risk_calc", cmd_risk_calc))
+    app.add_handler(CommandHandler("close_signal", cmd_close_signal))
 
     # Wire live news calendar — fetch immediately then refresh every 30 minutes
     fetch_and_reload(news_calendar)   # first fetch at startup (blocking, fast)
@@ -485,6 +667,16 @@ def build_application() -> Application:
         id="news_refresh",
         replace_existing=True,
     )
+
+    # Auto-trailing SL job — active only when _trail_active is True
+    _scheduler.add_job(
+        _run_trailing_sl_job,
+        "interval",
+        seconds=60,
+        id="trailing_sl",
+        replace_existing=True,
+    )
+
     if not _scheduler.running:
         _scheduler.start()
         logger.info("News calendar scheduler started (30-min refresh).")
