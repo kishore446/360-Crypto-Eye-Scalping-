@@ -295,18 +295,14 @@ def process_webhook(payload: dict) -> Optional[str]:
     signal message if all confluence checks pass, otherwise None.
 
     Expected payload keys:
-        symbol, side, price, range_low, range_high, key_level, stop_loss
+        symbol, side
 
+    All market data (price, candles, levels) is fetched live from Binance.
     The bot.py caller is responsible for broadcasting the returned message.
     """
     try:
-        symbol = str(payload["symbol"]).upper().replace("/USDT", "").replace("USDT", "")
+        raw_symbol = str(payload["symbol"]).upper()
         side = Side(str(payload["side"]).upper())
-        price = float(payload["price"])
-        range_low = float(payload["range_low"])
-        range_high = float(payload["range_high"])
-        key_level = float(payload["key_level"])
-        stop_loss = float(payload["stop_loss"])
     except (KeyError, ValueError, TypeError) as exc:
         logger.warning("Invalid webhook payload: %s", exc)
         return None
@@ -317,20 +313,29 @@ def process_webhook(payload: dict) -> Optional[str]:
     if not risk_manager.can_open_signal(side):
         return None
 
-    demo = _make_demo_candles(side, price=price)
+    # Normalise symbol to CCXT futures format e.g. BTC/USDT:USDT
+    ccxt_symbol = _normalise_symbol(raw_symbol)
+    symbol = ccxt_symbol.split("/")[0]
+
+    # Fetch LIVE Binance candle data
+    try:
+        candles = _fetch_binance_candles(ccxt_symbol, side)
+    except Exception as exc:
+        logger.error("Binance fetch failed in webhook for %s: %s", ccxt_symbol, exc)
+        return None
 
     result = run_confluence_check(
         symbol=symbol,
-        current_price=price,
+        current_price=candles["price"],
         side=side,
-        range_low=range_low,
-        range_high=range_high,
-        key_liquidity_level=key_level,
-        five_min_candles=demo["5m"],
-        daily_candles=demo["1D"],
-        four_hour_candles=demo["4H"],
-        news_in_window=False,
-        stop_loss=stop_loss,
+        range_low=candles["range_low"],
+        range_high=candles["range_high"],
+        key_liquidity_level=candles["key_level"],
+        five_min_candles=candles["5m"],
+        daily_candles=candles["1D"],
+        four_hour_candles=candles["4H"],
+        news_in_window=news_calendar.is_high_impact_imminent(),
+        stop_loss=candles["stop_loss"],
     )
 
     if result is None:
