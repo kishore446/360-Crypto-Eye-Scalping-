@@ -16,7 +16,7 @@ class BotState:
                     inst._state_lock = threading.Lock()
                     inst._news_freeze = False
                     inst._trail_active = False
-                    inst._auto_scan_active = False
+                    inst._auto_scan_active = True
                     cls._instance = inst
         return cls._instance
 

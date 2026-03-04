@@ -140,6 +140,29 @@ class ResilientExchange:
         self._set_cached(symbol, timeframe, data)
         return data
 
+    def load_markets(self):
+        """Load exchange markets with retry."""
+        self._check_circuit()
+        for attempt in range(1, _RETRY_COUNT + 1):
+            try:
+                self._exchange.load_markets()
+                self._record_success()
+                return self._exchange.markets
+            except CircuitBreakerOpen:
+                raise
+            except Exception as exc:
+                self._record_failure()
+                if attempt < _RETRY_COUNT:
+                    delay = self._backoff_delay(attempt)
+                    time.sleep(delay)
+                else:
+                    raise
+        return {}
+
+    @property
+    def markets(self):
+        return self._exchange.markets
+
     def fetch_ticker(self, symbol: str) -> dict:
         """Fetch current ticker (no caching)."""
         self._check_circuit()

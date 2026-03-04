@@ -23,7 +23,6 @@ import logging
 import time
 from typing import Optional
 
-import ccxt
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from telegram import Bot, Update
@@ -35,6 +34,7 @@ from telegram.ext import (
 
 from bot.backtester import Backtester, HistoricalDataFetcher
 from bot.dashboard import Dashboard, TradeResult
+from bot.exchange import ResilientExchange, _resilient_exchange
 from bot.news_fetcher import fetch_and_reload
 from bot.news_filter import NewsCalendar
 from bot.risk_manager import RiskManager, calculate_position_size
@@ -44,9 +44,9 @@ from bot.signal_engine import (
     run_confluence_check,
 )
 from bot.state import BotState
+from bot.ws_manager import MarketDataStore, WebSocketManager
 from config import (
     ADMIN_CHAT_ID,
-    AUTO_SCAN_INTERVAL_SECONDS,
     AUTO_SCAN_PAIRS,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHANNEL_ID,
@@ -65,6 +65,13 @@ _scheduler = BackgroundScheduler(daemon=True)
 
 # Thread-safe bot state singleton
 _bot_state = BotState()
+
+# WebSocket market data store and manager
+market_data = MarketDataStore()
+ws_manager = WebSocketManager(store=market_data)
+
+# Reference to the main asyncio event loop (set in build_application)
+_main_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -249,8 +256,8 @@ async def cmd_auto_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if _bot_state.auto_scan_active:
         msg = (
-            f"🔍 Auto-Scanner ACTIVATED ✅ — scanning {len(_dynamic_pairs)} pairs "
-            f"every {AUTO_SCAN_INTERVAL_SECONDS}s."
+            f"🔍 Auto-Scanner ACTIVATED ✅ — WebSocket-powered auto-scanner "
+            f"monitoring {len(_dynamic_pairs)} pairs."
         )
     else:
         msg = "🔍 Auto-Scanner DEACTIVATED ❌"
@@ -353,17 +360,22 @@ def _run_trailing_sl_job(context_or_bot=None) -> None:
 
     updates: list[str] = []
     for sig in list(risk_manager.active_signals):
-        ccxt_symbol = f"{sig.result.symbol}/USDT:USDT"
-        try:
-            raw_5m = _exchange.fetch_ohlcv(ccxt_symbol, "5m", limit=5)
-        except Exception as exc:
-            logger.warning("Trailing SL fetch failed for %s: %s", sig.result.symbol, exc)
+        symbol_base = sig.result.symbol  # e.g. "BTC"
+        ccxt_symbol = f"{symbol_base}/USDT:USDT"
+
+        # Prefer in-memory WS buffer; fall back to REST if empty
+        raw_5m_rows = market_data.get_candles(symbol_base, "5m")
+        if len(raw_5m_rows) < 3:
+            try:
+                raw_5m_rows = _resilient_exchange.fetch_ohlcv(ccxt_symbol, "5m", limit=5)
+            except Exception as exc:
+                logger.warning("Trailing SL fetch failed for %s: %s", symbol_base, exc)
+                continue
+
+        if len(raw_5m_rows) < 3:
             continue
 
-        if len(raw_5m) < 3:
-            continue
-
-        last_3 = raw_5m[-3:]
+        last_3 = raw_5m_rows[-3:]
         current_sl = sig.result.stop_loss
 
         if sig.result.side == Side.LONG:
@@ -398,7 +410,7 @@ def _run_trailing_sl_job(context_or_bot=None) -> None:
     except Exception as exc:
         logger.error("Failed to persist trailing SL update: %s", exc)
 
-    # Broadcast from background thread using a fresh Bot instance
+    # Broadcast from background thread — use run_coroutine_threadsafe when main loop is available
     async def _send() -> None:
         async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
             for text in updates:
@@ -411,140 +423,119 @@ def _run_trailing_sl_job(context_or_bot=None) -> None:
                 except Exception as exc:
                     logger.error("Trailing SL broadcast error: %s", exc)
 
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(_send())
-        else:
-            loop.run_until_complete(_send())
-    except RuntimeError:
-        new_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(new_loop)
+    if _main_loop is not None and _main_loop.is_running():
+        asyncio.run_coroutine_threadsafe(_send(), _main_loop)
+    else:
         try:
+            new_loop = asyncio.new_event_loop()
             new_loop.run_until_complete(_send())
+        except Exception as exc:
+            logger.error("Trailing SL job failed to send broadcasts: %s", exc)
         finally:
             new_loop.close()
-    except Exception as exc:
-        logger.error("Trailing SL job failed to send broadcasts: %s", exc)
 
 
-# ── Background auto-scan job ──────────────────────────────────────────────────
+# ── WebSocket candle-close callback (replaces _run_auto_scan_job) ─────────────
 
-def _run_auto_scan_job(context_or_bot=None) -> None:
+async def on_candle_close(base_symbol: str, timeframe: str) -> None:
     """
-    APScheduler background job — runs every ``AUTO_SCAN_INTERVAL_SECONDS``
-    when ``_auto_scan_active`` is True.
+    Async callback fired by WebSocketManager every time a 5m candle closes.
 
-    For each symbol in ``AUTO_SCAN_PAIRS``:
-      • Checks both LONG and SHORT sides.
-      • Fetches live Binance candle data.
-      • Runs the full confluence engine.
-      • Broadcasts any qualifying signal to the Telegram channel.
+    Runs the full confluence engine for *base_symbol* and broadcasts any
+    qualifying signal to the Telegram channel.
     """
     if not _bot_state.auto_scan_active:
         return
 
-    signals_found: int = 0
-    pairs_scanned: int = 0
-    messages: list[str] = []
-
-    active_symbols = {sig.result.symbol for sig in risk_manager.active_signals}
-
-    logger.info("Auto-scan started — checking %d pairs.", len(_dynamic_pairs))
-
-    for base in _dynamic_pairs:
-        ccxt_symbol = _normalise_symbol(base)
-        symbol = ccxt_symbol.split("/")[0]
-
-        # Skip if a signal for this symbol is already active
-        if symbol in active_symbols:
-            logger.debug("Auto-scan skipping %s — signal already active.", symbol)
-            continue
-
-        for side in (Side.LONG, Side.SHORT):
-            try:
-                # Global guards
-                if _bot_state.news_freeze or news_calendar.is_high_impact_imminent():
-                    logger.info("Auto-scan paused — news freeze/imminent event.")
-                    return  # Stop the entire scan cycle until next interval
-
-                if not risk_manager.can_open_signal(side):
-                    logger.info(
-                        "Auto-scan: 3-pair cap reached for %s — skipping.", side.value
-                    )
-                    continue
-
-                candles = _fetch_binance_candles(ccxt_symbol, side)
-                pairs_scanned += 1
-
-                result = run_confluence_check(
-                    symbol=symbol,
-                    current_price=candles["price"],
-                    side=side,
-                    range_low=candles["range_low"],
-                    range_high=candles["range_high"],
-                    key_liquidity_level=candles["key_level"],
-                    five_min_candles=candles["5m"],
-                    daily_candles=candles["1D"],
-                    four_hour_candles=candles["4H"],
-                    news_in_window=news_calendar.is_high_impact_imminent(),
-                    stop_loss=candles["stop_loss"],
-                )
-
-                if result is not None:
-                    risk_manager.add_signal(result)
-                    messages.append(result.format_message())
-                    active_symbols.add(symbol)  # prevent duplicate on opposite side
-                    signals_found += 1
-                    logger.info(
-                        "Auto-scan signal: %s %s", symbol, side.value
-                    )
-
-                # Small delay to avoid Binance rate-limiting
-                time.sleep(1)
-
-            except Exception as exc:
-                logger.error(
-                    "Auto-scan error for %s %s: %s", symbol, side.value, exc
-                )
-
-    logger.info(
-        "Auto-scan complete: scanned %d pairs, generated %d signal(s).",
-        pairs_scanned,
-        signals_found,
-    )
-
-    if not messages:
+    if _bot_state.news_freeze or news_calendar.is_high_impact_imminent():
         return
 
-    # Broadcast all new signals from the background thread
-    async def _send() -> None:
-        async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
-            for text in messages:
-                try:
+    active_symbols = {sig.result.symbol for sig in risk_manager.active_signals}
+    if base_symbol in active_symbols:
+        logger.debug("on_candle_close: skipping %s — signal already active.", base_symbol)
+        return
+
+    if not market_data.has_sufficient_data(base_symbol):
+        logger.debug("on_candle_close: insufficient data for %s.", base_symbol)
+        return
+
+    price = market_data.get_price(base_symbol)
+    if price is None:
+        return
+
+    candles_5m_raw = market_data.get_candles(base_symbol, "5m")
+    candles_4h_raw = market_data.get_candles(base_symbol, "4h")
+    candles_1d_raw = market_data.get_candles(base_symbol, "1d")
+
+    def _to_candles(rows: list) -> list[CandleData]:
+        return [
+            CandleData(
+                open=row[1],
+                high=row[2],
+                low=row[3],
+                close=row[4],
+                volume=row[5],
+            )
+            for row in rows
+        ]
+
+    four_h_candles = _to_candles(candles_4h_raw)
+    daily_candles = _to_candles(candles_1d_raw)
+    five_m_candles = _to_candles(candles_5m_raw)
+
+    # range_low / range_high from last 10 4H candles
+    recent_4h = four_h_candles[-10:] if len(four_h_candles) >= 10 else four_h_candles
+    range_low = min(c.low for c in recent_4h) if recent_4h else price * 0.99
+    range_high = max(c.high for c in recent_4h) if recent_4h else price * 1.01
+
+    atr_proxy = (range_high - range_low) * 0.01
+
+    for side in (Side.LONG, Side.SHORT):
+        if not risk_manager.can_open_signal(side):
+            continue
+
+        recent_5m = five_m_candles[-10:] if len(five_m_candles) >= 10 else five_m_candles
+        if side == Side.LONG:
+            key_level = min(c.low for c in recent_5m) if recent_5m else price
+        else:
+            key_level = max(c.high for c in recent_5m) if recent_5m else price
+
+        stop_loss = (
+            key_level - atr_proxy if side == Side.LONG else key_level + atr_proxy
+        )
+
+        try:
+            result = run_confluence_check(
+                symbol=base_symbol,
+                current_price=price,
+                side=side,
+                range_low=range_low,
+                range_high=range_high,
+                key_liquidity_level=key_level,
+                five_min_candles=five_m_candles,
+                daily_candles=daily_candles,
+                four_hour_candles=four_h_candles,
+                news_in_window=news_calendar.is_high_impact_imminent(),
+                stop_loss=stop_loss,
+            )
+        except Exception as exc:
+            logger.error("on_candle_close confluence error for %s %s: %s", base_symbol, side.value, exc)
+            continue
+
+        if result is not None:
+            risk_manager.add_signal(result)
+            logger.info("WS signal: %s %s", base_symbol, side.value)
+            try:
+                async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
                     await bot.send_message(
                         chat_id=TELEGRAM_CHANNEL_ID,
-                        text=text,
+                        text=result.format_message(),
                         parse_mode="Markdown",
                     )
-                except Exception as exc:
-                    logger.error("Auto-scan broadcast error: %s", exc)
+            except Exception as exc:
+                logger.error("WS signal broadcast error for %s: %s", base_symbol, exc)
+            break  # one signal per symbol per candle close
 
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(_send())
-        else:
-            loop.run_until_complete(_send())
-    except RuntimeError:
-        new_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(new_loop)
-        try:
-            new_loop.run_until_complete(_send())
-        finally:
-            new_loop.close()
-    except Exception as exc:
-        logger.error("Auto-scan job failed to send broadcasts: %s", exc)
 
 async def cmd_close_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -716,9 +707,6 @@ def _normalise_symbol(raw: str) -> str:
     return f"{base}/{quote}:{quote}"
 
 
-# Module-level singleton — created once, reused for all Binance API calls
-_exchange = ccxt.binance({"options": {"defaultType": "future"}})
-
 # Dynamically populated list of USDT-M perpetual pairs (base symbols)
 _dynamic_pairs: list[str] = []
 
@@ -728,7 +716,7 @@ def fetch_binance_futures_pairs() -> list[str]:
     Fetch all active USDT-M perpetual futures pairs from Binance.
     Returns a list of base symbols like ['BTC', 'ETH', 'SOL', '1000PEPE', ...].
 
-    Uses the module-level _exchange (ccxt.binance) instance.
+    Uses ResilientExchange to load markets with retry and circuit breaker.
     Filters for:
     - Only USDT-settled contracts (quote = 'USDT', settle = 'USDT')
     - Only active/trading pairs (not delisted)
@@ -737,9 +725,9 @@ def fetch_binance_futures_pairs() -> list[str]:
     Falls back to config.AUTO_SCAN_PAIRS if fetch fails.
     """
     try:
-        _exchange.load_markets()
+        _resilient_exchange.load_markets()
         pairs = []
-        for _sym, market in _exchange.markets.items():
+        for _sym, market in _resilient_exchange.markets.items():
             if (
                 market.get("settle") == "USDT"
                 and market.get("quote") == "USDT"
@@ -788,9 +776,9 @@ def _fetch_binance_candles(symbol: str, side: Side) -> dict:
 
     # Fetch OHLCV for each required timeframe
     # CCXT returns [[timestamp, open, high, low, close, volume], ...]
-    raw_1d = _exchange.fetch_ohlcv(symbol, "1d", limit=30)
-    raw_4h = _exchange.fetch_ohlcv(symbol, "4h", limit=10)
-    raw_5m = _exchange.fetch_ohlcv(symbol, "5m", limit=50)
+    raw_1d = _resilient_exchange.fetch_ohlcv(symbol, "1d", limit=30)
+    raw_4h = _resilient_exchange.fetch_ohlcv(symbol, "4h", limit=10)
+    raw_5m = _resilient_exchange.fetch_ohlcv(symbol, "5m", limit=50)
 
     def _to_candles(rows: list) -> list[CandleData]:
         return [
@@ -815,7 +803,7 @@ def _fetch_binance_candles(symbol: str, side: Side) -> dict:
         )
 
     # Current price from ticker
-    ticker = _exchange.fetch_ticker(symbol)
+    ticker = _resilient_exchange.fetch_ticker(symbol)
     current_price = float(ticker["last"])
 
     # range_low / range_high from 4H recent swings (last 10 candles)
@@ -846,6 +834,37 @@ def _fetch_binance_candles(symbol: str, side: Side) -> dict:
         "1D": daily_candles,
         "4H": four_h_candles,
     }
+
+
+def _seed_historical_candles(symbols: list[str]) -> None:
+    """
+    REST-fetch initial candle history at startup to seed the WS ring buffers.
+
+    Fetches 1D (30), 4H (30), and 5m (50) candles for every pair so the
+    signal engine has enough data before the first WS events arrive.
+    """
+    total = len(symbols)
+    logger.info("Seeding historical candles for %d pairs…", total)
+    for idx, base in enumerate(symbols, 1):
+        ccxt_symbol = _normalise_symbol(base)
+        try:
+            for timeframe, limit in (("1d", 30), ("4h", 30), ("5m", 50)):
+                rows = _resilient_exchange.fetch_ohlcv(ccxt_symbol, timeframe, limit=limit)
+                for row in rows:
+                    market_data.update_candle(base, timeframe, row)
+            # Seed price from last 5m close
+            rows_5m = market_data.get_candles(base, "5m")
+            if rows_5m:
+                market_data.set_price(base, float(rows_5m[-1][4]))
+        except Exception as exc:
+            logger.warning("Seed failed for %s: %s", base, exc)
+
+        if idx % 50 == 0:
+            logger.info("Seeded %d/%d pairs…", idx, total)
+
+        time.sleep(0.5)  # respect Binance rate limits
+
+    logger.info("Historical candle seeding complete.")
 
 
 async def cmd_pairs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -976,13 +995,25 @@ async def cmd_backtest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 def build_application() -> Application:
     """Create and configure the Telegram bot application."""
-    global _dynamic_pairs
+    global _dynamic_pairs, _main_loop
     if not TELEGRAM_BOT_TOKEN:
         raise EnvironmentError(
             "TELEGRAM_BOT_TOKEN environment variable is not set."
         )
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    # Define post_init callback before building the app
+    async def _post_init(application: Application) -> None:
+        global _main_loop
+        _main_loop = asyncio.get_event_loop()
+        await ws_manager.start(_dynamic_pairs, on_candle_close)
+        logger.info("WebSocket manager started for %d pairs.", len(_dynamic_pairs))
+
+    app = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .post_init(_post_init)
+        .build()
+    )
     app.add_handler(CommandHandler("signal_gen", cmd_signal_gen))
     app.add_handler(CommandHandler("move_be", cmd_move_be))
     app.add_handler(CommandHandler("trail_sl", cmd_trail_sl))
@@ -995,6 +1026,9 @@ def build_application() -> Application:
 
     # Fetch Binance USDT-M perpetual pairs dynamically at startup
     _refresh_dynamic_pairs()
+
+    # Seed historical candle buffers via REST so signal engine has data on boot
+    _seed_historical_candles(_dynamic_pairs)
 
     # Wire live news calendar — fetch immediately then refresh every 30 minutes
     fetch_and_reload(news_calendar)   # first fetch at startup (blocking, fast)
@@ -1016,15 +1050,6 @@ def build_application() -> Application:
         replace_existing=True,
     )
 
-    # Auto-scan job — active only when _auto_scan_active is True
-    _scheduler.add_job(
-        _run_auto_scan_job,
-        "interval",
-        seconds=AUTO_SCAN_INTERVAL_SECONDS,
-        id="auto_scan",
-        replace_existing=True,
-    )
-
     # Pairs refresh — re-fetch active Binance USDT-M pairs every 6 hours
     _scheduler.add_job(
         _refresh_dynamic_pairs,
@@ -1034,9 +1059,29 @@ def build_application() -> Application:
         replace_existing=True,
     )
 
+    # Refresh 1D candles every 6 hours to keep daily buffers current
+    def _refresh_daily_candles() -> None:
+        for base in _dynamic_pairs:
+            ccxt_symbol = _normalise_symbol(base)
+            try:
+                rows = _resilient_exchange.fetch_ohlcv(ccxt_symbol, "1d", limit=30)
+                for row in rows:
+                    market_data.update_candle(base, "1d", row)
+            except Exception as exc:
+                logger.warning("1D refresh failed for %s: %s", base, exc)
+            time.sleep(0.5)
+
+    _scheduler.add_job(
+        _refresh_daily_candles,
+        "interval",
+        hours=6,
+        id="daily_candles_refresh",
+        replace_existing=True,
+    )
+
     if not _scheduler.running:
         _scheduler.start()
-        logger.info("News calendar scheduler started (30-min refresh).")
+        logger.info("Scheduler started.")
 
     return app
 
