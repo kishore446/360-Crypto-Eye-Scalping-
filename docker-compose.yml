@@ -1,19 +1,73 @@
-version: "3.9"
 services:
   bot:
     build: .
+    container_name: 360eye-bot
     env_file: .env
-    restart: unless-stopped
+    restart: always
     volumes:
-      - ./data:/app/data
+      - bot-data:/app/data
     command: python main.py
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.5"
+        reservations:
+          memory: 256M
+          cpus: "0.25"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, time; stat = os.path.getmtime('/app/data/heartbeat') if os.path.exists('/app/data/heartbeat') else 0; exit(0 if time.time() - stat < 300 else 1)"]
+      interval: 60s
+      timeout: 10s
+      start_period: 180s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    networks:
+      - botnet
 
   webhook:
     build: .
+    container_name: 360eye-webhook
     env_file: .env
-    restart: unless-stopped
+    restart: always
     ports:
       - "5000:5000"
     volumes:
-      - ./data:/app/data
-    command: gunicorn "bot.webhook:create_app()" --bind 0.0.0.0:5000 --workers 2
+      - bot-data:/app/data
+    command: gunicorn "bot.webhook:create_app()" --bind 0.0.0.0:5000 --workers 2 --timeout 120
+    depends_on:
+      bot:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+        reservations:
+          memory: 128M
+          cpus: "0.1"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    networks:
+      - botnet
+
+volumes:
+  bot-data:
+    driver: local
+
+networks:
+  botnet:
+    driver: bridge
