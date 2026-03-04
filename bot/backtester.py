@@ -547,25 +547,26 @@ class Backtester:
         equity = self.initial_capital
         equity_curve: list[float] = [equity]
 
-        # Number of 5m candles per higher-timeframe candle (approximate)
-        _5m_per_4h = 48   # 4 h × 12 candles/h
-        _5m_per_1d = 288  # 24 h × 12 candles/h
-
         open_trade: Optional[_OpenTrade] = None
 
         n5m = len(self._5m)
+        n4h = len(self._4h)
+        n1d = len(self._1d)
 
         for idx in range(_MIN_5M, n5m):
-            # ── Compute HTF window tails from 5m bar position ────────
-            i4h = _htf_window_tail(idx, _5m_per_4h, len(self._4h))
-            i1d = _htf_window_tail(idx, _5m_per_1d, len(self._1d))
+            # ── Compute HTF window tails proportionally ──────────────
+            # Map the current 5m position to the same relative position
+            # in the independently-fetched 4H and 1D arrays.
+            progress = idx / n5m
+            i4h = min(int(progress * n4h), n4h)
+            i1d = min(int(progress * n1d), n1d)
 
             # Build sliding windows
             win_5m = self._5m[max(0, idx - _5M_WINDOW): idx]
             win_4h = self._4h[max(0, i4h - _4H_WINDOW): i4h]
             win_1d = self._1d[max(0, i1d - _1D_WINDOW): i1d]
 
-            if len(win_5m) < _MIN_5M or len(win_4h) < 2 or len(win_1d) < 2:
+            if len(win_5m) < _MIN_5M or len(win_4h) < 2 or len(win_1d) < 20:
                 continue
 
             current_candle = self._5m[idx]

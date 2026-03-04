@@ -632,8 +632,8 @@ class TestBacktester:
 
     def test_range_derived_from_4h_candles(self) -> None:
         """run() must pass range_low/range_high from 4H candles, not 5m candles."""
-        # Need enough 5m bars so that the 1D window tail reaches at least 2.
-        # _5m_per_1d = 288, so idx >= 2*288 = 576 is required; use 600 bars.
+        # With proportional mapping and the win_1d >= 20 guard, calls start at
+        # roughly 67% through the 5m array (when i1d reaches 20 of 30 daily bars).
         # 5m candles are tightly clustered around 100; 4H candles span 50–200.
         five_min = _flat_candles(600, price=100.0)
         four_hour = [
@@ -662,6 +662,94 @@ class TestBacktester:
         # Range must come from 4H candles (low=50, high=200), not 5m (≈99.99–100.01)
         assert call["range_low"] == pytest.approx(50.0)
         assert call["range_high"] == pytest.approx(200.0)
+
+    def test_proportional_htf_mapping_calls_at_correct_progress(self) -> None:
+        """With proportional mapping, run_confluence_check is first called when
+        the 1D window has >= 20 candles — not based on fixed bar-count ratios."""
+        # 300 5m, 15 4H, 30 1D candles.  With proportional mapping:
+        #   i1d = int(idx / 300 * 30) reaches 20 when idx / 300 >= 2/3, i.e. idx >= 200.
+        # The old fixed-ratio code would require idx >= 20*288 = 5760, which is
+        # far beyond 300 — so the old code would produce 0 calls with this data.
+        five_min = _flat_candles(300, price=100.0)
+        four_hour = _flat_candles(15, price=100.0)
+        daily = _flat_candles(30, price=100.0)
+
+        with patch("bot.backtester.run_confluence_check", return_value=None) as mock_fn:
+            bt = Backtester(
+                symbol="BTC/USDT:USDT",
+                five_min_candles=five_min,
+                four_hour_candles=four_hour,
+                daily_candles=daily,
+            )
+            bt.run()
+            call_count = mock_fn.call_count
+
+        # Proportional mapping: calls start near idx=200 (2/3 through 300 bars).
+        # Old fixed-ratio code would never reach i1d=20 in only 300 5m bars.
+        assert call_count > 0, (
+            "run_confluence_check was never called — proportional mapping is broken"
+        )
+
+    def test_win_1d_guard_skips_when_fewer_than_20_daily_candles(self) -> None:
+        """Iterations where win_1d has fewer than 20 candles must be skipped."""
+        # Use enough 5m and 4H candles but only 19 daily candles total.
+        # With proportional mapping, i1d can never exceed 19, so win_1d never
+        # reaches 20 → every iteration is skipped → no calls to run_confluence_check.
+        five_min = _flat_candles(300, price=100.0)
+        four_hour = _flat_candles(15, price=100.0)
+        daily = _flat_candles(19, price=100.0)  # < 20 daily candles
+
+        with patch("bot.backtester.run_confluence_check") as mock_fn:
+            bt = Backtester(
+                symbol="BTC/USDT:USDT",
+                five_min_candles=five_min,
+                four_hour_candles=four_hour,
+                daily_candles=daily,
+            )
+            result = bt.run()
+
+        mock_fn.assert_not_called()
+        assert result.total_trades == 0
+
+    def test_produces_trades_when_signal_returns_non_none(self) -> None:
+        """When run_confluence_check returns a valid signal, a trade is recorded."""
+        from bot.signal_engine import Confidence, SignalResult
+
+        five_min = _flat_candles(300, price=100.0)
+        four_hour = _flat_candles(15, price=100.0)
+        # 30 daily candles so proportional mapping reaches i1d=20 at idx~200
+        daily = _flat_candles(30, price=100.0)
+
+        mock_signal = SignalResult(
+            symbol="BTC",
+            side=Side.LONG,
+            confidence=Confidence.HIGH,
+            entry_low=99.9,
+            entry_high=100.1,
+            tp1=102.0,
+            tp2=104.0,
+            tp3=107.0,
+            stop_loss=98.0,
+            structure_note="test",
+            context_note="test",
+            leverage_min=5,
+            leverage_max=10,
+            signal_id="TEST-1",
+        )
+
+        # Return the signal exactly once, then None for all subsequent calls
+        call_results = iter([mock_signal] + [None] * 10_000)
+
+        with patch("bot.backtester.run_confluence_check", side_effect=call_results):
+            bt = Backtester(
+                symbol="BTC/USDT:USDT",
+                five_min_candles=five_min,
+                four_hour_candles=four_hour,
+                daily_candles=daily,
+            )
+            result = bt.run()
+
+        assert result.total_trades >= 1
 
 
 # ── _build_result tests ───────────────────────────────────────────────────────
