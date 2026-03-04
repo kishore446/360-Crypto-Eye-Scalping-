@@ -17,7 +17,7 @@ Entry is only taken when ALL four confluence checks pass:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
@@ -30,6 +30,7 @@ class Side(str, Enum):
 class Confidence(str, Enum):
     HIGH = "High"
     MEDIUM = "Medium"
+    LOW = "Low"
 
 
 @dataclass
@@ -60,6 +61,7 @@ class SignalResult:
     context_note: str
     leverage_min: int
     leverage_max: int
+    signal_id: str = field(default="")
 
     def format_message(self) -> str:
         """Return the standardised Telegram broadcast message."""
@@ -148,6 +150,7 @@ def detect_liquidity_sweep(
 def detect_market_structure_shift(
     candles: list[CandleData],
     side: Side,
+    min_displacement_pct: float = 0.0,
 ) -> bool:
     """
     Detect a 5m Market Structure Shift (MSS) / Change of Character (ChoCh).
@@ -163,6 +166,9 @@ def detect_market_structure_shift(
         5-minute OHLCV candles (most-recent last).  Minimum 3 required.
     side:
         Direction of the anticipated trade.
+    min_displacement_pct:
+        Optional minimum displacement from the swing level (as a percentage).
+        When > 0, the break must exceed this percentage move to qualify.
     """
     if len(candles) < 3:
         return False
@@ -173,10 +179,22 @@ def detect_market_structure_shift(
 
     if side == Side.LONG:
         swing_high = max(c.high for c in prior_candles)
-        return last.close > swing_high and last.volume > avg_vol
+        if not (last.close > swing_high and last.volume > avg_vol):
+            return False
+        if min_displacement_pct > 0 and swing_high > 0:
+            displacement = abs(last.close - swing_high) / swing_high
+            if displacement < min_displacement_pct / 100:
+                return False
+        return True
     else:
         swing_low = min(c.low for c in prior_candles)
-        return last.close < swing_low and last.volume > avg_vol
+        if not (last.close < swing_low and last.volume > avg_vol):
+            return False
+        if min_displacement_pct > 0 and swing_low > 0:
+            displacement = abs(last.close - swing_low) / swing_low
+            if displacement < min_displacement_pct / 100:
+                return False
+        return True
 
 
 def assess_macro_bias(
@@ -251,6 +269,74 @@ def calculate_targets(
     return tp1, tp2, tp3
 
 
+def calculate_atr(candles: list[CandleData], period: int = 14) -> float:
+    """
+    Calculate the Average True Range (ATR) over *period* candles.
+    Returns 0.0 if insufficient data.
+    """
+    if len(candles) < 2:
+        return 0.0
+    true_ranges = []
+    for i in range(1, len(candles)):
+        high = candles[i].high
+        low = candles[i].low
+        prev_close = candles[i - 1].close
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        true_ranges.append(tr)
+    if not true_ranges:
+        return 0.0
+    window = true_ranges[-period:] if len(true_ranges) >= period else true_ranges
+    return sum(window) / len(window)
+
+
+def detect_fair_value_gap(candles: list[CandleData], side: Side) -> bool:
+    """
+    Detect a Fair Value Gap (FVG) in the last three candles.
+
+    A bullish FVG exists when candle[i].low > candle[i-2].high
+    (gap between candle i-2's high and candle i's low, with a large middle candle).
+    A bearish FVG exists when candle[i].high < candle[i-2].low.
+    """
+    if len(candles) < 3:
+        return False
+    c0 = candles[-3]
+    c2 = candles[-1]
+    if side == Side.LONG:
+        return c2.low > c0.high
+    else:
+        return c2.high < c0.low
+
+
+def detect_order_block(candles: list[CandleData], side: Side) -> bool:
+    """
+    Detect an Order Block — the last opposing candle before an impulse move.
+
+    For LONG: look for the last bearish candle (close < open) before a
+    sequence of bullish candles.
+    For SHORT: look for the last bullish candle (close > open) before a
+    sequence of bearish candles.
+
+    Returns True if an order block exists within the last 10 candles.
+    """
+    if len(candles) < 3:
+        return False
+    window = candles[-10:]
+    if side == Side.LONG:
+        # Find last bearish candle followed by a bullish impulse
+        for i in range(len(window) - 2, 0, -1):
+            if window[i].close < window[i].open:  # bearish
+                # Check that subsequent candles are bullish
+                if window[i + 1].close > window[i + 1].open:
+                    return True
+    else:
+        # Find last bullish candle followed by a bearish impulse
+        for i in range(len(window) - 2, 0, -1):
+            if window[i].close > window[i].open:  # bullish
+                if window[i + 1].close < window[i + 1].open:
+                    return True
+    return False
+
+
 def run_confluence_check(
     symbol: str,
     current_price: float,
@@ -267,6 +353,11 @@ def run_confluence_check(
     context_note: str = "",
     leverage_min: int = 10,
     leverage_max: int = 20,
+    tp1_rr: float = 1.5,
+    tp2_rr: float = 2.5,
+    tp3_rr: float = 4.0,
+    check_fvg: bool = False,
+    check_order_block: bool = False,
 ) -> Optional[SignalResult]:
     """
     Run all four confluence gates and return a :class:`SignalResult` when
@@ -279,6 +370,8 @@ def run_confluence_check(
     ③ A liquidity sweep has occurred at *key_liquidity_level*.
     ④ A 5m MSS / ChoCh with volume is confirmed.
     ⑤ No high-impact news event is imminent (*news_in_window* is False).
+    ⑥ (Optional) Fair Value Gap present.
+    ⑦ (Optional) Order Block present.
     """
     # Gate ⑤ — news blackout
     if news_in_window:
@@ -303,12 +396,24 @@ def run_confluence_check(
     if not detect_market_structure_shift(five_min_candles, side):
         return None
 
+    # Gate ⑥ — optional FVG check
+    if check_fvg and not detect_fair_value_gap(five_min_candles, side):
+        return None
+
+    # Gate ⑦ — optional Order Block check
+    if check_order_block and not detect_order_block(five_min_candles, side):
+        return None
+
     # All gates passed — build signal
-    entry_spread = abs(current_price * 0.001)  # 0.1 % tight entry zone
+    atr = calculate_atr(five_min_candles)
+    if atr > 0:
+        entry_spread = atr * 0.5
+    else:
+        entry_spread = abs(current_price * 0.001)  # 0.1 % tight entry zone fallback
     entry_low = current_price - entry_spread
     entry_high = current_price + entry_spread
 
-    tp1, tp2, tp3 = calculate_targets(current_price, stop_loss, side)
+    tp1, tp2, tp3 = calculate_targets(current_price, stop_loss, side, tp1_rr, tp2_rr, tp3_rr)
 
     # High confidence when the 4H direction agrees with the signal side
     if len(four_hour_candles) >= 2:
@@ -317,6 +422,9 @@ def run_confluence_check(
     else:
         direction_match = False
     confidence = Confidence.HIGH if direction_match else Confidence.MEDIUM
+
+    from bot.logging_config import generate_signal_id
+    sig_id = generate_signal_id()
 
     return SignalResult(
         symbol=symbol,
@@ -332,4 +440,5 @@ def run_confluence_check(
         context_note=context_note or f"{symbol} structure aligned with higher timeframe bias.",
         leverage_min=leverage_min,
         leverage_max=leverage_max,
+        signal_id=sig_id,
     )

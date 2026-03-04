@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -79,6 +80,7 @@ class RiskManager:
 
     def __init__(self) -> None:
         self._signals: list[ActiveSignal] = []
+        self._lock = threading.Lock()
         self._load()
 
     # ── persistence ───────────────────────────────────────────────────────────
@@ -178,7 +180,8 @@ class RiskManager:
                 f"{result.side.value} signals."
             )
         active = ActiveSignal(result=result)
-        self._signals.append(active)
+        with self._lock:
+            self._signals.append(active)
         self._save()
         return active
 
@@ -192,7 +195,10 @@ class RiskManager:
         messages: list[str] = []
         now = time.time()
 
-        for signal in self._signals:
+        with self._lock:
+            signals_snapshot = list(self._signals)
+
+        for signal in signals_snapshot:
             if signal.closed:
                 continue
             sym = signal.result.symbol
@@ -222,21 +228,24 @@ class RiskManager:
 
     def close_signal(self, symbol: str, reason: str = "manual") -> bool:
         """Close the first open signal matching *symbol*. Returns True on success."""
-        for signal in self._signals:
-            if not signal.closed and signal.result.symbol == symbol:
-                signal.close(reason)
-                self._save()
-                return True
+        with self._lock:
+            for signal in self._signals:
+                if not signal.closed and signal.result.symbol == symbol:
+                    signal.close(reason)
+                    self._save()
+                    return True
         return False
 
     @property
     def active_signals(self) -> list[ActiveSignal]:
         """Return all signals that have not yet been closed."""
-        return [s for s in self._signals if not s.closed]
+        with self._lock:
+            return [s for s in self._signals if not s.closed]
 
     @property
     def all_signals(self) -> list[ActiveSignal]:
-        return list(self._signals)
+        with self._lock:
+            return list(self._signals)
 
 
 def calculate_position_size(
