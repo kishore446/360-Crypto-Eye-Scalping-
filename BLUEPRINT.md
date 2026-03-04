@@ -37,6 +37,7 @@
 - [§8 — Testing Standards](#8--testing-standards)
 - [§9 — File Tree (Canonical)](#9--file-tree-canonical)
 - [§10 — Coding Standards & Conventions](#10--coding-standards--conventions)
+- [§11 — Backtesting Framework](#11--backtesting-framework)
 
 ---
 
@@ -1674,3 +1675,149 @@ refactor: extract exchange module from bot.py
 *End of Blueprint — version `2.0.0-institutional`*  
 *Maintained by the 360 Crypto Eye development team.*  
 *If code behaviour differs from this document, the code must be corrected to match.*
+
+---
+
+## §11 — Backtesting Framework
+
+### §11.1 Overview
+
+The backtesting framework replays historical candle data through the **exact same** 7-gate confluence engine (`bot/signal_engine.py`) used in production. It simulates the full signal lifecycle — entry, BE trigger, trailing SL, stale close, and TP hits — and produces institutional-grade performance reports.
+
+**Zero-divergence guarantee**: the backtester imports and calls `run_confluence_check()` and all helper functions directly from `bot/signal_engine.py`. No logic is duplicated or modified.
+
+### §11.2 Files
+
+| File | Purpose |
+|---|---|
+| `bot/backtester.py` | Core engine: `HistoricalDataFetcher`, `SimulatedTrade`, `Backtester`, `BacktestResult` |
+| `bot/backtest_cli.py` | Command-line interface |
+| `tests/test_backtester.py` | 44 unit / integration tests |
+
+### §11.3 `bot/backtester.py`
+
+#### §11.3.1 `HistoricalDataFetcher`
+
+```python
+class HistoricalDataFetcher:
+    def __init__(self, exchange=None, sleep_seconds=0.5): ...
+    def fetch(self, symbol, timeframe, since_ms, until_ms) -> list[CandleData]: ...
+```
+
+Paginates through Binance OHLCV history using CCXT (max 1 000 candles/request).
+Rate-limited with `sleep_seconds` pause between pages.
+
+#### §11.3.2 `SimulatedTrade` dataclass
+
+Fields: `signal_id`, `symbol`, `side`, `confidence`, `entry_price`, `stop_loss`, `tp1`, `tp2`, `tp3`, `opened_at`, `closed_at`, `close_reason`, `pnl_pct`, `be_triggered`, `max_favorable_excursion`, `max_adverse_excursion`, `bars_held`.
+
+`close_reason` is one of: `"TP1"`, `"TP2"`, `"TP3"`, `"SL"`, `"BE"`, `"STALE"`.
+
+#### §11.3.3 `Backtester`
+
+```python
+class Backtester:
+    def __init__(
+        self,
+        symbol: str,
+        five_min_candles: list[CandleData],
+        four_hour_candles: list[CandleData],
+        daily_candles: list[CandleData],
+        be_trigger_fraction: float = 0.50,
+        stale_hours: float = 4.0,
+        tp1_rr: float = 1.5,
+        tp2_rr: float = 2.5,
+        tp3_rr: float = 4.0,
+        initial_capital: float = 10_000.0,
+        risk_per_trade: float = 0.01,
+        check_fvg: bool = False,
+        check_order_block: bool = False,
+    ): ...
+
+    def run(self) -> BacktestResult: ...
+```
+
+Walk-forward replay with sliding windows (50 × 5m, 15 × 4H, 25 × 1D).
+
+**Exit priority** (conservative simulation):
+1. Stop-loss (worst-case — SL + TP same candle → SL wins).
+2. TP3 → TP2 → TP1.
+3. Break-even trigger (price covers `be_trigger_fraction` of TP1 distance).
+4. Stale close after `stale_hours` × 12 bars.
+
+Capital is compounded: risk % applied to current equity, not initial.
+
+#### §11.3.4 `BacktestResult` dataclass
+
+Key fields:
+- `total_trades`, `wins`, `losses`, `break_evens`, `stale_closes`
+- `win_rate`, `profit_factor`, `sharpe_ratio`
+- `max_drawdown_pct`, `max_drawdown_duration`, `calmar_ratio`
+- `avg_win_pct`, `avg_loss_pct`, `largest_win_pct`, `largest_loss_pct`
+- `avg_holding_time`, `max_consecutive_wins`, `max_consecutive_losses`
+- `equity_curve`, `monthly_returns`
+- `long_trades`, `short_trades`, `long_win_rate`, `short_win_rate`
+
+Methods:
+- `summary() -> str` — one-line metrics string
+- `print_report()` — formatted console report with go-live threshold indicators
+- `to_csv(filepath: str)` — exports all trades to CSV
+
+#### §11.3.5 Go-live Thresholds
+
+| Check | Threshold |
+|---|---|
+| Minimum trades | ≥ 30 |
+| Win rate | ≥ 50% |
+| Profit factor | ≥ 1.5 |
+| Max drawdown | ≤ 20% |
+| Sharpe ratio | ≥ 1.0 |
+
+All five checks must pass for the `print_report()` verdict to show **READY FOR LIVE DEPLOYMENT**.
+
+### §11.4 `bot/backtest_cli.py`
+
+```bash
+python -m bot.backtest_cli --symbol BTCUSDT --start 2024-01-01 --end 2024-04-01
+python -m bot.backtest_cli --multi BTCUSDT ETHUSDT --start 2024-01-01 --export results/
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--symbol SYM` | — | Single symbol (mutually exclusive with `--multi`) |
+| `--multi SYM [SYM …]` | — | Multiple symbols |
+| `--start YYYY-MM-DD` | required | Backtest start date (UTC) |
+| `--end YYYY-MM-DD` | today | Backtest end date (UTC) |
+| `--capital USDT` | 10 000 | Initial capital |
+| `--risk FRAC` | 0.01 | Risk fraction per trade |
+| `--tp1-rr RR` | 1.5 | TP1 risk-reward ratio |
+| `--tp2-rr RR` | 2.5 | TP2 risk-reward ratio |
+| `--tp3-rr RR` | 4.0 | TP3 risk-reward ratio |
+| `--no-fvg` | off | Disable FVG gate (Gate ⑥) |
+| `--no-ob` | off | Disable Order Block gate (Gate ⑦) |
+| `--export DIR` | — | Export CSV results to directory |
+| `--quiet` | off | Print one-line summary only |
+
+### §11.5 Telegram `/backtest` Command
+
+```
+/backtest SYMBOL START [END]
+```
+
+Admin-only. Runs the backtest in a thread pool via `run_in_executor` (non-blocking). Sends `⏳ Running backtest …` first, then sends the formatted performance report.
+
+Example:
+```
+/backtest BTCUSDT 2024-01-01 2024-04-01
+```
+
+Reply includes: trade count, win/loss/BE/stale breakdown, win rate, profit factor, Sharpe, max drawdown, Calmar, equity change, and go-live checks.
+
+### §11.6 Design Principles
+
+1. **Zero divergence** — imports real `run_confluence_check()` from `bot/signal_engine.py`.
+2. **Conservative simulation** — SL + TP same candle → SL wins; entry at midpoint of entry zone.
+3. **Sliding windows** — same sizes as live engine (50 × 5m, 15 × 4H, 25 × 1D).
+4. **Compounding capital** — risk % of current equity, not initial.
+5. **Rate limiting** — configurable sleep between Binance pagination requests.
+6. **No new dependencies** — uses stdlib `csv`, `argparse`, `datetime`, `statistics`, `math` plus existing `ccxt`.

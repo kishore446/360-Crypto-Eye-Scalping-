@@ -33,6 +33,7 @@ from telegram.ext import (
     ContextTypes,
 )
 
+from bot.backtester import Backtester, HistoricalDataFetcher
 from bot.dashboard import Dashboard, TradeResult
 from bot.news_fetcher import fetch_and_reload
 from bot.news_filter import NewsCalendar
@@ -863,6 +864,114 @@ async def cmd_pairs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _reply(update, msg)
 
 
+async def cmd_backtest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /backtest SYMBOL START [END]
+
+    Admin-only: run a historical backtest for *SYMBOL* over the given date
+    range and reply with the performance report.
+
+    START and END must be in YYYY-MM-DD format.  END defaults to today.
+
+    Example:
+        /backtest BTCUSDT 2024-01-01 2024-04-01
+    """
+    if not _is_admin(update):
+        await _reply(update, "⛔ Admin only.")
+        return
+
+    args = context.args or []
+    if len(args) < 2:
+        await _reply(update, "Usage: `/backtest SYMBOL START [END]`\nExample: `/backtest BTCUSDT 2024-01-01 2024-04-01`")
+        return
+
+    raw_symbol = args[0].upper()
+    ccxt_symbol = _normalise_symbol(raw_symbol)
+    base_symbol = ccxt_symbol.split("/")[0]
+
+    from datetime import datetime, timezone
+
+    try:
+        start_dt = datetime.strptime(args[1], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        await _reply(update, "⚠️ START must be YYYY-MM-DD.")
+        return
+
+    if len(args) >= 3:
+        try:
+            end_dt = datetime.strptime(args[2], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            await _reply(update, "⚠️ END must be YYYY-MM-DD.")
+            return
+    else:
+        end_dt = datetime.now(tz=timezone.utc)
+
+    await _reply(update, f"⏳ Running backtest for `{raw_symbol}` from `{args[1]}` to `{end_dt.strftime('%Y-%m-%d')}` …")
+
+    def _run_backtest() -> str:
+        """Blocking backtest — called via run_in_executor."""
+        since_ms = int(start_dt.timestamp() * 1000)
+        until_ms = int(end_dt.timestamp() * 1000)
+        fetcher = HistoricalDataFetcher()
+        try:
+            candles_5m = fetcher.fetch(ccxt_symbol, "5m", since_ms, until_ms)
+            candles_4h = fetcher.fetch(ccxt_symbol, "4h", since_ms, until_ms)
+            candles_1d = fetcher.fetch(ccxt_symbol, "1d", since_ms, until_ms)
+        except Exception as exc:  # noqa: BLE001
+            return f"❌ Failed to fetch data: {exc}"
+
+        if len(candles_5m) < 50 or len(candles_4h) < 2 or len(candles_1d) < 20:
+            return (
+                f"⚠️ Insufficient historical data for `{raw_symbol}`: "
+                f"5m={len(candles_5m)}, 4H={len(candles_4h)}, 1D={len(candles_1d)}"
+            )
+
+        bt = Backtester(
+            symbol=ccxt_symbol,
+            five_min_candles=candles_5m,
+            four_hour_candles=candles_4h,
+            daily_candles=candles_1d,
+        )
+        result = bt.run()
+
+        checks = [
+            ("Trades ≥ 30", result.total_trades >= 30),
+            ("Win rate ≥ 50%", result.win_rate >= 0.50),
+            ("Profit factor ≥ 1.5", result.profit_factor >= 1.5),
+            ("Max DD ≤ 20%", result.max_drawdown_pct <= 20.0),
+            ("Sharpe ≥ 1.0", result.sharpe_ratio >= 1.0),
+        ]
+        check_lines = "\n".join(
+            f"{'✅' if ok else '❌'} {name}" for name, ok in checks
+        )
+        all_pass = all(ok for _, ok in checks)
+        verdict = "✅ READY FOR LIVE DEPLOYMENT" if all_pass else "❌ NOT READY — review metrics"
+
+        return (
+            f"📊 *Backtest Results — #{base_symbol}/USDT*\n"
+            f"Period: `{args[1]}` → `{end_dt.strftime('%Y-%m-%d')}`\n\n"
+            f"Trades: {result.total_trades} "
+            f"(W:{result.wins} L:{result.losses} BE:{result.break_evens} S:{result.stale_closes})\n"
+            f"Win Rate: `{result.win_rate:.1%}`\n"
+            f"Profit Factor: `{result.profit_factor:.2f}`\n"
+            f"Sharpe: `{result.sharpe_ratio:.2f}`\n"
+            f"Max Drawdown: `{result.max_drawdown_pct:.1f}%`\n"
+            f"Calmar: `{result.calmar_ratio:.2f}`\n"
+            f"Equity: `{result.initial_capital:,.0f}` → `{result.final_equity:,.2f}` USDT\n\n"
+            f"*Go-live checks:*\n{check_lines}\n\n"
+            f"*Verdict:* {verdict}"
+        )
+
+    loop = asyncio.get_event_loop()
+    try:
+        report = await loop.run_in_executor(None, _run_backtest)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Backtest error for %s: %s", raw_symbol, exc)
+        report = f"❌ Backtest failed: {exc}"
+
+    await _reply(update, report)
+
+
 # ── Application bootstrap ─────────────────────────────────────────────────────
 
 def build_application() -> Application:
@@ -882,6 +991,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("risk_calc", cmd_risk_calc))
     app.add_handler(CommandHandler("close_signal", cmd_close_signal))
     app.add_handler(CommandHandler("pairs", cmd_pairs))
+    app.add_handler(CommandHandler("backtest", cmd_backtest))
 
     # Fetch Binance USDT-M perpetual pairs dynamically at startup
     _refresh_dynamic_pairs()
