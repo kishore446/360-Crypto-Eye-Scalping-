@@ -42,6 +42,7 @@ from bot.signal_engine import (
     Side,
     run_confluence_check,
 )
+from bot.state import BotState
 from config import (
     ADMIN_CHAT_ID,
     AUTO_SCAN_INTERVAL_SECONDS,
@@ -61,14 +62,8 @@ dashboard = Dashboard()
 # Background scheduler — refreshes the news calendar every 30 minutes
 _scheduler = BackgroundScheduler(daemon=True)
 
-# When True, /news_caution has frozen new-signal generation
-_news_freeze: bool = False
-
-# When True, auto-trailing is active for open signals
-_trail_active: bool = False
-
-# When True, the background auto-scanner is active
-_auto_scan_active: bool = False
+# Thread-safe bot state singleton
+_bot_state = BotState()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -107,8 +102,7 @@ async def cmd_signal_gen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _reply(update, "⛔ Admin only.")
         return
 
-    global _news_freeze
-    if _news_freeze:
+    if _bot_state.news_freeze:
         await _reply(update, "⚠️ Signal generation is currently *frozen* due to news caution mode.")
         return
 
@@ -232,9 +226,8 @@ async def cmd_trail_sl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await _reply(update, "⛔ Admin only.")
         return
 
-    global _trail_active
-    _trail_active = not _trail_active
-    state = "ACTIVATED ✅" if _trail_active else "DEACTIVATED ❌"
+    _bot_state.trail_active = not _bot_state.trail_active
+    state = "ACTIVATED ✅" if _bot_state.trail_active else "DEACTIVATED ❌"
     msg = f"📈 Auto-Trailing SL is now *{state}*."
     await _broadcast(context, msg)
     await _reply(update, msg)
@@ -251,10 +244,9 @@ async def cmd_auto_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _reply(update, "⛔ Admin only.")
         return
 
-    global _auto_scan_active
-    _auto_scan_active = not _auto_scan_active
+    _bot_state.auto_scan_active = not _bot_state.auto_scan_active
 
-    if _auto_scan_active:
+    if _bot_state.auto_scan_active:
         msg = (
             f"🔍 Auto-Scanner ACTIVATED ✅ — scanning {len(AUTO_SCAN_PAIRS)} pairs "
             f"every {AUTO_SCAN_INTERVAL_SECONDS}s."
@@ -279,10 +271,9 @@ async def cmd_news_caution(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await _reply(update, "⛔ Admin only.")
         return
 
-    global _news_freeze
-    _news_freeze = not _news_freeze
+    _bot_state.news_freeze = not _bot_state.news_freeze
 
-    if _news_freeze:
+    if _bot_state.news_freeze:
         active_list = "\n".join(
             f"  • #{s.result.symbol}/USDT {s.result.side.value}"
             for s in risk_manager.active_signals
@@ -356,7 +347,7 @@ def _run_trailing_sl_job(context_or_bot=None) -> None:
 
     Broadcasts a Telegram message for each SL update.
     """
-    if not _trail_active:
+    if not _bot_state.trail_active:
         return
 
     updates: list[str] = []
@@ -420,7 +411,18 @@ def _run_trailing_sl_job(context_or_bot=None) -> None:
                     logger.error("Trailing SL broadcast error: %s", exc)
 
     try:
-        asyncio.run(_send())
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(_send())
+        else:
+            loop.run_until_complete(_send())
+    except RuntimeError:
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(_send())
+        finally:
+            new_loop.close()
     except Exception as exc:
         logger.error("Trailing SL job failed to send broadcasts: %s", exc)
 
@@ -438,7 +440,7 @@ def _run_auto_scan_job(context_or_bot=None) -> None:
       • Runs the full confluence engine.
       • Broadcasts any qualifying signal to the Telegram channel.
     """
-    if not _auto_scan_active:
+    if not _bot_state.auto_scan_active:
         return
 
     signals_found: int = 0
@@ -461,7 +463,7 @@ def _run_auto_scan_job(context_or_bot=None) -> None:
         for side in (Side.LONG, Side.SHORT):
             try:
                 # Global guards
-                if _news_freeze or news_calendar.is_high_impact_imminent():
+                if _bot_state.news_freeze or news_calendar.is_high_impact_imminent():
                     logger.info("Auto-scan paused — news freeze/imminent event.")
                     return  # Stop the entire scan cycle until next interval
 
@@ -528,7 +530,18 @@ def _run_auto_scan_job(context_or_bot=None) -> None:
                     logger.error("Auto-scan broadcast error: %s", exc)
 
     try:
-        asyncio.run(_send())
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(_send())
+        else:
+            loop.run_until_complete(_send())
+    except RuntimeError:
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        try:
+            new_loop.run_until_complete(_send())
+        finally:
+            new_loop.close()
     except Exception as exc:
         logger.error("Auto-scan job failed to send broadcasts: %s", exc)
 
@@ -629,7 +642,7 @@ def process_webhook(payload: dict) -> Optional[str]:
         logger.warning("Invalid webhook payload: %s", exc)
         return None
 
-    if _news_freeze or news_calendar.is_high_impact_imminent():
+    if _bot_state.news_freeze or news_calendar.is_high_impact_imminent():
         return None
 
     if not risk_manager.can_open_signal(side):

@@ -13,9 +13,12 @@ from bot.signal_engine import (
     SignalResult,
     _average_volume,
     assess_macro_bias,
+    calculate_atr,
     calculate_targets,
+    detect_fair_value_gap,
     detect_liquidity_sweep,
     detect_market_structure_shift,
+    detect_order_block,
     is_discount_zone,
     is_premium_zone,
     run_confluence_check,
@@ -346,3 +349,263 @@ class TestAverageVolume:
             CandleData(open=1, high=2, low=0.5, close=1.5, volume=300.0),
         ]
         assert _average_volume(candles) == 200.0
+
+
+# ── ATR tests ─────────────────────────────────────────────────────────────────
+
+class TestCalculateATR:
+    def test_empty_candles_returns_zero(self):
+        assert calculate_atr([]) == 0.0
+
+    def test_single_candle_returns_zero(self):
+        c = CandleData(open=100, high=101, low=99, close=100, volume=100)
+        assert calculate_atr([c]) == 0.0
+
+    def test_basic_atr(self):
+        candles = [
+            CandleData(open=100, high=102, low=98, close=101, volume=100),
+            CandleData(open=101, high=103, low=100, close=102, volume=100),
+            CandleData(open=102, high=104, low=101, close=103, volume=100),
+        ]
+        atr = calculate_atr(candles)
+        assert atr > 0.0
+
+    def test_atr_respects_period(self):
+        # With identical candles, all TRs are equal — ATR should equal that TR
+        candles = [
+            CandleData(open=100, high=102, low=98, close=100, volume=100)
+            for _ in range(20)
+        ]
+        atr = calculate_atr(candles, period=5)
+        assert atr == pytest.approx(4.0)  # high - low = 4.0 each
+
+    def test_atr_insufficient_period_uses_available(self):
+        candles = [
+            CandleData(open=100, high=102, low=98, close=100, volume=100),
+            CandleData(open=100, high=102, low=98, close=100, volume=100),
+        ]
+        # Only 1 true range available, period=14 should use all available
+        atr = calculate_atr(candles, period=14)
+        assert atr > 0.0
+
+
+# ── Fair Value Gap tests ──────────────────────────────────────────────────────
+
+class TestDetectFairValueGap:
+    def test_bullish_fvg_detected(self):
+        """Candle[-1].low > candle[-3].high → bullish FVG."""
+        candles = [
+            CandleData(open=100, high=101, low=99, close=100.5, volume=100),   # c0
+            CandleData(open=101, high=105, low=100, close=104, volume=200),    # c1 (big up)
+            CandleData(open=104, high=107, low=102, close=106, volume=150),    # c2
+        ]
+        # c2.low (102) > c0.high (101) → bullish FVG
+        assert detect_fair_value_gap(candles, Side.LONG) is True
+
+    def test_no_bullish_fvg(self):
+        candles = [
+            CandleData(open=100, high=103, low=99, close=102, volume=100),
+            CandleData(open=102, high=104, low=101, close=103, volume=100),
+            CandleData(open=103, high=105, low=102, close=104, volume=100),
+        ]
+        # c2.low (102) == c0.high (103)? No, c2.low=102 < c0.high=103 → no FVG
+        assert detect_fair_value_gap(candles, Side.LONG) is False
+
+    def test_bearish_fvg_detected(self):
+        """Candle[-1].high < candle[-3].low → bearish FVG."""
+        candles = [
+            CandleData(open=100, high=101, low=99, close=99.5, volume=100),   # c0
+            CandleData(open=99, high=100, low=95, close=96, volume=200),      # c1 (big down)
+            CandleData(open=96, high=97, low=93, close=94, volume=150),       # c2
+        ]
+        # c2.high (97) < c0.low (99) → bearish FVG
+        assert detect_fair_value_gap(candles, Side.SHORT) is True
+
+    def test_insufficient_candles(self):
+        candles = [
+            CandleData(open=100, high=101, low=99, close=100, volume=100),
+        ]
+        assert detect_fair_value_gap(candles, Side.LONG) is False
+
+
+# ── Order Block tests ─────────────────────────────────────────────────────────
+
+class TestDetectOrderBlock:
+    def test_bullish_order_block_detected(self):
+        """Bearish candle followed by bullish candle → LONG order block."""
+        candles = [
+            CandleData(open=105, high=106, low=104, close=104.5, volume=80),   # context
+            CandleData(open=104, high=105, low=99, close=99.5, volume=100),    # bearish (index 1)
+            CandleData(open=99.5, high=103, low=99, close=102, volume=200),    # bullish impulse
+            CandleData(open=102, high=104, low=101, close=103, volume=150),    # continuation
+        ]
+        assert detect_order_block(candles, Side.LONG) is True
+
+    def test_bearish_order_block_detected(self):
+        """Bullish candle followed by bearish candle → SHORT order block."""
+        candles = [
+            CandleData(open=95, high=96, low=94, close=95.5, volume=80),       # context
+            CandleData(open=95.5, high=101, low=95, close=100.5, volume=100),  # bullish (index 1)
+            CandleData(open=100.5, high=101, low=97, close=98, volume=200),    # bearish impulse
+            CandleData(open=98, high=99, low=96, close=97, volume=150),        # continuation
+        ]
+        assert detect_order_block(candles, Side.SHORT) is True
+
+    def test_no_order_block_when_no_opposing_candle(self):
+        candles = [
+            CandleData(open=100, high=102, low=99, close=101.5, volume=100),  # bullish
+            CandleData(open=101.5, high=104, low=101, close=103, volume=150), # bullish
+            CandleData(open=103, high=105, low=102, close=104, volume=120),   # bullish
+        ]
+        # All bullish — no bearish before impulse for LONG OB
+        assert detect_order_block(candles, Side.LONG) is False
+
+    def test_insufficient_candles(self):
+        candles = [CandleData(open=100, high=101, low=99, close=100, volume=100)]
+        assert detect_order_block(candles, Side.LONG) is False
+
+
+# ── Displacement filter tests ────────────────────────────────────────────────
+
+class TestDisplacementFilter:
+    def test_mss_with_zero_displacement_passes(self):
+        """min_displacement_pct=0 should behave like the original function."""
+        candles = [
+            CandleData(open=100, high=101, low=99, close=100.5, volume=100),
+            CandleData(open=100.5, high=101.5, low=100, close=101, volume=90),
+            CandleData(open=101, high=102.5, low=100.5, close=102, volume=200),
+        ]
+        assert detect_market_structure_shift(candles, Side.LONG, min_displacement_pct=0.0) is True
+
+    def test_mss_blocked_when_displacement_too_small(self):
+        """Require 10% displacement — should fail on small move."""
+        candles = [
+            CandleData(open=100, high=101, low=99, close=100.5, volume=100),
+            CandleData(open=100.5, high=101.5, low=100, close=101, volume=90),
+            # Breaks swing high (101.5) by 0.5 → displacement ~0.5% < 10%
+            CandleData(open=101, high=102.5, low=100.5, close=102, volume=200),
+        ]
+        assert detect_market_structure_shift(candles, Side.LONG, min_displacement_pct=10.0) is False
+
+    def test_mss_passes_when_displacement_sufficient(self):
+        """Require 0.1% displacement — small move should pass."""
+        candles = [
+            CandleData(open=100, high=101, low=99, close=100.5, volume=100),
+            CandleData(open=100.5, high=101.5, low=100, close=101, volume=90),
+            CandleData(open=101, high=102.5, low=100.5, close=102, volume=200),
+        ]
+        assert detect_market_structure_shift(candles, Side.LONG, min_displacement_pct=0.1) is True
+
+
+# ── Confidence enum LOW value ─────────────────────────────────────────────────
+
+class TestConfidenceLow:
+    def test_low_confidence_value(self):
+        assert Confidence.LOW == "Low"
+        assert Confidence.LOW.value == "Low"
+
+    def test_all_confidence_levels_present(self):
+        assert Confidence.HIGH.value == "High"
+        assert Confidence.MEDIUM.value == "Medium"
+        assert Confidence.LOW.value == "Low"
+
+
+# ── signal_id field ───────────────────────────────────────────────────────────
+
+class TestSignalId:
+    def test_signal_id_defaults_to_empty(self):
+        result = SignalResult(
+            symbol="BTC",
+            side=Side.LONG,
+            confidence=Confidence.HIGH,
+            entry_low=64900.0,
+            entry_high=65000.0,
+            tp1=65750.0,
+            tp2=66500.0,
+            tp3=68000.0,
+            stop_loss=64400.0,
+            structure_note="Test",
+            context_note="Test ctx",
+            leverage_min=10,
+            leverage_max=20,
+        )
+        assert result.signal_id == ""
+
+    def test_signal_id_can_be_set(self):
+        result = SignalResult(
+            symbol="BTC",
+            side=Side.LONG,
+            confidence=Confidence.HIGH,
+            entry_low=64900.0,
+            entry_high=65000.0,
+            tp1=65750.0,
+            tp2=66500.0,
+            tp3=68000.0,
+            stop_loss=64400.0,
+            structure_note="Test",
+            context_note="Test ctx",
+            leverage_min=10,
+            leverage_max=20,
+            signal_id="SIG-TESTIDABCDEF",
+        )
+        assert result.signal_id == "SIG-TESTIDABCDEF"
+
+    def test_run_confluence_check_generates_signal_id(self):
+        """signal_id should be populated by run_confluence_check."""
+        base = 100.0
+        sweep_level = base - 1.0
+        daily = _bullish_daily_candles()
+        four_h = _bullish_4h_candles()
+        five_m = _long_5m_candles(sweep_level=sweep_level)
+        stop_loss = sweep_level - 0.5
+        price = base - 2.5
+
+        result = run_confluence_check(
+            symbol="ETH",
+            current_price=price,
+            side=Side.LONG,
+            range_low=base - 5.0,
+            range_high=base + 5.0,
+            key_liquidity_level=sweep_level,
+            five_min_candles=five_m,
+            daily_candles=daily,
+            four_hour_candles=four_h,
+            news_in_window=False,
+            stop_loss=stop_loss,
+        )
+        assert result is not None
+        assert result.signal_id.startswith("SIG-")
+        assert len(result.signal_id) == 16  # "SIG-" + 12 chars
+
+
+# ── Optional FVG / OB gates in run_confluence_check ──────────────────────────
+
+class TestOptionalGates:
+    def _base_args(self):
+        base = 100.0
+        sweep_level = base - 1.0
+        return dict(
+            symbol="ETH",
+            current_price=base - 2.5,
+            side=Side.LONG,
+            range_low=base - 5.0,
+            range_high=base + 5.0,
+            key_liquidity_level=sweep_level,
+            five_min_candles=_long_5m_candles(sweep_level=sweep_level),
+            daily_candles=_bullish_daily_candles(),
+            four_hour_candles=_bullish_4h_candles(),
+            news_in_window=False,
+            stop_loss=sweep_level - 0.5,
+        )
+
+    def test_check_fvg_false_ignores_fvg(self):
+        """check_fvg=False (default) should not block signal even without FVG."""
+        kwargs = self._base_args()
+        result = run_confluence_check(**kwargs, check_fvg=False)
+        assert result is not None
+
+    def test_check_order_block_false_ignores_ob(self):
+        """check_order_block=False (default) should not block signal."""
+        kwargs = self._base_args()
+        result = run_confluence_check(**kwargs, check_order_block=False)
+        assert result is not None

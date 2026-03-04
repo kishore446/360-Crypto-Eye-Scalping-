@@ -23,13 +23,59 @@ from __future__ import annotations
 
 import hmac
 import logging
+import time
+import uuid
+from collections import defaultdict
+from typing import Any
 
 from flask import Flask, Response, jsonify, request
 
-from bot.bot import process_webhook
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, WEBHOOK_HOST, WEBHOOK_PORT, WEBHOOK_SECRET
+from bot.bot import process_webhook, risk_manager
+from config import (
+    ALLOWED_WEBHOOK_IPS,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHANNEL_ID,
+    WEBHOOK_HOST,
+    WEBHOOK_PORT,
+    WEBHOOK_RATE_LIMIT_MAX,
+    WEBHOOK_RATE_LIMIT_WINDOW,
+    WEBHOOK_SECRET,
+)
 
 logger = logging.getLogger(__name__)
+
+# ── Start time for uptime tracking ───────────────────────────────────────────
+_start_time = time.time()
+
+# ── Rate limiting: track request timestamps per IP ───────────────────────────
+_request_log: dict[str, list[float]] = defaultdict(list)
+
+# ── Pydantic payload validation (optional but available) ─────────────────────
+try:
+    from pydantic import BaseModel, field_validator
+
+    class WebhookPayload(BaseModel):
+        symbol: str
+        side: str
+
+        @field_validator("side")
+        @classmethod
+        def side_must_be_valid(cls, v: str) -> str:
+            upper = v.upper()
+            if upper not in ("LONG", "SHORT"):
+                raise ValueError("side must be LONG or SHORT")
+            return upper
+
+        @field_validator("symbol")
+        @classmethod
+        def symbol_not_empty(cls, v: str) -> str:
+            if not v.strip():
+                raise ValueError("symbol must not be empty")
+            return v.strip().upper()
+
+    _pydantic_available = True
+except ImportError:
+    _pydantic_available = False
 
 
 def _verify_secret(incoming: str) -> bool:
@@ -41,37 +87,118 @@ def _verify_secret(incoming: str) -> bool:
     return hmac.compare_digest(incoming, WEBHOOK_SECRET)
 
 
+def _check_ip_allowlist(remote_addr: str) -> bool:
+    """Return True when the IP is allowed (or when no allowlist is configured)."""
+    if not ALLOWED_WEBHOOK_IPS:
+        return True
+    return remote_addr in ALLOWED_WEBHOOK_IPS
+
+
+def _check_rate_limit(remote_addr: str) -> bool:
+    """Return True when the IP has not exceeded the rate limit."""
+    now = time.time()
+    window_start = now - WEBHOOK_RATE_LIMIT_WINDOW
+    # Prune old entries (handle both defaultdict and regular dict)
+    existing = _request_log.get(remote_addr, [])
+    _request_log[remote_addr] = [t for t in existing if t > window_start]
+    if len(_request_log[remote_addr]) >= WEBHOOK_RATE_LIMIT_MAX:
+        return False
+    _request_log[remote_addr].append(now)
+    return True
+
+
 def create_app() -> Flask:
     """Flask application factory."""
     app = Flask(__name__)
 
+    if not WEBHOOK_SECRET:
+        logger.critical(
+            "WEBHOOK_SECRET is not configured — webhook endpoint is unprotected!"
+        )
+
     @app.route("/health", methods=["GET"])
     def health() -> Response:
-        return jsonify({"status": "ok", "service": "360-crypto-eye-scalping"})
+        uptime_seconds = int(time.time() - _start_time)
+        active_count = len(risk_manager.active_signals)
+        return jsonify({
+            "status": "ok",
+            "service": "360-crypto-eye-scalping",
+            "uptime_seconds": uptime_seconds,
+            "active_signal_count": active_count,
+        })
 
     @app.route("/webhook", methods=["POST"])
     def webhook() -> Response:
+        request_id = str(uuid.uuid4())
+
+        # ── IP allowlist check ────────────────────────────────────────────────
+        remote_addr = request.remote_addr or ""
+        if not _check_ip_allowlist(remote_addr):
+            logger.warning(
+                "Rejected webhook — IP not in allowlist: %s [request_id=%s]",
+                remote_addr, request_id,
+            )
+            resp = jsonify({"error": "forbidden"})
+            resp.headers["X-Request-ID"] = request_id
+            return resp, 403
+
+        # ── Rate limit check ──────────────────────────────────────────────────
+        if not _check_rate_limit(remote_addr):
+            logger.warning(
+                "Rate limit exceeded for %s [request_id=%s]", remote_addr, request_id
+            )
+            resp = jsonify({"error": "rate limit exceeded"})
+            resp.headers["X-Request-ID"] = request_id
+            return resp, 429
+
+        # ── Secret check ──────────────────────────────────────────────────────
         secret = request.headers.get("X-Webhook-Secret", "")
         if not _verify_secret(secret):
-            logger.warning("Rejected webhook — invalid secret from %s", request.remote_addr)
-            return jsonify({"error": "forbidden"}), 403
+            logger.warning(
+                "Rejected webhook — invalid secret from %s [request_id=%s]",
+                remote_addr, request_id,
+            )
+            resp = jsonify({"error": "forbidden"})
+            resp.headers["X-Request-ID"] = request_id
+            return resp, 403
 
-        payload = request.get_json(silent=True)
-        if payload is None:
-            return jsonify({"error": "invalid JSON"}), 400
+        raw_payload = request.get_json(silent=True)
+        if raw_payload is None:
+            resp = jsonify({"error": "invalid JSON"})
+            resp.headers["X-Request-ID"] = request_id
+            return resp, 400
+
+        # ── Pydantic validation ───────────────────────────────────────────────
+        if _pydantic_available:
+            try:
+                validated = WebhookPayload(**raw_payload)
+                payload: dict[str, Any] = validated.model_dump()
+            except Exception as exc:
+                logger.warning("Payload validation failed [request_id=%s]: %s", request_id, exc)
+                resp = jsonify({"error": "invalid payload", "detail": str(exc)})
+                resp.headers["X-Request-ID"] = request_id
+                return resp, 422
+        else:
+            payload = raw_payload
 
         try:
             message = process_webhook(payload)
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Error processing webhook: %s", exc)
-            return jsonify({"error": "internal error"}), 500
+            logger.exception("Error processing webhook [request_id=%s]: %s", request_id, exc)
+            resp = jsonify({"error": "internal error"})
+            resp.headers["X-Request-ID"] = request_id
+            return resp, 500
 
         if message is None:
-            return jsonify({"status": "skipped", "reason": "confluence not met or news freeze"}), 200
+            resp = jsonify({"status": "skipped", "reason": "confluence not met or news freeze"})
+            resp.headers["X-Request-ID"] = request_id
+            return resp, 200
 
         # Async broadcast via Telegram Bot API
         _send_telegram_message(message)
-        return jsonify({"status": "signal_broadcast"}), 200
+        resp = jsonify({"status": "signal_broadcast"})
+        resp.headers["X-Request-ID"] = request_id
+        return resp, 200
 
     return app
 
