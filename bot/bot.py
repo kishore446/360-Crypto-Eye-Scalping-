@@ -622,6 +622,87 @@ async def cmd_close_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await _reply(update, f"✅ Signal `{symbol}` closed as {outcome} with {pnl:+.2f}% PnL.")
 
 
+async def cmd_backtest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /backtest SYMBOL START END
+
+    Admin-only: run a historical backtest for the specified symbol and date
+    range, then reply with the performance summary.
+
+    Example:
+        /backtest BTC 2025-01-01 2025-06-30
+        /backtest BTC/USDT:USDT 2025-01-01 2025-06-30
+    """
+    if not _is_admin(update):
+        await _reply(update, "⛔ Admin only.")
+        return
+
+    args = context.args or []
+    if len(args) < 3:
+        await _reply(
+            update,
+            "Usage: `/backtest SYMBOL START END`\n"
+            "Example: `/backtest BTC 2025-01-01 2025-06-30`",
+        )
+        return
+
+    raw_symbol = args[0].upper()
+    start_str = args[1]
+    end_str = args[2]
+
+    ccxt_symbol = _normalise_symbol(raw_symbol)
+    short_symbol = ccxt_symbol.split("/")[0]
+
+    await _reply(
+        update,
+        f"⏳ Running backtest for `{ccxt_symbol}` ({start_str} → {end_str}) …",
+    )
+
+    def _run_backtest() -> str:
+        from datetime import datetime, timezone as _tz
+
+        import ccxt as _ccxt
+
+        from bot.backtester import Backtester, HistoricalDataFetcher
+
+        since_ms = int(
+            datetime.strptime(start_str, "%Y-%m-%d")
+            .replace(tzinfo=_tz.utc)
+            .timestamp()
+            * 1000
+        )
+        until_ms = int(
+            datetime.strptime(end_str, "%Y-%m-%d")
+            .replace(tzinfo=_tz.utc)
+            .timestamp()
+            * 1000
+        )
+
+        exchange = _ccxt.binance({"options": {"defaultType": "future"}})
+        fetcher = HistoricalDataFetcher(exchange)
+        backtester = Backtester()
+
+        five_min_rows = fetcher.fetch(ccxt_symbol, "5m", since_ms, until_ms)
+        four_h_rows = fetcher.fetch(ccxt_symbol, "4h", since_ms, until_ms)
+        daily_rows = fetcher.fetch(ccxt_symbol, "1d", since_ms, until_ms)
+
+        result = backtester.run(short_symbol, five_min_rows, four_h_rows, daily_rows)
+        return result.summary()
+
+    loop = asyncio.get_event_loop()
+    try:
+        summary = await loop.run_in_executor(None, _run_backtest)
+        msg = (
+            f"📊 *Backtest Result* — `{ccxt_symbol}`\n"
+            f"Period: {start_str} → {end_str}\n\n"
+            f"```\n{summary}\n```"
+        )
+        await _reply(update, msg)
+    except Exception as exc:
+        logger.error("Backtest failed for %s: %s", ccxt_symbol, exc)
+        await _reply(update, f"❌ Backtest failed: {exc}")
+
+
 # ── Webhook processor (called by webhook.py) ──────────────────────────────────
 
 def process_webhook(payload: dict) -> Optional[str]:
@@ -806,6 +887,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("news_caution", cmd_news_caution))
     app.add_handler(CommandHandler("risk_calc", cmd_risk_calc))
     app.add_handler(CommandHandler("close_signal", cmd_close_signal))
+    app.add_handler(CommandHandler("backtest", cmd_backtest))
 
     # Wire live news calendar — fetch immediately then refresh every 30 minutes
     fetch_and_reload(news_calendar)   # first fetch at startup (blocking, fast)

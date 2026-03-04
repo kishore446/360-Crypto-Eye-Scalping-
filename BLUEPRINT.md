@@ -36,7 +36,7 @@
 - [§7 — Deployment & Infrastructure](#7--deployment--infrastructure)
 - [§8 — Testing Standards](#8--testing-standards)
 - [§9 — File Tree (Canonical)](#9--file-tree-canonical)
-- [§10 — Coding Standards & Conventions](#10--coding-standards--conventions)
+- [§11 — Backtesting Framework](#11--backtesting-framework)
 
 ---
 
@@ -1674,3 +1674,231 @@ refactor: extract exchange module from bot.py
 *End of Blueprint — version `2.0.0-institutional`*  
 *Maintained by the 360 Crypto Eye development team.*  
 *If code behaviour differs from this document, the code must be corrected to match.*
+
+---
+
+## §11 — Backtesting Framework
+
+> Canonical reference for `bot/backtester.py`, `bot/backtest_cli.py`, and the `/backtest` Telegram command.
+
+### §11.1 Design Principles
+
+1. **Zero divergence** — The backtester calls the exact same functions from `bot/signal_engine.py` (`run_confluence_check()`, `assess_macro_bias()`, etc.). Backtest results reflect real engine behaviour.
+2. **Conservative simulation** — When SL and TP are hit on the same bar, SL wins (worst-case).
+3. **Sliding windows** — Same lookback sizes as the live engine: 50×5m, 15×4H, 25×1D.
+4. **Compounding capital** — Each trade risks `risk_per_trade` (default 1%) of the *current* equity, not the initial capital.
+5. **Rate limiting** — `HistoricalDataFetcher` sleeps 200 ms between Binance pagination requests.
+6. **No new dependencies** — stdlib `csv`, `argparse`, `statistics`, `datetime` + existing `ccxt`.
+
+---
+
+### §11.2 Trade Exit Priority
+
+On each 5-minute bar, exits are evaluated in this order:
+
+| Priority | Condition | `close_reason` |
+|----------|-----------|----------------|
+| 1 | Current SL touched (structural or BE-stop) | `"SL"` or `"BE"` |
+| 2 | TP3 reached | `"TP3"` |
+| 3 | TP2 reached | `"TP2"` |
+| 4 | TP1 reached | `"TP1"` |
+| 5 | BE trigger fires *this bar* (stored for next bar) | — |
+| 6 | `bars_held >= stale_bars` | `"STALE"` |
+
+> **Same-bar rule:** If both SL and TP are reachable in a single candle's range, SL wins.
+
+**BE trigger logic:**
+- Fires when price reaches `entry ± (tp1_distance × be_trigger_fraction)`.
+- Default `be_trigger_fraction = 0.5` (50% of TP1 distance from entry).
+- Once triggered, SL for all *subsequent* bars becomes `entry_price`.
+- Closing at that SL produces `close_reason = "BE"`.
+
+---
+
+### §11.3 `SimulatedTrade` Dataclass
+
+```python
+@dataclass
+class SimulatedTrade:
+    signal_id: str
+    symbol: str
+    side: Side
+    confidence: str
+    entry_price: float
+    stop_loss: float
+    tp1: float
+    tp2: float
+    tp3: float
+    opened_at: int            # Unix ms timestamp
+    closed_at: int            # Unix ms timestamp
+    close_reason: str         # "TP1" | "TP2" | "TP3" | "SL" | "BE" | "STALE"
+    pnl_pct: float            # raw % from entry to close price
+    be_triggered: bool        # True if BE was ever activated during this trade
+    max_favorable_excursion: float   # best unrealised % (positive)
+    max_adverse_excursion: float     # worst unrealised % (positive, loss magnitude)
+    bars_held: int            # number of 5m bars from open to close
+```
+
+---
+
+### §11.4 `BacktestResult` Fields and Formulas
+
+| Field | Formula |
+|-------|---------|
+| `win_rate` | `wins / total_trades` |
+| `profit_factor` | `sum(win_pcts) / abs(sum(loss_pcts))` |
+| `sharpe_ratio` | `(mean_return / std_return) × √(252 × 24 × 12)` (annualised, 5m bars) |
+| `max_drawdown_pct` | Rolling `(peak − trough) / peak × 100` from equity curve |
+| `max_drawdown_duration` | Longest bars spent below prior equity peak |
+| `calmar_ratio` | `annualised_return / max_drawdown_pct` |
+| `avg_win_pct` | `mean(pnl_pct for wins)` |
+| `avg_loss_pct` | `mean(pnl_pct for losses)` |
+| `largest_win_pct` | `max(win_pcts)` |
+| `largest_loss_pct` | `min(loss_pcts)` |
+| `avg_holding_time` | `mean(bars_held)` |
+| `max_consecutive_wins` | Longest unbroken run of `pnl_pct > 0` |
+| `max_consecutive_losses` | Longest unbroken run of `pnl_pct < 0` |
+| `monthly_returns` | `dict[YYYY-MM, sum(pnl_pct)]` (keyed by `closed_at`) |
+
+**Methods:**
+- `summary() → str` — one-line performance summary for Telegram.
+- `to_csv(path: str) → None` — write per-trade CSV to *path*.
+- `print_report() → None` — print formatted report to stdout.
+
+---
+
+### §11.5 `Backtester` Class API
+
+```python
+class Backtester:
+    WINDOW_5M: int = 50   # 5m candle lookback
+    WINDOW_4H: int = 15   # 4H candle lookback
+    WINDOW_1D: int = 25   # Daily candle lookback
+
+    def __init__(
+        self,
+        be_trigger_fraction: float = 0.5,
+        stale_hours: float = 4.0,
+        tp1_rr: float = 1.5,
+        tp2_rr: float = 2.5,
+        tp3_rr: float = 4.0,
+        initial_capital: float = 10_000.0,
+        risk_per_trade: float = 0.01,   # fraction, e.g. 0.01 = 1%
+        check_fvg: bool = False,
+        check_order_block: bool = False,
+    ) -> None: ...
+
+    def run(
+        self,
+        symbol: str,
+        five_min_rows: list[list],   # [[ts_ms, O, H, L, C, V], ...]
+        four_h_rows: list[list],
+        daily_rows: list[list],
+    ) -> BacktestResult: ...
+```
+
+**Walk-forward logic:**
+1. Iterate through 5m bars starting at index `WINDOW_5M`.
+2. For each bar with no open trade: call `run_confluence_check()` for LONG then SHORT.
+3. On signal: open `SimulatedTrade` at `(entry_low + entry_high) / 2`.
+4. For each subsequent bar: check exit conditions in priority order (§11.2).
+5. Update equity curve after each closed trade.
+
+---
+
+### §11.6 `HistoricalDataFetcher` Class API
+
+```python
+class HistoricalDataFetcher:
+    CANDLES_PER_REQUEST: int = 1000
+    SLEEP_BETWEEN_REQUESTS: float = 0.2   # seconds
+
+    def __init__(self, exchange: Optional[ccxt.Exchange] = None) -> None: ...
+
+    def fetch(
+        self,
+        symbol: str,          # CCXT format, e.g. "BTC/USDT:USDT"
+        timeframe: str,       # e.g. "5m", "4h", "1d"
+        since_ms: int,        # Unix ms (inclusive)
+        until_ms: int,        # Unix ms (inclusive)
+    ) -> list[list]: ...      # [[ts_ms, O, H, L, C, V], ...] sorted ascending
+```
+
+---
+
+### §11.7 CLI Usage (`bot/backtest_cli.py`)
+
+```bash
+# Single symbol
+python -m bot.backtest_cli --symbol BTC/USDT:USDT --start 2025-01-01 --end 2025-06-30
+
+# Short form (auto-normalised to BTC/USDT:USDT)
+python -m bot.backtest_cli --symbol BTC --start 2025-01-01 --end 2025-06-30
+
+# Multi-symbol
+python -m bot.backtest_cli --multi BTC,ETH,SOL --start 2025-01-01 --end 2025-06-30
+
+# Export CSVs to a directory
+python -m bot.backtest_cli --symbol BTC --start 2025-01-01 --end 2025-06-30 --export results/
+
+# Custom parameters
+python -m bot.backtest_cli --symbol BTC --start 2025-01-01 --end 2025-06-30 \
+    --capital 50000 --risk 0.005 --tp1-rr 1.5 --tp2-rr 2.5 --tp3-rr 4.0 \
+    --no-fvg --no-ob --quiet
+```
+
+**All flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--symbol SYM` | — | Single symbol (mutually exclusive with `--multi`) |
+| `--multi SYMS` | — | Comma-separated symbols |
+| `--start YYYY-MM-DD` | required | Start date (UTC midnight) |
+| `--end YYYY-MM-DD` | required | End date (UTC midnight) |
+| `--capital USDT` | 10000 | Initial capital |
+| `--risk FRAC` | 0.01 | Fraction of equity risked per trade |
+| `--tp1-rr RR` | 1.5 | TP1 risk-reward ratio |
+| `--tp2-rr RR` | 2.5 | TP2 risk-reward ratio |
+| `--tp3-rr RR` | 4.0 | TP3 risk-reward ratio |
+| `--no-fvg` | off | Disable optional FVG gate |
+| `--no-ob` | off | Disable optional Order Block gate |
+| `--export DIR` | — | Write per-trade CSV(s) to directory |
+| `--quiet` | off | Suppress all output except errors |
+
+---
+
+### §11.8 Telegram `/backtest` Command
+
+**Admin-only.** Runs the backtest in a thread pool (`run_in_executor`) to avoid blocking the event loop.
+
+```
+/backtest BTC 2025-01-01 2025-06-30
+/backtest BTC/USDT:USDT 2025-01-01 2025-06-30
+```
+
+Sends "⏳ Running backtest…" immediately, then replies with the `BacktestResult.summary()` on completion, or an error message on failure.
+
+---
+
+### §11.9 Go-Live Thresholds
+
+A strategy configuration is considered production-ready when it meets **all** of the following on a held-out validation period (not the optimisation window):
+
+| Metric | Minimum Threshold |
+|--------|-------------------|
+| Win Rate | > 55% |
+| Profit Factor | > 1.5 |
+| Maximum Drawdown | < 15% |
+| Sharpe Ratio | > 1.0 |
+| Total Trades | ≥ 30 (statistical significance) |
+
+---
+
+### §11.10 File References
+
+| File | Purpose |
+|------|---------|
+| `bot/backtester.py` | `HistoricalDataFetcher`, `SimulatedTrade`, `BacktestResult`, `Backtester`, `_compute_result()` |
+| `bot/backtest_cli.py` | CLI entry point (`python -m bot.backtest_cli`) |
+| `bot/bot.py` | `/backtest` Telegram command handler (`cmd_backtest`) |
+| `tests/test_backtester.py` | 36 unit tests covering all exit scenarios, metrics, CSV export |
