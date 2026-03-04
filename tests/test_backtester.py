@@ -632,8 +632,10 @@ class TestBacktester:
 
     def test_range_derived_from_4h_candles(self) -> None:
         """run() must pass range_low/range_high from 4H candles, not 5m candles."""
+        # Need enough 5m bars so that the 1D window tail reaches at least 2.
+        # _5m_per_1d = 288, so idx >= 2*288 = 576 is required; use 600 bars.
         # 5m candles are tightly clustered around 100; 4H candles span 50–200.
-        five_min = _flat_candles(100, price=100.0)
+        five_min = _flat_candles(600, price=100.0)
         four_hour = [
             CandleData(open=100.0, high=200.0, low=50.0, close=125.0, volume=1000.0)
             for _ in range(20)
