@@ -1,19 +1,62 @@
 version: "3.9"
+
+networks:
+  360eye-net:
+    driver: bridge
+
+volumes:
+  360eye-data:
+
 services:
   bot:
     build: .
+    container_name: 360eye-bot
     env_file: .env
-    restart: unless-stopped
+    restart: always
+    networks:
+      - 360eye-net
     volumes:
-      - ./data:/app/data
+      - 360eye-data:/app/data
     command: python main.py
+    mem_limit: 1g
+    cpus: "1.0"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
 
   webhook:
     build: .
+    container_name: 360eye-webhook
     env_file: .env
-    restart: unless-stopped
+    restart: always
+    networks:
+      - 360eye-net
     ports:
       - "5000:5000"
     volumes:
-      - ./data:/app/data
+      - 360eye-data:/app/data
     command: gunicorn "bot.webhook:create_app()" --bind 0.0.0.0:5000 --workers 2
+    mem_limit: 512m
+    cpus: "0.5"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    depends_on:
+      bot:
+        condition: service_started
