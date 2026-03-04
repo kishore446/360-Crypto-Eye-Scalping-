@@ -36,6 +36,7 @@ from telegram.ext import (
 from bot.dashboard import Dashboard, TradeResult
 from bot.news_fetcher import fetch_and_reload
 from bot.news_filter import NewsCalendar
+from bot.backtester import Backtester
 from bot.risk_manager import RiskManager, calculate_position_size
 from bot.signal_engine import (
     CandleData,
@@ -776,6 +777,57 @@ def _fetch_binance_candles(symbol: str, side: Side) -> dict:
         "4H": four_h_candles,
     }
 
+async def cmd_backtest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /backtest SYMBOL START_DATE END_DATE
+
+    Admin-only: run a walk-forward backtest for *SYMBOL* over the given date
+    range and send the summary report to the admin chat.
+
+    This is a long-running operation — the bot sends an acknowledgement first,
+    then the result when complete.
+
+    Example:
+        /backtest BTC 2025-01-01 2025-06-30
+    """
+    if not _is_admin(update):
+        await _reply(update, "⛔ Admin only.")
+        return
+
+    args = context.args or []
+    if len(args) < 3:
+        await _reply(
+            update,
+            "Usage: `/backtest SYMBOL START_DATE END_DATE`\n"
+            "Example: `/backtest BTC 2025-01-01 2025-06-30`",
+        )
+        return
+
+    raw_symbol = args[0].upper()
+    start_date = args[1]
+    end_date = args[2]
+
+    # Normalise to CCXT futures format
+    ccxt_symbol = _normalise_symbol(raw_symbol)
+
+    await _reply(update, f"⏳ Running backtest for `{ccxt_symbol}` ({start_date} → {end_date})…")
+
+    try:
+        bt = Backtester(symbol=ccxt_symbol, start_date=start_date, end_date=end_date)
+        result = await asyncio.get_event_loop().run_in_executor(None, bt.run)
+        summary = result.summary()
+    except Exception as exc:
+        logger.error("Backtest failed for %s: %s", ccxt_symbol, exc)
+        await _reply(update, f"❌ Backtest failed for `{ccxt_symbol}`: {exc}")
+        return
+
+    # Telegram messages are capped at 4096 characters
+    if len(summary) > 4000:
+        summary = summary[:4000] + "\n…(truncated)"
+
+    await _reply(update, summary)
+
+
 # ── Application bootstrap ─────────────────────────────────────────────────────
 
 def build_application() -> Application:
@@ -793,6 +845,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("news_caution", cmd_news_caution))
     app.add_handler(CommandHandler("risk_calc", cmd_risk_calc))
     app.add_handler(CommandHandler("close_signal", cmd_close_signal))
+    app.add_handler(CommandHandler("backtest", cmd_backtest))
 
     # Wire live news calendar — fetch immediately then refresh every 30 minutes
     fetch_and_reload(news_calendar)   # first fetch at startup (blocking, fast)
