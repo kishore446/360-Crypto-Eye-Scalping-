@@ -25,6 +25,10 @@ from bot.signal_engine import (
     run_confluence_check,
 )
 
+# 5-minute bars per trading year (252 days × 24 hours × 12 bars/hour)
+_ANNUAL_5M_BARS: int = 252 * 24 * 12
+_SHARPE_SCALE: float = _ANNUAL_5M_BARS ** 0.5
+
 
 # ── Low-level helpers ─────────────────────────────────────────────────────────
 
@@ -638,8 +642,8 @@ def _compute_result(
     if len(trade_returns) >= 2:
         mean_r = statistics.mean(trade_returns)
         std_r = statistics.stdev(trade_returns)
-        # Scale to annual using 5m bars: sqrt(252 * 24 * 12)
-        sharpe = (mean_r / std_r) * (252 * 24 * 12) ** 0.5 if std_r > 0 else 0.0
+        # Annualise using pre-computed scale factor for 5m bars
+        sharpe = (mean_r / std_r) * _SHARPE_SCALE if std_r > 0 else 0.0
     else:
         sharpe = 0.0
 
@@ -647,9 +651,8 @@ def _compute_result(
     if max_dd_pct > 0 and len(equity_curve) > 1:
         total_return_pct = (equity_curve[-1] - initial_capital) / initial_capital * 100
         total_bars = sum(t.bars_held for t in trades)
-        annual_bars = 252 * 24 * 12  # 5-minute bars per year
         annualised_return = (
-            total_return_pct * (annual_bars / total_bars)
+            total_return_pct * (_ANNUAL_5M_BARS / total_bars)
             if total_bars > 0
             else 0.0
         )
