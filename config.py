@@ -61,6 +61,7 @@ try:
         # ── Auto-Scanner ─────────────────────────────────────────────────────
         auto_scan_pairs: str = ""
         auto_scan_interval_seconds: int = 300
+        auto_scan_enabled_on_boot: bool = True
 
         @field_validator("telegram_bot_token")
         @classmethod
@@ -107,6 +108,7 @@ try:
     _raw_pairs = settings.auto_scan_pairs
     AUTO_SCAN_PAIRS: list[str] = [p.strip().upper() for p in _raw_pairs.split(",") if p.strip()]
     AUTO_SCAN_INTERVAL_SECONDS: int = settings.auto_scan_interval_seconds
+    AUTO_SCAN_ENABLED_ON_BOOT: bool = settings.auto_scan_enabled_on_boot
 
     TIMEFRAMES: dict[str, int] = {
         "1D": 1440,
@@ -143,5 +145,6 @@ except ImportError:
     _raw_pairs = os.environ.get("AUTO_SCAN_PAIRS", "")
     AUTO_SCAN_PAIRS: list[str] = [p.strip().upper() for p in _raw_pairs.split(",") if p.strip()]
     AUTO_SCAN_INTERVAL_SECONDS: int = int(os.environ.get("AUTO_SCAN_INTERVAL_SECONDS", "300"))
+    AUTO_SCAN_ENABLED_ON_BOOT: bool = os.environ.get("AUTO_SCAN_ENABLED_ON_BOOT", "true").lower() in ("true", "1", "yes")
     TIMEFRAMES: dict[str, int] = {"1D": 1440, "4H": 240, "15m": 15, "5m": 5}
 

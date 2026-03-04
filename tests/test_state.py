@@ -18,7 +18,7 @@ class TestBotStateSingleton:
         state = BotState()
         assert state.news_freeze is False
         assert state.trail_active is False
-        assert state.auto_scan_active is False
+        assert state.auto_scan_active is True
 
     def test_set_news_freeze(self):
         state = BotState()
