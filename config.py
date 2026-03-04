@@ -59,7 +59,7 @@ try:
         webhook_rate_limit_max: int = 30     # max requests per window
 
         # ── Auto-Scanner ─────────────────────────────────────────────────────
-        auto_scan_pairs: str = "BTC,ETH,SOL,XRP,DOGE,ADA,AVAX,LINK,DOT,MATIC"
+        auto_scan_pairs: str = ""
         auto_scan_interval_seconds: int = 300
 
         @field_validator("telegram_bot_token")
@@ -140,7 +140,7 @@ except ImportError:
     ALLOWED_WEBHOOK_IPS: list[str] = []
     WEBHOOK_RATE_LIMIT_WINDOW: int = int(os.environ.get("WEBHOOK_RATE_LIMIT_WINDOW", "60"))
     WEBHOOK_RATE_LIMIT_MAX: int = int(os.environ.get("WEBHOOK_RATE_LIMIT_MAX", "30"))
-    _raw_pairs = os.environ.get("AUTO_SCAN_PAIRS", "BTC,ETH,SOL,XRP,DOGE,ADA,AVAX,LINK,DOT,MATIC")
+    _raw_pairs = os.environ.get("AUTO_SCAN_PAIRS", "")
     AUTO_SCAN_PAIRS: list[str] = [p.strip().upper() for p in _raw_pairs.split(",") if p.strip()]
     AUTO_SCAN_INTERVAL_SECONDS: int = int(os.environ.get("AUTO_SCAN_INTERVAL_SECONDS", "300"))
     TIMEFRAMES: dict[str, int] = {"1D": 1440, "4H": 240, "15m": 15, "5m": 5}

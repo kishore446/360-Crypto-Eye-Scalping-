@@ -248,7 +248,7 @@ async def cmd_auto_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if _bot_state.auto_scan_active:
         msg = (
-            f"🔍 Auto-Scanner ACTIVATED ✅ — scanning {len(AUTO_SCAN_PAIRS)} pairs "
+            f"🔍 Auto-Scanner ACTIVATED ✅ — scanning {len(_dynamic_pairs)} pairs "
             f"every {AUTO_SCAN_INTERVAL_SECONDS}s."
         )
     else:
@@ -449,9 +449,9 @@ def _run_auto_scan_job(context_or_bot=None) -> None:
 
     active_symbols = {sig.result.symbol for sig in risk_manager.active_signals}
 
-    logger.info("Auto-scan started — checking %d pairs.", len(AUTO_SCAN_PAIRS))
+    logger.info("Auto-scan started — checking %d pairs.", len(_dynamic_pairs))
 
-    for base in AUTO_SCAN_PAIRS:
+    for base in _dynamic_pairs:
         ccxt_symbol = _normalise_symbol(base)
         symbol = ccxt_symbol.split("/")[0]
 
@@ -718,6 +718,63 @@ def _normalise_symbol(raw: str) -> str:
 # Module-level singleton — created once, reused for all Binance API calls
 _exchange = ccxt.binance({"options": {"defaultType": "future"}})
 
+# Dynamically populated list of USDT-M perpetual pairs (base symbols)
+_dynamic_pairs: list[str] = []
+
+
+def fetch_binance_futures_pairs() -> list[str]:
+    """
+    Fetch all active USDT-M perpetual futures pairs from Binance.
+    Returns a list of base symbols like ['BTC', 'ETH', 'SOL', '1000PEPE', ...].
+
+    Uses the module-level _exchange (ccxt.binance) instance.
+    Filters for:
+    - Only USDT-settled contracts (quote = 'USDT', settle = 'USDT')
+    - Only active/trading pairs (not delisted)
+    - Only perpetual swaps (not delivery futures)
+
+    Falls back to config.AUTO_SCAN_PAIRS if fetch fails.
+    """
+    try:
+        _exchange.load_markets()
+        pairs = []
+        for _sym, market in _exchange.markets.items():
+            if (
+                market.get("settle") == "USDT"
+                and market.get("quote") == "USDT"
+                and market.get("active", False)
+                and market.get("swap", False)  # perpetual only
+            ):
+                pairs.append(market["base"])  # e.g., 'BTC', '1000PEPE', 'POL'
+        pairs.sort()
+        return pairs
+    except Exception as exc:
+        logger.warning(
+            "Failed to fetch Binance futures pairs: %s. Using config fallback.", exc
+        )
+        return list(AUTO_SCAN_PAIRS)
+
+
+def _refresh_dynamic_pairs() -> None:
+    """Periodic job: re-fetch the active Binance USDT-M pairs (every 6 hours)."""
+    global _dynamic_pairs
+    fetched = fetch_binance_futures_pairs()
+    if AUTO_SCAN_PAIRS:
+        fetched_set = set(fetched)
+        filtered = [p for p in AUTO_SCAN_PAIRS if p in fetched_set]
+        missing = [p for p in AUTO_SCAN_PAIRS if p not in fetched_set]
+        if missing:
+            logger.warning(
+                "AUTO_SCAN_PAIRS contains pairs not found on Binance Futures: %s",
+                ", ".join(missing),
+            )
+        _dynamic_pairs = filtered or fetched
+    else:
+        _dynamic_pairs = fetched
+    logger.info(
+        "Pairs refreshed — %d Binance Futures USDT pairs loaded.", len(_dynamic_pairs)
+    )
+
 
 def _fetch_binance_candles(symbol: str, side: Side) -> dict:
     """
@@ -789,10 +846,28 @@ def _fetch_binance_candles(symbol: str, side: Side) -> dict:
         "4H": four_h_candles,
     }
 
+
+async def cmd_pairs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /pairs — Show currently loaded scan pairs count and list.
+    Admin only.
+    """
+    if not _is_admin(update):
+        await _reply(update, "⛔ Admin only.")
+        return
+
+    count = len(_dynamic_pairs)
+    sample = ", ".join(_dynamic_pairs[:30])
+    more = f"\n... and {count - 30} more" if count > 30 else ""
+    msg = f"🔍 *Loaded {count} Binance Futures pairs:*\n{sample}{more}"
+    await _reply(update, msg)
+
+
 # ── Application bootstrap ─────────────────────────────────────────────────────
 
 def build_application() -> Application:
     """Create and configure the Telegram bot application."""
+    global _dynamic_pairs
     if not TELEGRAM_BOT_TOKEN:
         raise EnvironmentError(
             "TELEGRAM_BOT_TOKEN environment variable is not set."
@@ -806,6 +881,10 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("news_caution", cmd_news_caution))
     app.add_handler(CommandHandler("risk_calc", cmd_risk_calc))
     app.add_handler(CommandHandler("close_signal", cmd_close_signal))
+    app.add_handler(CommandHandler("pairs", cmd_pairs))
+
+    # Fetch Binance USDT-M perpetual pairs dynamically at startup
+    _refresh_dynamic_pairs()
 
     # Wire live news calendar — fetch immediately then refresh every 30 minutes
     fetch_and_reload(news_calendar)   # first fetch at startup (blocking, fast)
@@ -833,6 +912,15 @@ def build_application() -> Application:
         "interval",
         seconds=AUTO_SCAN_INTERVAL_SECONDS,
         id="auto_scan",
+        replace_existing=True,
+    )
+
+    # Pairs refresh — re-fetch active Binance USDT-M pairs every 6 hours
+    _scheduler.add_job(
+        _refresh_dynamic_pairs,
+        "interval",
+        hours=6,
+        id="pairs_refresh",
         replace_existing=True,
     )
 
