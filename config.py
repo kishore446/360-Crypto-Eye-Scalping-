@@ -5,7 +5,6 @@ Validated via Pydantic Settings. All secrets must be supplied via environment va
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 try:
     from pydantic import field_validator

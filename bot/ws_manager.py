@@ -5,10 +5,10 @@ Connects to the Binance Futures combined-stream endpoint and maintains
 in-memory ring buffers of OHLCV candles and real-time prices.
 
 Key design points:
-- Subscribes to ``@kline_5m``, ``@kline_4h``, and ``@miniTicker`` for all
-  active USDT-M futures pairs.
+- Subscribes to ``@kline_5m``, ``@kline_4h``, ``@kline_1d``, and
+  ``@miniTicker`` for all active USDT-M futures pairs.
 - Splits pairs across multiple WS connections (≤200 streams per connection,
-  ≈66 symbols per connection because each symbol uses 3 streams).
+  ≈50 symbols per connection because each symbol uses 4 streams).
 - Fires an async ``on_candle_close(base_symbol, timeframe)`` callback on
   every **closed** 5m kline event.
 - Auto-reconnects with exponential back-off + jitter (1 s base, 60 s cap).
@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import random
+import threading
 import time
 from collections import deque
 from typing import Any, Callable, Coroutine, Optional
@@ -34,8 +35,8 @@ logger = logging.getLogger(__name__)
 
 _WS_BASE_URL = "wss://fstream.binance.com/stream"
 _MAX_STREAMS_PER_CONN = 200        # Binance hard limit
-_STREAMS_PER_SYMBOL = 3            # kline_5m + kline_4h + miniTicker
-_MAX_SYMBOLS_PER_CONN = _MAX_STREAMS_PER_CONN // _STREAMS_PER_SYMBOL  # 66
+_STREAMS_PER_SYMBOL = 4            # kline_5m + kline_4h + kline_1d + miniTicker
+_MAX_SYMBOLS_PER_CONN = _MAX_STREAMS_PER_CONN // _STREAMS_PER_SYMBOL  # 50
 
 _BACKOFF_BASE = 1.0   # seconds
 _BACKOFF_MAX = 60.0   # seconds
@@ -63,6 +64,17 @@ class CandleBuffer:
     def append(self, ohlcv: list[float]) -> None:
         self._buf.append(ohlcv)
 
+    def replace_last(self, ohlcv: list[float]) -> None:
+        """Overwrite the last entry in-place (for in-progress candle updates)."""
+        if self._buf:
+            self._buf[-1] = ohlcv
+
+    def last_open_time(self) -> float | None:
+        """Return the open-time of the last entry, or None if the buffer is empty."""
+        if self._buf:
+            return self._buf[-1][0]
+        return None
+
     def to_list(self) -> list[list[float]]:
         return list(self._buf)
 
@@ -78,6 +90,7 @@ class MarketDataStore:
         self._candles: dict[str, dict[str, CandleBuffer]] = {}
         # {symbol: float}
         self._prices: dict[str, float] = {}
+        self._lock = threading.Lock()
 
     def _ensure_buffers(self, symbol: str) -> None:
         if symbol not in self._candles:
@@ -88,40 +101,55 @@ class MarketDataStore:
             }
 
     def update_candle(self, symbol: str, timeframe: str, ohlcv: list[float]) -> None:
-        """Append (or overwrite) the latest OHLCV row for *symbol*/*timeframe*."""
-        self._ensure_buffers(symbol)
-        tf = timeframe.lower()
-        if tf in self._candles[symbol]:
-            self._candles[symbol][tf].append(ohlcv)
+        """Append (or overwrite) the latest OHLCV row for *symbol*/*timeframe*.
+
+        If the incoming candle has the same open-time as the last entry in the
+        buffer, the last entry is replaced in-place (in-progress candle update).
+        Otherwise the row is appended as a new, closed candle.
+        """
+        with self._lock:
+            self._ensure_buffers(symbol)
+            tf = timeframe.lower()
+            buf = self._candles[symbol].get(tf)
+            if buf is None:
+                return
+            if buf.last_open_time() == ohlcv[0]:
+                buf.replace_last(ohlcv)
+            else:
+                buf.append(ohlcv)
 
     def set_price(self, symbol: str, price: float) -> None:
-        self._prices[symbol] = price
+        with self._lock:
+            self._prices[symbol] = price
 
     def get_price(self, symbol: str) -> Optional[float]:
-        return self._prices.get(symbol)
+        with self._lock:
+            return self._prices.get(symbol)
 
     def get_candles(self, symbol: str, timeframe: str) -> list[list[float]]:
         """Return a snapshot of the candle buffer as a plain list."""
-        sym = self._candles.get(symbol)
-        if sym is None:
-            return []
-        buf = sym.get(timeframe.lower())
-        if buf is None:
-            return []
-        return buf.to_list()
+        with self._lock:
+            sym = self._candles.get(symbol)
+            if sym is None:
+                return []
+            buf = sym.get(timeframe.lower())
+            if buf is None:
+                return []
+            return buf.to_list()
 
     def has_sufficient_data(self, symbol: str) -> bool:
         """Return True when all three timeframes have enough candles and a price."""
-        if self.get_price(symbol) is None:
-            return False
-        sym = self._candles.get(symbol)
-        if sym is None:
-            return False
-        return (
-            len(sym.get("5m", CandleBuffer(0))) >= _MIN_5M
-            and len(sym.get("4h", CandleBuffer(0))) >= _MIN_4H
-            and len(sym.get("1d", CandleBuffer(0))) >= _MIN_1D
-        )
+        with self._lock:
+            if self._prices.get(symbol) is None:
+                return False
+            sym = self._candles.get(symbol)
+            if sym is None:
+                return False
+            return (
+                len(sym.get("5m", CandleBuffer(0))) >= _MIN_5M
+                and len(sym.get("4h", CandleBuffer(0))) >= _MIN_4H
+                and len(sym.get("1d", CandleBuffer(0))) >= _MIN_1D
+            )
 
 
 def _build_stream_names(symbols: list[str]) -> list[str]:
@@ -131,6 +159,7 @@ def _build_stream_names(symbols: list[str]) -> list[str]:
         lower = sym.lower() + "usdt"
         streams.append(f"{lower}@kline_5m")
         streams.append(f"{lower}@kline_4h")
+        streams.append(f"{lower}@kline_1d")
         streams.append(f"{lower}@miniTicker")
     return streams
 

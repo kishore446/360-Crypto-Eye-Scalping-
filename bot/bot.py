@@ -542,6 +542,16 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
 
 # ── Fallback polling scan (runs only when WebSocket stream is unhealthy) ────────
 
+def _fallback_to_candles(rows: list) -> list[CandleData]:
+    """Convert raw OHLCV rows to CandleData objects."""
+    return [
+        CandleData(
+            open=row[1], high=row[2], low=row[3], close=row[4], volume=row[5],
+        )
+        for row in rows
+    ]
+
+
 def _run_fallback_scan_job() -> None:
     """
     APScheduler synchronous job: lightweight fallback scan across all
@@ -551,6 +561,9 @@ def _run_fallback_scan_job() -> None:
     triggered by the scheduler rather than a WS candle-close event.  The
     job is a no-op when the WebSocket stream is healthy or when auto-scan
     is inactive, preventing duplicate signal generation.
+
+    When the WS is unhealthy, fresh candle data is fetched via REST before
+    running the confluence check to avoid operating on stale data.
     """
     if not _bot_state.auto_scan_active:
         return
@@ -563,13 +576,6 @@ def _run_fallback_scan_job() -> None:
 
     for base_symbol in list(_dynamic_pairs):
         try:
-            if not market_data.has_sufficient_data(base_symbol):
-                continue
-
-            price = market_data.get_price(base_symbol)
-            if price is None:
-                continue
-
             if _bot_state.news_freeze or news_calendar.is_high_impact_imminent():
                 break  # news freeze applies globally; no need to iterate further
 
@@ -577,21 +583,33 @@ def _run_fallback_scan_job() -> None:
             if base_symbol in active_symbols:
                 continue
 
+            # Fetch fresh REST data since WS is unhealthy and store data is stale
+            ccxt_symbol = _normalise_symbol(base_symbol)
+            try:
+                for timeframe, limit in (("1d", 30), ("4h", 30), ("5m", 50)):
+                    rows = _resilient_exchange.fetch_ohlcv(ccxt_symbol, timeframe, limit=limit)
+                    for row in rows:
+                        market_data.update_candle(base_symbol, timeframe, row)
+                ticker = _resilient_exchange.fetch_ticker(ccxt_symbol)
+                price = float(ticker["last"])
+                market_data.set_price(base_symbol, price)
+            except Exception as exc:
+                logger.warning("Fallback scan REST fetch failed for %s: %s", base_symbol, exc)
+                # Fall back to cached data if REST fetch fails
+                price = market_data.get_price(base_symbol)
+                if price is None:
+                    continue
+
+            if not market_data.has_sufficient_data(base_symbol):
+                continue
+
             candles_5m_raw = market_data.get_candles(base_symbol, "5m")
             candles_4h_raw = market_data.get_candles(base_symbol, "4h")
             candles_1d_raw = market_data.get_candles(base_symbol, "1d")
 
-            def _to_candles(rows: list) -> list[CandleData]:
-                return [
-                    CandleData(
-                        open=row[1], high=row[2], low=row[3], close=row[4], volume=row[5],
-                    )
-                    for row in rows
-                ]
-
-            four_h_candles = _to_candles(candles_4h_raw)
-            daily_candles = _to_candles(candles_1d_raw)
-            five_m_candles = _to_candles(candles_5m_raw)
+            four_h_candles = _fallback_to_candles(candles_4h_raw)
+            daily_candles = _fallback_to_candles(candles_1d_raw)
+            five_m_candles = _fallback_to_candles(candles_5m_raw)
 
             recent_4h = four_h_candles[-10:] if len(four_h_candles) >= 10 else four_h_candles
             range_low = min(c.low for c in recent_4h) if recent_4h else price * 0.99
@@ -640,9 +658,14 @@ def _run_fallback_scan_job() -> None:
                                     parse_mode="Markdown",
                                 )
 
-                        new_loop = asyncio.new_event_loop()
-                        new_loop.run_until_complete(_send(message_text))
-                        new_loop.close()
+                        if _main_loop is not None and _main_loop.is_running():
+                            asyncio.run_coroutine_threadsafe(_send(), _main_loop)
+                        else:
+                            new_loop = asyncio.new_event_loop()
+                            try:
+                                new_loop.run_until_complete(_send())
+                            finally:
+                                new_loop.close()
                     except Exception as exc:
                         logger.error("Fallback signal broadcast error for %s: %s", base_symbol, exc)
                     break  # one signal per symbol per scan pass
@@ -1124,10 +1147,15 @@ def build_application() -> Application:
             len(_dynamic_pairs),
         )
 
+    async def _post_shutdown(application: Application) -> None:
+        await ws_manager.stop()
+        logger.info("WebSocket manager stopped.")
+
     app = (
         Application.builder()
         .token(TELEGRAM_BOT_TOKEN)
         .post_init(_post_init)
+        .post_shutdown(_post_shutdown)
         .build()
     )
     app.add_handler(CommandHandler("signal_gen", cmd_signal_gen))
