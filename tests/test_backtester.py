@@ -630,6 +630,37 @@ class TestBacktester:
         )
         assert bt._base == "SOL"
 
+    def test_range_derived_from_4h_candles(self) -> None:
+        """run() must pass range_low/range_high from 4H candles, not 5m candles."""
+        # 5m candles are tightly clustered around 100; 4H candles span 50–200.
+        five_min = _flat_candles(100, price=100.0)
+        four_hour = [
+            CandleData(open=100.0, high=200.0, low=50.0, close=125.0, volume=1000.0)
+            for _ in range(20)
+        ]
+        daily = _flat_candles(30, price=100.0)
+
+        captured_calls: list[dict] = []
+
+        def _mock_check(**kwargs):  # type: ignore[override]
+            captured_calls.append(kwargs)
+            return None
+
+        with patch("bot.backtester.run_confluence_check", side_effect=_mock_check):
+            bt = Backtester(
+                symbol="BTC/USDT:USDT",
+                five_min_candles=five_min,
+                four_hour_candles=four_hour,
+                daily_candles=daily,
+            )
+            bt.run()
+
+        assert captured_calls, "run_confluence_check was never called"
+        call = captured_calls[0]
+        # Range must come from 4H candles (low=50, high=200), not 5m (≈99.99–100.01)
+        assert call["range_low"] == pytest.approx(50.0)
+        assert call["range_high"] == pytest.approx(200.0)
+
 
 # ── _build_result tests ───────────────────────────────────────────────────────
 

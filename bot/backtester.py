@@ -594,10 +594,15 @@ class Backtester:
             # ── Look for a new signal when no trade is open ──────────
             if open_trade is None:
                 for side in (Side.LONG, Side.SHORT):
-                    # Derive range and key_level from recent 5m data
+                    # Range from 4H candles — matches live _fetch_binance_candles()
+                    if win_4h:
+                        range_low = min(c.low for c in win_4h)
+                        range_high = max(c.high for c in win_4h)
+                    else:
+                        range_low = min(c.low for c in win_5m)
+                        range_high = max(c.high for c in win_5m)
+                    # key_level from last 10 5m candles — matches live bot
                     recent_5m = win_5m[-10:]
-                    range_low = min(c.low for c in win_5m)
-                    range_high = max(c.high for c in win_5m)
                     if side == Side.LONG:
                         key_level = min(c.low for c in recent_5m)
                     else:
