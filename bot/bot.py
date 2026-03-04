@@ -47,6 +47,8 @@ from bot.state import BotState
 from bot.ws_manager import MarketDataStore, WebSocketManager
 from config import (
     ADMIN_CHAT_ID,
+    AUTO_SCAN_ENABLED_ON_BOOT,
+    AUTO_SCAN_INTERVAL_SECONDS,
     AUTO_SCAN_PAIRS,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHANNEL_ID,
@@ -255,12 +257,13 @@ async def cmd_auto_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     _bot_state.auto_scan_active = not _bot_state.auto_scan_active
 
     if _bot_state.auto_scan_active:
+        mode = "WebSocket" if ws_manager.is_healthy() else "fallback polling"
         msg = (
-            f"🔍 Auto-Scanner ACTIVATED ✅ — WebSocket-powered auto-scanner "
+            f"🔍 Auto-Scanner ACTIVATED ✅ — {mode} mode, "
             f"monitoring {len(_dynamic_pairs)} pairs."
         )
     else:
-        msg = "🔍 Auto-Scanner DEACTIVATED ❌"
+        msg = "🔍 Auto-Scanner DEACTIVATED ❌ — both WS-triggered and fallback scanning halted."
 
     await _broadcast(context, msg)
     await _reply(update, msg)
@@ -535,6 +538,116 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
             except Exception as exc:
                 logger.error("WS signal broadcast error for %s: %s", base_symbol, exc)
             break  # one signal per symbol per candle close
+
+
+# ── Fallback polling scan (runs only when WebSocket stream is unhealthy) ────────
+
+def _run_fallback_scan_job() -> None:
+    """
+    APScheduler synchronous job: lightweight fallback scan across all
+    monitored pairs.
+
+    Runs the same per-symbol confluence path as ``on_candle_close`` but is
+    triggered by the scheduler rather than a WS candle-close event.  The
+    job is a no-op when the WebSocket stream is healthy or when auto-scan
+    is inactive, preventing duplicate signal generation.
+    """
+    if not _bot_state.auto_scan_active:
+        return
+
+    if ws_manager.is_healthy():
+        # WS is live — primary path is active, skip fallback
+        return
+
+    logger.info("Fallback scan: WS unhealthy — running poll-based scan for %d pairs.", len(_dynamic_pairs))
+
+    for base_symbol in list(_dynamic_pairs):
+        try:
+            if not market_data.has_sufficient_data(base_symbol):
+                continue
+
+            price = market_data.get_price(base_symbol)
+            if price is None:
+                continue
+
+            if _bot_state.news_freeze or news_calendar.is_high_impact_imminent():
+                break  # news freeze applies globally; no need to iterate further
+
+            active_symbols = {sig.result.symbol for sig in risk_manager.active_signals}
+            if base_symbol in active_symbols:
+                continue
+
+            candles_5m_raw = market_data.get_candles(base_symbol, "5m")
+            candles_4h_raw = market_data.get_candles(base_symbol, "4h")
+            candles_1d_raw = market_data.get_candles(base_symbol, "1d")
+
+            def _to_candles(rows: list) -> list[CandleData]:
+                return [
+                    CandleData(
+                        open=row[1], high=row[2], low=row[3], close=row[4], volume=row[5],
+                    )
+                    for row in rows
+                ]
+
+            four_h_candles = _to_candles(candles_4h_raw)
+            daily_candles = _to_candles(candles_1d_raw)
+            five_m_candles = _to_candles(candles_5m_raw)
+
+            recent_4h = four_h_candles[-10:] if len(four_h_candles) >= 10 else four_h_candles
+            range_low = min(c.low for c in recent_4h) if recent_4h else price * 0.99
+            range_high = max(c.high for c in recent_4h) if recent_4h else price * 1.01
+            atr_proxy = (range_high - range_low) * 0.01
+
+            for side in (Side.LONG, Side.SHORT):
+                if not risk_manager.can_open_signal(side):
+                    continue
+
+                recent_5m = five_m_candles[-10:] if len(five_m_candles) >= 10 else five_m_candles
+                key_level = (
+                    min(c.low for c in recent_5m) if side == Side.LONG else max(c.high for c in recent_5m)
+                ) if recent_5m else price
+                stop_loss = key_level - atr_proxy if side == Side.LONG else key_level + atr_proxy
+
+                try:
+                    result = run_confluence_check(
+                        symbol=base_symbol,
+                        current_price=price,
+                        side=side,
+                        range_low=range_low,
+                        range_high=range_high,
+                        key_liquidity_level=key_level,
+                        five_min_candles=five_m_candles,
+                        daily_candles=daily_candles,
+                        four_hour_candles=four_h_candles,
+                        news_in_window=news_calendar.is_high_impact_imminent(),
+                        stop_loss=stop_loss,
+                    )
+                except Exception as exc:
+                    logger.error("Fallback scan confluence error for %s %s: %s", base_symbol, side.value, exc)
+                    continue
+
+                if result is not None:
+                    risk_manager.add_signal(result)
+                    logger.info("Fallback signal: %s %s", base_symbol, side.value)
+                    try:
+                        message_text = result.format_message()
+
+                        async def _send(msg: str = message_text) -> None:
+                            async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
+                                await bot.send_message(
+                                    chat_id=TELEGRAM_CHANNEL_ID,
+                                    text=msg,
+                                    parse_mode="Markdown",
+                                )
+
+                        new_loop = asyncio.new_event_loop()
+                        new_loop.run_until_complete(_send(message_text))
+                        new_loop.close()
+                    except Exception as exc:
+                        logger.error("Fallback signal broadcast error for %s: %s", base_symbol, exc)
+                    break  # one signal per symbol per scan pass
+        except Exception as exc:
+            logger.error("Fallback scan error for %s: %s", base_symbol, exc)
 
 
 async def cmd_close_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1006,7 +1119,10 @@ def build_application() -> Application:
         global _main_loop
         _main_loop = asyncio.get_event_loop()
         await ws_manager.start(_dynamic_pairs, on_candle_close)
-        logger.info("WebSocket manager started for %d pairs.", len(_dynamic_pairs))
+        logger.info(
+            "WebSocket manager started for %d pairs (primary scanning path).",
+            len(_dynamic_pairs),
+        )
 
     app = (
         Application.builder()
@@ -1079,9 +1195,30 @@ def build_application() -> Application:
         replace_existing=True,
     )
 
+    # Fallback polling scan — runs at the configured interval but is a no-op
+    # whenever the WebSocket stream is healthy.  Activates automatically when
+    # the stream is degraded so 24/7 signal generation continues uninterrupted.
+    _scheduler.add_job(
+        _run_fallback_scan_job,
+        "interval",
+        seconds=AUTO_SCAN_INTERVAL_SECONDS,
+        id="fallback_scan",
+        replace_existing=True,
+    )
+
     if not _scheduler.running:
         _scheduler.start()
         logger.info("Scheduler started.")
+
+    logger.info(
+        "Auto-scan boot state: %s (AUTO_SCAN_ENABLED_ON_BOOT=%s).",
+        "ACTIVE" if _bot_state.auto_scan_active else "INACTIVE",
+        AUTO_SCAN_ENABLED_ON_BOOT,
+    )
+    logger.info(
+        "Fallback polling scheduled every %ds (activates when WS stream is unhealthy).",
+        AUTO_SCAN_INTERVAL_SECONDS,
+    )
 
     return app
 
