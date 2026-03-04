@@ -37,6 +37,8 @@ from config import (
     TELEGRAM_CHANNEL_ID,
     WEBHOOK_HOST,
     WEBHOOK_PORT,
+    WEBHOOK_RATE_LIMIT_MAX,
+    WEBHOOK_RATE_LIMIT_WINDOW,
     WEBHOOK_SECRET,
 )
 
@@ -46,8 +48,6 @@ logger = logging.getLogger(__name__)
 _start_time = time.time()
 
 # ── Rate limiting: track request timestamps per IP ───────────────────────────
-_rate_limit_window = 60  # seconds
-_rate_limit_max = 30     # max requests per window
 _request_log: dict[str, list[float]] = defaultdict(list)
 
 # ── Pydantic payload validation (optional but available) ─────────────────────
@@ -97,11 +97,11 @@ def _check_ip_allowlist(remote_addr: str) -> bool:
 def _check_rate_limit(remote_addr: str) -> bool:
     """Return True when the IP has not exceeded the rate limit."""
     now = time.time()
-    window_start = now - _rate_limit_window
+    window_start = now - WEBHOOK_RATE_LIMIT_WINDOW
     # Prune old entries (handle both defaultdict and regular dict)
     existing = _request_log.get(remote_addr, [])
     _request_log[remote_addr] = [t for t in existing if t > window_start]
-    if len(_request_log[remote_addr]) >= _rate_limit_max:
+    if len(_request_log[remote_addr]) >= WEBHOOK_RATE_LIMIT_MAX:
         return False
     _request_log[remote_addr].append(now)
     return True

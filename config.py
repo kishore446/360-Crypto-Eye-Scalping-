@@ -55,6 +55,8 @@ try:
         webhook_port: int = 5000
         webhook_secret: str = ""
         allowed_webhook_ips: str = ""  # comma-separated, empty = allow all
+        webhook_rate_limit_window: int = 60  # seconds
+        webhook_rate_limit_max: int = 30     # max requests per window
 
         # ── Auto-Scanner ─────────────────────────────────────────────────────
         auto_scan_pairs: str = "BTC,ETH,SOL,XRP,DOGE,ADA,AVAX,LINK,DOT,MATIC"
@@ -99,6 +101,8 @@ try:
     ALLOWED_WEBHOOK_IPS: list[str] = [
         ip.strip() for ip in settings.allowed_webhook_ips.split(",") if ip.strip()
     ]
+    WEBHOOK_RATE_LIMIT_WINDOW: int = settings.webhook_rate_limit_window
+    WEBHOOK_RATE_LIMIT_MAX: int = settings.webhook_rate_limit_max
 
     _raw_pairs = settings.auto_scan_pairs
     AUTO_SCAN_PAIRS: list[str] = [p.strip().upper() for p in _raw_pairs.split(",") if p.strip()]
@@ -134,6 +138,8 @@ except ImportError:
     WEBHOOK_PORT: int = int(os.environ.get("WEBHOOK_PORT", "5000"))
     WEBHOOK_SECRET: str = os.environ.get("WEBHOOK_SECRET", "")
     ALLOWED_WEBHOOK_IPS: list[str] = []
+    WEBHOOK_RATE_LIMIT_WINDOW: int = int(os.environ.get("WEBHOOK_RATE_LIMIT_WINDOW", "60"))
+    WEBHOOK_RATE_LIMIT_MAX: int = int(os.environ.get("WEBHOOK_RATE_LIMIT_MAX", "30"))
     _raw_pairs = os.environ.get("AUTO_SCAN_PAIRS", "BTC,ETH,SOL,XRP,DOGE,ADA,AVAX,LINK,DOT,MATIC")
     AUTO_SCAN_PAIRS: list[str] = [p.strip().upper() for p in _raw_pairs.split(",") if p.strip()]
     AUTO_SCAN_INTERVAL_SECONDS: int = int(os.environ.get("AUTO_SCAN_INTERVAL_SECONDS", "300"))

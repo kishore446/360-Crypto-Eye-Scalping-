@@ -139,7 +139,7 @@ class TestRateLimiting:
         c, _ = client
         with (
             patch.object(webhook_module, "WEBHOOK_SECRET", ""),
-            patch.object(webhook_module, "_rate_limit_max", 3),
+            patch.object(webhook_module, "WEBHOOK_RATE_LIMIT_MAX", 3),
             patch.object(webhook_module, "_request_log", {}),
         ):
             for i in range(3):

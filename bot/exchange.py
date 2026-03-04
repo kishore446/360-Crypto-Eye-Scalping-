@@ -92,7 +92,12 @@ class ResilientExchange:
             key = self._cache_key(symbol, timeframe)
             self._cache[key] = (time.time() + ttl, data)
 
-    # ── Retry logic ───────────────────────────────────────────────────────────
+    # ── Retry helpers ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _backoff_delay(attempt: int) -> float:
+        """Return exponential backoff delay with jitter for the given attempt (1-based)."""
+        return _RETRY_BASE_SECONDS * (2 ** (attempt - 1)) + random.uniform(0, 1)
 
     def _fetch_with_retry(self, symbol: str, timeframe: str, limit: int = 50) -> list:
         self._check_circuit()
@@ -107,8 +112,7 @@ class ResilientExchange:
             except Exception as exc:
                 self._record_failure()
                 if attempt < _RETRY_COUNT:
-                    # Exponential backoff with jitter
-                    delay = _RETRY_BASE_SECONDS * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                    delay = self._backoff_delay(attempt)
                     logger.warning(
                         "Binance fetch failed (%s/%s, attempt %d/%d): %s — retrying in %.1fs",
                         symbol, timeframe, attempt, _RETRY_COUNT, exc, delay,
@@ -149,7 +153,7 @@ class ResilientExchange:
             except Exception as exc:
                 self._record_failure()
                 if attempt < _RETRY_COUNT:
-                    delay = _RETRY_BASE_SECONDS * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                    delay = self._backoff_delay(attempt)
                     time.sleep(delay)
                 else:
                     raise
