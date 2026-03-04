@@ -53,3 +53,13 @@ SIGNALS_FILE: str = os.environ.get("SIGNALS_FILE", "signals.json")
 WEBHOOK_HOST: str = os.environ.get("WEBHOOK_HOST", "0.0.0.0")
 WEBHOOK_PORT: int = int(os.environ.get("WEBHOOK_PORT", "5000"))
 WEBHOOK_SECRET: str = os.environ.get("WEBHOOK_SECRET", "")
+
+# ── Auto-Scanner ──────────────────────────────────────────────────────────────
+# Pairs to scan automatically (base symbols; USDT perpetual assumed)
+_raw_pairs = os.environ.get(
+    "AUTO_SCAN_PAIRS",
+    "BTC,ETH,SOL,XRP,DOGE,ADA,AVAX,LINK,DOT,MATIC",
+)
+AUTO_SCAN_PAIRS: list[str] = [p.strip().upper() for p in _raw_pairs.split(",") if p.strip()]
+
+AUTO_SCAN_INTERVAL_SECONDS: int = int(os.environ.get("AUTO_SCAN_INTERVAL_SECONDS", "300"))

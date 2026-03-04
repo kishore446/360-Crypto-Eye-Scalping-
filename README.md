@@ -42,6 +42,11 @@ Telegram Bot API  ──►  Channel  (-1003851389127)
 bot/dashboard.py  (Win-rate · Profit Factor · Live PnL log)
 ```
 
+The bot also includes a **background auto-scanner** (enabled via `/auto_scan`) that
+periodically checks all watchlist pairs (configurable via `AUTO_SCAN_PAIRS`) against
+the full confluence engine and broadcasts qualifying signals automatically — no
+TradingView webhook required.
+
 ---
 
 ## III. Signal Template
@@ -79,6 +84,7 @@ Leverage: Cross 10x - 20x (Recommended)
 | `/signal_gen SYMBOL LONG\|SHORT` | Admin | Auto-scans and generates a formatted 360 Eye signal. |
 | `/move_be [SYMBOL]` | Admin | Broadcasts "Move SL to Entry (Risk-Free Mode ON)." Records TP1 result in dashboard. |
 | `/trail_sl` | Admin | Toggles auto-trailing SL behind every 5m Higher Low / Lower High. |
+| `/auto_scan` | Admin | Toggles automatic scanning of watchlist pairs at the configured interval (default: every 5 minutes). |
 | `/news_caution` | Admin | Freezes new signals; triggers "Close Partials" recommendation on active trades. |
 | `/risk_calc <balance> <entry> <sl>` | User | Calculates exact position size based on SL distance and account balance. |
 | `/close_signal SYMBOL OUTCOME PNL` | Admin | Closes a signal, records WIN/LOSS/BE + PnL in the dashboard, broadcasts summary. |
