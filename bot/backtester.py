@@ -562,10 +562,10 @@ class Backtester:
 
             # Build sliding windows
             win_5m = self._5m[max(0, idx - _5M_WINDOW): idx]
-            win_4h = self._4h[max(0, i4h - _4H_WINDOW): i4h] or self._4h[:_4H_WINDOW]
-            win_1d = self._1d[max(0, i1d - _1D_WINDOW): i1d] or self._1d[:_1D_WINDOW]
+            win_4h = self._4h[max(0, i4h - _4H_WINDOW): i4h]
+            win_1d = self._1d[max(0, i1d - _1D_WINDOW): i1d]
 
-            if len(win_5m) < _MIN_5M or len(win_4h) < 2 or len(win_1d) < 20:
+            if len(win_5m) < _MIN_5M or len(win_4h) < 2 or len(win_1d) < 2:
                 continue
 
             current_candle = self._5m[idx]
