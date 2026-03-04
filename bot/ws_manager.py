@@ -11,7 +11,10 @@ Key design points:
   ≈66 symbols per connection because each symbol uses 3 streams).
 - Fires an async ``on_candle_close(base_symbol, timeframe)`` callback on
   every **closed** 5m kline event.
-- Auto-reconnects with exponential back-off (1 s base, 60 s cap).
+- Auto-reconnects with exponential back-off + jitter (1 s base, 60 s cap).
+- Tracks ``last_message_at`` timestamp and ``is_connected`` flag for health
+  monitoring; consumers can call ``is_healthy()`` to determine whether the
+  fallback polling job should activate.
 - Provides ``has_sufficient_data(symbol)`` for the signal engine gate.
 """
 from __future__ import annotations
@@ -19,7 +22,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
+import random
+import time
 from collections import deque
 from typing import Any, Callable, Coroutine, Optional
 
@@ -35,6 +39,7 @@ _MAX_SYMBOLS_PER_CONN = _MAX_STREAMS_PER_CONN // _STREAMS_PER_SYMBOL  # 66
 
 _BACKOFF_BASE = 1.0   # seconds
 _BACKOFF_MAX = 60.0   # seconds
+_STALE_THRESHOLD = 120.0  # seconds without any message → stream considered unhealthy
 
 # Candle buffer sizes
 _BUF_5M = 50
@@ -174,6 +179,17 @@ class WebSocketManager:
         self._symbols: list[str] = []
         self._tasks: list[asyncio.Task] = []
         self._running = False
+        # Health tracking — updated on every received message
+        self.last_message_at: float = 0.0
+        self.is_connected: bool = False
+
+    def is_healthy(self) -> bool:
+        """Return True when the stream is connected and recently active."""
+        if not self.is_connected:
+            return False
+        if self.last_message_at == 0.0:
+            return False
+        return (time.monotonic() - self.last_message_at) < _STALE_THRESHOLD
 
     async def start(
         self,
@@ -205,6 +221,7 @@ class WebSocketManager:
     async def stop(self) -> None:
         """Cancel all WebSocket connection tasks."""
         self._running = False
+        self.is_connected = False
         for task in self._tasks:
             task.cancel()
         if self._tasks:
@@ -226,22 +243,33 @@ class WebSocketManager:
                     close_timeout=10,
                 ) as ws:
                     attempt = 0  # reset back-off on successful connection
+                    self.is_connected = True
                     logger.info("WS[%d] connected.", conn_idx)
                     await self._receive_loop(conn_idx, ws)
             except asyncio.CancelledError:
                 logger.info("WS[%d] cancelled.", conn_idx)
+                self.is_connected = False
                 return
             except ConnectionClosed as exc:
                 logger.warning("WS[%d] connection closed: %s", conn_idx, exc)
+                self.is_connected = False
             except Exception as exc:
                 logger.error("WS[%d] unexpected error: %s", conn_idx, exc)
+                self.is_connected = False
 
             if not self._running:
                 return
 
             attempt += 1
-            delay = min(_BACKOFF_BASE * (2 ** (attempt - 1)), _BACKOFF_MAX)
-            logger.info("WS[%d] reconnecting in %.1fs (attempt %d)…", conn_idx, delay, attempt)
+            # Exponential back-off with full jitter to avoid thundering-herd
+            cap = min(_BACKOFF_BASE * (2 ** (attempt - 1)), _BACKOFF_MAX)
+            delay = random.uniform(0, cap)
+            logger.info(
+                "WS[%d] reconnecting in %.1fs (attempt %d)…",
+                conn_idx,
+                delay,
+                attempt,
+            )
             await asyncio.sleep(delay)
 
     async def _receive_loop(self, conn_idx: int, ws) -> None:
@@ -251,6 +279,7 @@ class WebSocketManager:
                 return
             try:
                 msg = json.loads(raw)
+                self.last_message_at = time.monotonic()
                 await self._handle_message(msg)
             except Exception as exc:
                 logger.debug("WS[%d] message parse error: %s", conn_idx, exc)

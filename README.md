@@ -116,7 +116,8 @@ cp .env.example .env
 | :--- | :--- | :--- |
 | `COINMARKETCAL_API_KEY` | `""` | Enables live high-impact news filtering |
 | `AUTO_SCAN_PAIRS` | `BTC,ETH,SOL,...` | Comma-separated watchlist pairs |
-| `AUTO_SCAN_INTERVAL_SECONDS` | `300` | Scan cycle interval (≥60s) |
+| `AUTO_SCAN_INTERVAL_SECONDS` | `300` | Fallback poll interval when WS is degraded (≥60s) |
+| `AUTO_SCAN_ENABLED_ON_BOOT` | `true` | Start auto-scanner automatically on boot; set to `false` to require manual `/auto_scan` |
 | `MAX_SAME_SIDE_SIGNALS` | `3` | 3-Pair Cap limit |
 | `STALE_SIGNAL_HOURS` | `4` | Auto-close threshold |
 | `BE_TRIGGER_FRACTION` | `0.50` | BE trigger at 50% of TP1 distance |

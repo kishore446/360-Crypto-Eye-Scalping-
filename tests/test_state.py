@@ -8,6 +8,11 @@ import pytest
 from bot.state import BotState
 
 
+def _reset_singleton() -> None:
+    """Reset the BotState singleton so tests can re-create it with a fresh state."""
+    BotState._instance = None
+
+
 class TestBotStateSingleton:
     def test_singleton_returns_same_instance(self):
         a = BotState()
@@ -19,6 +24,26 @@ class TestBotStateSingleton:
         assert state.news_freeze is False
         assert state.trail_active is False
         assert state.auto_scan_active is True
+
+    def test_auto_scan_active_follows_boot_config_true(self, monkeypatch):
+        """auto_scan_active is True on first creation when AUTO_SCAN_ENABLED_ON_BOOT=True."""
+        import bot.state as _state_mod
+
+        monkeypatch.setattr(_state_mod, "_AUTO_SCAN_ENABLED_ON_BOOT", True)
+        _reset_singleton()
+        state = BotState()
+        assert state.auto_scan_active is True
+        _reset_singleton()
+
+    def test_auto_scan_active_follows_boot_config_false(self, monkeypatch):
+        """auto_scan_active is False on first creation when AUTO_SCAN_ENABLED_ON_BOOT=False."""
+        import bot.state as _state_mod
+
+        monkeypatch.setattr(_state_mod, "_AUTO_SCAN_ENABLED_ON_BOOT", False)
+        _reset_singleton()
+        state = BotState()
+        assert state.auto_scan_active is False
+        _reset_singleton()
 
     def test_set_news_freeze(self):
         state = BotState()
@@ -39,6 +64,15 @@ class TestBotStateSingleton:
         state.auto_scan_active = True
         assert state.auto_scan_active is True
         state.auto_scan_active = False
+
+    def test_toggle_auto_scan_active(self):
+        """Toggling auto_scan_active at runtime overrides the boot default."""
+        state = BotState()
+        original = state.auto_scan_active
+        state.auto_scan_active = not original
+        assert state.auto_scan_active is not original
+        # restore
+        state.auto_scan_active = original
 
 
 class TestBotStateThreadSafety:

@@ -2,6 +2,11 @@
 from __future__ import annotations
 import threading
 
+try:
+    from config import AUTO_SCAN_ENABLED_ON_BOOT as _AUTO_SCAN_ENABLED_ON_BOOT
+except Exception:  # pragma: no cover
+    _AUTO_SCAN_ENABLED_ON_BOOT = True
+
 
 class BotState:
     """All mutable bot-level state guarded by a lock."""
@@ -16,7 +21,7 @@ class BotState:
                     inst._state_lock = threading.Lock()
                     inst._news_freeze = False
                     inst._trail_active = False
-                    inst._auto_scan_active = True
+                    inst._auto_scan_active = bool(_AUTO_SCAN_ENABLED_ON_BOOT)
                     cls._instance = inst
         return cls._instance
 
