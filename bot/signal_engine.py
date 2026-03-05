@@ -62,6 +62,7 @@ class SignalResult:
     leverage_min: int
     leverage_max: int
     signal_id: str = field(default="")
+    confluence_score: int = 0
 
     def format_message(self) -> str:
         """Return the standardised Telegram broadcast message."""
@@ -69,9 +70,21 @@ class SignalResult:
         copy_trade_entry = f"{(self.entry_low + self.entry_high) / 2:.4f}"
         tp_list = f"{self.tp1:.4f}, {self.tp2:.4f}, {self.tp3:.4f}"
 
+        # Confidence stars
+        stars = {"High": "⭐⭐⭐", "Medium": "⭐⭐", "Low": "⭐"}.get(self.confidence.value, "⭐")
+        confidence_line = f"Confidence: {self.confidence.value} {stars}"
+        if self.confluence_score > 0:
+            confidence_line += f" | Score: {self.confluence_score}/100"
+
+        bybit_copy = (
+            f"\n\n👇 CLICK TO COPY FOR BYBIT:\n"
+            f"`{self.symbol}/USDT {self.side.value} ENTRY {copy_trade_entry} "
+            f"TP {tp_list} SL {self.stop_loss:.4f}`"
+        )
+
         return (
             f"🚀 #{self.symbol}/USDT ({self.side.value}) | 360 EYE SCALP\n"
-            f"Confidence: {self.confidence.value}\n\n"
+            f"{confidence_line}\n\n"
             f"📊 STRATEGY MAP:\n"
             f"- Structure: {self.structure_note}\n"
             f"- Context: {self.context_note}\n"
@@ -86,6 +99,7 @@ class SignalResult:
             f"👇 CLICK TO COPY FOR BINANCE:\n"
             f"`{self.symbol} {self.side.value} ENTRY {copy_trade_entry} "
             f"TP {tp_list} SL {self.stop_loss:.4f}`"
+            f"{bybit_copy}"
         )
 
 
@@ -415,13 +429,22 @@ def run_confluence_check(
 
     tp1, tp2, tp3 = calculate_targets(current_price, stop_loss, side, tp1_rr, tp2_rr, tp3_rr)
 
-    # High confidence when the 4H direction agrees with the signal side
+    # Confidence scoring per BLUEPRINT §2.6: always check FVG and OB for scoring
     if len(four_hour_candles) >= 2:
         last_4h_rising = four_hour_candles[-1].close > four_hour_candles[-2].close
         direction_match = (side == Side.LONG and last_4h_rising) or (side == Side.SHORT and not last_4h_rising)
     else:
         direction_match = False
-    confidence = Confidence.HIGH if direction_match else Confidence.MEDIUM
+
+    fvg_present = detect_fair_value_gap(five_min_candles, side)
+    ob_present = detect_order_block(five_min_candles, side)
+
+    if direction_match and fvg_present and ob_present:
+        confidence = Confidence.HIGH
+    elif direction_match:
+        confidence = Confidence.MEDIUM
+    else:
+        confidence = Confidence.LOW
 
     from bot.logging_config import generate_signal_id
     sig_id = generate_signal_id()

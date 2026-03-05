@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 _WS_BASE_URL = "wss://fstream.binance.com/stream"
 _MAX_STREAMS_PER_CONN = 200        # Binance hard limit
-_STREAMS_PER_SYMBOL = 4            # kline_5m + kline_4h + kline_1d + miniTicker
+_STREAMS_PER_SYMBOL = 5            # kline_5m + kline_15m + kline_4h + kline_1d + miniTicker
 _MAX_SYMBOLS_PER_CONN = _MAX_STREAMS_PER_CONN // _STREAMS_PER_SYMBOL  # 50
 
 _BACKOFF_BASE = 1.0   # seconds
@@ -46,11 +46,13 @@ _STALE_THRESHOLD = 120.0  # seconds without any message → stream considered un
 _BUF_5M = 50
 _BUF_4H = 30
 _BUF_1D = 30
+_BUF_15M = 50
 
 # Minimum candle counts required for signal engine
 _MIN_5M = 3
 _MIN_4H = 2
 _MIN_1D = 20
+_MIN_15M = 3
 
 OnCandleClose = Callable[[str, str], Coroutine[Any, Any, None]]
 
@@ -98,6 +100,7 @@ class MarketDataStore:
                 "5m": CandleBuffer(_BUF_5M),
                 "4h": CandleBuffer(_BUF_4H),
                 "1d": CandleBuffer(_BUF_1D),
+                "15m": CandleBuffer(_BUF_15M),
             }
 
     def update_candle(self, symbol: str, timeframe: str, ohlcv: list[float]) -> None:
@@ -138,18 +141,22 @@ class MarketDataStore:
             return buf.to_list()
 
     def has_sufficient_data(self, symbol: str) -> bool:
-        """Return True when all three timeframes have enough candles and a price."""
+        """Return True when all required timeframes have enough candles and a price."""
         with self._lock:
             if self._prices.get(symbol) is None:
                 return False
             sym = self._candles.get(symbol)
             if sym is None:
                 return False
-            return (
+            base_ok = (
                 len(sym.get("5m", CandleBuffer(0))) >= _MIN_5M
                 and len(sym.get("4h", CandleBuffer(0))) >= _MIN_4H
                 and len(sym.get("1d", CandleBuffer(0))) >= _MIN_1D
             )
+            # 15m: only check if buffer has been populated (backward compatible)
+            buf_15m = sym.get("15m", CandleBuffer(0))
+            fifteen_m_ok = len(buf_15m) == 0 or len(buf_15m) >= _MIN_15M
+            return base_ok and fifteen_m_ok
 
 
 def _build_stream_names(symbols: list[str]) -> list[str]:
@@ -158,6 +165,7 @@ def _build_stream_names(symbols: list[str]) -> list[str]:
     for sym in symbols:
         lower = sym.lower() + "usdt"
         streams.append(f"{lower}@kline_5m")
+        streams.append(f"{lower}@kline_15m")
         streams.append(f"{lower}@kline_4h")
         streams.append(f"{lower}@kline_1d")
         streams.append(f"{lower}@miniTicker")
