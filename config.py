@@ -52,11 +52,11 @@ try:
         news_fail_safe_window_minutes: int = 60
 
         # ── Dashboard ────────────────────────────────────────────────────────
-        dashboard_log_file: str = "dashboard.json"
+        dashboard_log_file: str = "data/dashboard.json"
 
         # ── Persistence ──────────────────────────────────────────────────────
-        signals_file: str = "signals.json"
-        db_path: str = "360eye.db"
+        signals_file: str = "data/signals.json"
+        db_path: str = "data/360eye.db"
 
         # ── Webhook ──────────────────────────────────────────────────────────
         webhook_host: str = "0.0.0.0"
@@ -148,9 +148,9 @@ except ImportError:
     SESSION_FILTER_ENABLED: bool = os.environ.get("SESSION_FILTER_ENABLED", "false").lower() in ("true", "1", "yes")
     MIN_CONFLUENCE_SCORE: int = int(os.environ.get("MIN_CONFLUENCE_SCORE", "0"))
     NEWS_FAIL_SAFE_WINDOW_MINUTES: int = int(os.environ.get("NEWS_FAIL_SAFE_WINDOW_MINUTES", "60"))
-    DASHBOARD_LOG_FILE: str = os.environ.get("DASHBOARD_LOG_FILE", "dashboard.json")
-    SIGNALS_FILE: str = os.environ.get("SIGNALS_FILE", "signals.json")
-    DB_PATH: str = os.environ.get("DB_PATH", "360eye.db")
+    DASHBOARD_LOG_FILE: str = os.environ.get("DASHBOARD_LOG_FILE", "data/dashboard.json")
+    SIGNALS_FILE: str = os.environ.get("SIGNALS_FILE", "data/signals.json")
+    DB_PATH: str = os.environ.get("DB_PATH", "data/360eye.db")
     WEBHOOK_HOST: str = os.environ.get("WEBHOOK_HOST", "0.0.0.0")
     WEBHOOK_PORT: int = int(os.environ.get("WEBHOOK_PORT", "5000"))
     WEBHOOK_SECRET: str = os.environ.get("WEBHOOK_SECRET", "")

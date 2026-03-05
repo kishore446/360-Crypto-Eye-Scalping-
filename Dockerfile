@@ -23,4 +23,7 @@ USER appuser
 
 EXPOSE 5000
 
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD ["python", "healthcheck.py"]
+
 CMD ["python", "main.py"]
