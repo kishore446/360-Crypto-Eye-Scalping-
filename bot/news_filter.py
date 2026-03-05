@@ -83,8 +83,9 @@ class NewsCalendar:
         return time.time() - self.last_successful_refresh > 2 * 3600
 
     def mark_fetch_failed(self) -> None:
-        """Mark that a fetch attempt failed by setting a very old timestamp."""
-        self.last_successful_refresh = 1.0
+        """Mark that a fetch attempt failed by setting a very old timestamp, causing is_stale() to return True."""
+        _FETCH_FAILED_SENTINEL = 1.0  # A Unix timestamp old enough to always be stale
+        self.last_successful_refresh = _FETCH_FAILED_SENTINEL
 
     # ── query ─────────────────────────────────────────────────────────────────
 

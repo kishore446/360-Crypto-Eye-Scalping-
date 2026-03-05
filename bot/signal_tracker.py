@@ -41,24 +41,27 @@ class SignalTracker:
         side = signal.result.side
         from bot.signal_engine import Side
 
+        risk_distance = abs(signal.entry_mid - signal.result.stop_loss)
+        safe_risk = risk_distance if risk_distance > 0 else 1.0  # guard against division by zero
+
         if side == Side.LONG:
             if not state["tp1_hit"] and current_price >= signal.result.tp1:
                 state["tp1_hit"] = True
-                r = abs(signal.result.tp1 - signal.entry_mid) / abs(signal.entry_mid - signal.result.stop_loss)
+                r = abs(signal.result.tp1 - signal.entry_mid) / safe_risk
                 messages.append(
                     f"✅ #{signal.result.symbol}/USDT TP1 HIT at {signal.result.tp1:.4f} "
                     f"— SL moved to BE. +{r:.1f}R"
                 )
             elif state["tp1_hit"] and not state["tp2_hit"] and current_price >= signal.result.tp2:
                 state["tp2_hit"] = True
-                r = abs(signal.result.tp2 - signal.entry_mid) / abs(signal.entry_mid - signal.result.stop_loss)
+                r = abs(signal.result.tp2 - signal.entry_mid) / safe_risk
                 messages.append(
                     f"✅ #{signal.result.symbol}/USDT TP2 HIT at {signal.result.tp2:.4f} "
                     f"— Trailing SL active. +{r:.1f}R"
                 )
             elif state["tp2_hit"] and not state["tp3_hit"] and current_price >= signal.result.tp3:
                 state["tp3_hit"] = True
-                r = abs(signal.result.tp3 - signal.entry_mid) / abs(signal.entry_mid - signal.result.stop_loss)
+                r = abs(signal.result.tp3 - signal.entry_mid) / safe_risk
                 messages.append(
                     f"✅ #{signal.result.symbol}/USDT TP3 HIT at {signal.result.tp3:.4f} "
                     f"— Full target reached. +{r:.1f}R"
@@ -72,21 +75,21 @@ class SignalTracker:
         else:
             if not state["tp1_hit"] and current_price <= signal.result.tp1:
                 state["tp1_hit"] = True
-                r = abs(signal.result.tp1 - signal.entry_mid) / abs(signal.entry_mid - signal.result.stop_loss)
+                r = abs(signal.result.tp1 - signal.entry_mid) / safe_risk
                 messages.append(
                     f"✅ #{signal.result.symbol}/USDT TP1 HIT at {signal.result.tp1:.4f} "
                     f"— SL moved to BE. +{r:.1f}R"
                 )
             elif state["tp1_hit"] and not state["tp2_hit"] and current_price <= signal.result.tp2:
                 state["tp2_hit"] = True
-                r = abs(signal.result.tp2 - signal.entry_mid) / abs(signal.entry_mid - signal.result.stop_loss)
+                r = abs(signal.result.tp2 - signal.entry_mid) / safe_risk
                 messages.append(
                     f"✅ #{signal.result.symbol}/USDT TP2 HIT at {signal.result.tp2:.4f} "
                     f"— Trailing SL active. +{r:.1f}R"
                 )
             elif state["tp2_hit"] and not state["tp3_hit"] and current_price <= signal.result.tp3:
                 state["tp3_hit"] = True
-                r = abs(signal.result.tp3 - signal.entry_mid) / abs(signal.entry_mid - signal.result.stop_loss)
+                r = abs(signal.result.tp3 - signal.entry_mid) / safe_risk
                 messages.append(
                     f"✅ #{signal.result.symbol}/USDT TP3 HIT at {signal.result.tp3:.4f} "
                     f"— Full target reached. +{r:.1f}R"
