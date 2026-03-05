@@ -64,7 +64,45 @@ Fill in all required values (see `.env.example` for descriptions):
 
 ---
 
-## 5. Deploy
+## 5. Clean VPS Before Fresh Deploy (Optional)
+
+If your VPS has a previous installation or failed deployment, clean it first before running `deploy.sh`.
+
+### Quick Clean (Docker-level only)
+
+Stops containers, removes 360-related images, and prunes unused Docker resources — does **not** touch systemd or delete the repo:
+
+```bash
+./deploy.sh --clean
+```
+
+### Full Clean (removes containers, images, volumes, app data, and systemd service)
+
+```bash
+chmod +x vps-clean.sh
+./vps-clean.sh
+```
+
+You will be prompted before destructive actions. To skip all prompts (for automation/CI):
+
+```bash
+./vps-clean.sh --force
+```
+
+### Nuclear Option (removes repo too — start completely from scratch)
+
+```bash
+./vps-clean.sh --force
+# Then re-clone and deploy fresh:
+git clone https://github.com/kishore446/360-Crypto-Eye-Scalping-.git /opt/360-crypto-eye
+cd /opt/360-crypto-eye
+cp .env.example .env && nano .env
+chmod +x deploy.sh && ./deploy.sh
+```
+
+---
+
+## 6. Deploy
 
 ```bash
 chmod +x deploy.sh
@@ -79,7 +117,7 @@ The script will:
 
 ---
 
-## 6. Set Up Systemd Auto-Start
+## 7. Set Up Systemd Auto-Start
 
 Copy the service file and enable it so the bot restarts automatically after a VPS reboot:
 
@@ -98,7 +136,7 @@ sudo systemctl status 360eye.service
 
 ---
 
-## 7. Monitoring Commands
+## 8. Monitoring Commands
 
 ```bash
 # View running containers
@@ -116,7 +154,7 @@ docker stats
 
 ---
 
-## 8. Updating the Bot
+## 9. Updating the Bot
 
 ```bash
 cd /opt/360-crypto-eye
@@ -132,7 +170,7 @@ Or use the deploy script for a clean rebuild:
 
 ---
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 ### Bot container keeps restarting
 ```bash
