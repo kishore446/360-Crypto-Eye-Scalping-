@@ -124,7 +124,8 @@ setInterval(() => { loadStats(); loadSignals(); }, 30000);
             active = 0
             if get_risk_manager_fn:
                 rm = get_risk_manager_fn()
-                active = len(rm.active_signals)
+                if hasattr(rm, 'active_signals') and isinstance(rm.active_signals, (list, tuple)):
+                    active = len(rm.active_signals)
             if len(trades) > 1:
                 import statistics
                 pnls = [t.pnl_pct for t in trades]

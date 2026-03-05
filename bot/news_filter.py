@@ -78,12 +78,13 @@ class NewsCalendar:
 
     def is_stale(self) -> bool:
         """
-        Returns True if the calendar data is stale (last successful refresh was > 2 hours ago).
+        Returns True if the calendar data is stale (last successful refresh was
+        more than ``fail_safe_window_minutes`` * 2 minutes ago).
         Returns False if the calendar has never been loaded (last_successful_refresh == 0.0).
         """
         if self.last_successful_refresh == 0.0:
             return False
-        return time.time() - self.last_successful_refresh > 2 * 3600
+        return time.time() - self.last_successful_refresh > self.fail_safe_window_minutes * 2 * 60
 
     def mark_fetch_failed(self) -> None:
         """Mark that a fetch attempt failed — triggers the fail-safe via is_stale()."""
