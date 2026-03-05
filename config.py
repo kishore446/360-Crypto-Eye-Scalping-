@@ -42,6 +42,15 @@ try:
         news_skip_window_minutes: int = 60
         coinmarketcal_api_key: str = ""
 
+        # ── Session Filter ────────────────────────────────────────────────────
+        session_filter_enabled: bool = True
+
+        # ── Confluence Scoring ────────────────────────────────────────────────
+        min_confluence_score: int = 0  # 0 = disabled
+
+        # ── News Fail-Safe ────────────────────────────────────────────────────
+        news_fail_safe_window_minutes: int = 60
+
         # ── Dashboard ────────────────────────────────────────────────────────
         dashboard_log_file: str = "dashboard.json"
 
@@ -91,6 +100,10 @@ try:
     NEWS_SKIP_WINDOW_MINUTES: int = settings.news_skip_window_minutes
     COINMARKETCAL_API_KEY: str = settings.coinmarketcal_api_key
 
+    SESSION_FILTER_ENABLED: bool = settings.session_filter_enabled
+    MIN_CONFLUENCE_SCORE: int = settings.min_confluence_score
+    NEWS_FAIL_SAFE_WINDOW_MINUTES: int = settings.news_fail_safe_window_minutes
+
     DASHBOARD_LOG_FILE: str = settings.dashboard_log_file
     SIGNALS_FILE: str = settings.signals_file
     DB_PATH: str = settings.db_path
@@ -132,6 +145,9 @@ except ImportError:
     BE_TRIGGER_FRACTION: float = 0.50
     NEWS_SKIP_WINDOW_MINUTES: int = 60
     COINMARKETCAL_API_KEY: str = os.environ.get("COINMARKETCAL_API_KEY", "")
+    SESSION_FILTER_ENABLED: bool = os.environ.get("SESSION_FILTER_ENABLED", "true").lower() in ("true", "1", "yes")
+    MIN_CONFLUENCE_SCORE: int = int(os.environ.get("MIN_CONFLUENCE_SCORE", "0"))
+    NEWS_FAIL_SAFE_WINDOW_MINUTES: int = int(os.environ.get("NEWS_FAIL_SAFE_WINDOW_MINUTES", "60"))
     DASHBOARD_LOG_FILE: str = os.environ.get("DASHBOARD_LOG_FILE", "dashboard.json")
     SIGNALS_FILE: str = os.environ.get("SIGNALS_FILE", "signals.json")
     DB_PATH: str = os.environ.get("DB_PATH", "360eye.db")

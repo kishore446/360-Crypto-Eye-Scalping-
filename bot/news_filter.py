@@ -18,6 +18,9 @@ from typing import Sequence
 
 from config import NEWS_SKIP_WINDOW_MINUTES
 
+# Sentinel value: a Unix timestamp old enough to always be considered stale.
+_FETCH_FAILED_SENTINEL = 1.0
+
 
 @dataclass
 class NewsEvent:
@@ -52,15 +55,18 @@ class NewsCalendar:
     True
     """
 
-    def __init__(self, skip_window_minutes: int = NEWS_SKIP_WINDOW_MINUTES) -> None:
+    def __init__(self, skip_window_minutes: int = NEWS_SKIP_WINDOW_MINUTES, fail_safe_window_minutes: int = 60) -> None:
         self._events: list[NewsEvent] = []
         self._skip_window_seconds = skip_window_minutes * 60
+        self.fail_safe_window_minutes = fail_safe_window_minutes
+        self.last_successful_refresh: float = 0.0
 
     # ── data loading ─────────────────────────────────────────────────────────
 
     def load_events(self, events: Sequence[NewsEvent]) -> None:
         """Replace the internal event list with *events*."""
         self._events = list(events)
+        self.last_successful_refresh = time.time()
 
     def add_event(self, event: NewsEvent) -> None:
         """Append a single event to the calendar."""
@@ -70,12 +76,27 @@ class NewsCalendar:
         """Remove all events."""
         self._events = []
 
+    def is_stale(self) -> bool:
+        """
+        Returns True if the calendar data is stale (last successful refresh was
+        more than ``fail_safe_window_minutes`` * 2 minutes ago).
+        Returns False if the calendar has never been loaded (last_successful_refresh == 0.0).
+        """
+        if self.last_successful_refresh == 0.0:
+            return False
+        return time.time() - self.last_successful_refresh > self.fail_safe_window_minutes * 2 * 60
+
+    def mark_fetch_failed(self) -> None:
+        """Mark that a fetch attempt failed — triggers the fail-safe via is_stale()."""
+        self.last_successful_refresh = _FETCH_FAILED_SENTINEL
+
     # ── query ─────────────────────────────────────────────────────────────────
 
     def is_high_impact_imminent(self, now: float | None = None) -> bool:
         """
         Return True if any HIGH-impact event is scheduled within the
-        look-ahead window defined by *skip_window_minutes*.
+        look-ahead window defined by *skip_window_minutes*, or if
+        the calendar data is stale.
 
         Parameters
         ----------
@@ -83,6 +104,8 @@ class NewsCalendar:
             Override the current time (Unix timestamp). Defaults to
             ``time.time()``.
         """
+        if self.is_stale():
+            return True
         now = now if now is not None else time.time()
         cutoff = now + self._skip_window_seconds
         return any(

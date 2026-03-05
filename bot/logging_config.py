@@ -2,16 +2,14 @@
 from __future__ import annotations
 import logging
 import json
-import random
-import string
+import secrets
 import time
 from typing import Any
 
 
 def generate_signal_id() -> str:
-    """Generate a unique signal identifier like SIG-XXXXXXXXXXXX."""
-    chars = string.ascii_uppercase + string.digits
-    suffix = "".join(random.choices(chars, k=12))
+    """Generate a unique signal identifier using cryptographic randomness."""
+    suffix = secrets.token_hex(6).upper()
     return f"SIG-{suffix}"
 
 

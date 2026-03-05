@@ -135,11 +135,18 @@ def fetch_and_reload(calendar: NewsCalendar) -> None:
     This is the function called by the APScheduler background job.
     It never raises — any error is logged and the calendar is left unchanged.
     """
+    if not COINMARKETCAL_API_KEY:
+        logger.warning(
+            "COINMARKETCAL_API_KEY is not set — marking calendar as fetch-failed."
+        )
+        calendar.mark_fetch_failed()
+        return
     try:
         events = fetch_coinmarketcal_events()
-        calendar.load_events(events)
-        logger.info(
-            "NewsCalendar refreshed: %d HIGH-impact event(s) loaded.", len(events)
-        )
+        if events is not None:
+            calendar.load_events(events)
+            logger.info(
+                "NewsCalendar refreshed: %d HIGH-impact event(s) loaded.", len(events)
+            )
     except Exception as exc:  # noqa: BLE001
         logger.error("Unexpected error refreshing NewsCalendar: %s", exc)
