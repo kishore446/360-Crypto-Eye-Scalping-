@@ -17,6 +17,23 @@ if [ ! -f .env ]; then
     exit 1
 fi
 
+# Auto-generate WEBHOOK_SECRET if still a placeholder
+if grep -q "generate_a_strong_random_secret" .env; then
+    NEW_SECRET=$(openssl rand -hex 32)
+    sed -i.bak "s/generate_a_strong_random_secret/$NEW_SECRET/" .env && rm -f .env.bak
+    echo "🔑 Generated WEBHOOK_SECRET automatically."
+fi
+
+# Validate TELEGRAM_BOT_TOKEN is not still a placeholder
+if grep -q "your_bot_token_from_botfather" .env; then
+    echo "⚠️  TELEGRAM_BOT_TOKEN is still a placeholder. Please edit .env first."
+    echo "   nano .env"
+    exit 1
+fi
+
+# Ensure data directory exists (for non-Docker local testing)
+mkdir -p data
+
 # Build and start
 echo "🔨 Building containers..."
 docker compose build --no-cache
