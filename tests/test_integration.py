@@ -92,9 +92,10 @@ class TestEndToEndSignalPipeline:
         assert is_active_session(london_time) is True
 
     def test_session_filter_asia_inactive(self):
-        """Asia session should be inactive."""
+        """Asia session should be inactive when SESSION_FILTER_ENABLED=True."""
         asia_time = datetime.datetime(2024, 1, 15, 3, 0, tzinfo=datetime.timezone.utc)
-        assert is_active_session(asia_time) is False
+        with patch("bot.session_filter.SESSION_FILTER_ENABLED", True):
+            assert is_active_session(asia_time) is False
 
     def test_confluence_score_computed(self):
         """Confluence score is computable from real candle data."""

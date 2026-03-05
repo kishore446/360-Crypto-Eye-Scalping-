@@ -2,6 +2,7 @@
 from __future__ import annotations
 import datetime
 import pytest
+from unittest.mock import patch
 from bot.session_filter import get_current_session, is_active_session
 
 
@@ -40,18 +41,47 @@ class TestGetCurrentSession:
         assert result in ("LONDON", "NEW_YORK", "LONDON+NYC_OVERLAP", "ASIA", "OFF_HOURS")
 
 
-class TestIsActiveSession:
+class TestIsActiveSessionFilterEnabled:
+    """Tests for is_active_session() when SESSION_FILTER_ENABLED=True."""
+
     def test_london_is_active(self):
-        assert is_active_session(_utc(9)) is True
+        with patch("bot.session_filter.SESSION_FILTER_ENABLED", True):
+            assert is_active_session(_utc(9)) is True
 
     def test_new_york_is_active(self):
-        assert is_active_session(_utc(17)) is True
+        with patch("bot.session_filter.SESSION_FILTER_ENABLED", True):
+            assert is_active_session(_utc(17)) is True
 
     def test_overlap_is_active(self):
-        assert is_active_session(_utc(13)) is True
+        with patch("bot.session_filter.SESSION_FILTER_ENABLED", True):
+            assert is_active_session(_utc(13)) is True
 
     def test_asia_is_not_active(self):
-        assert is_active_session(_utc(3)) is False
+        with patch("bot.session_filter.SESSION_FILTER_ENABLED", True):
+            assert is_active_session(_utc(3)) is False
 
     def test_off_hours_is_not_active(self):
-        assert is_active_session(_utc(22)) is False
+        with patch("bot.session_filter.SESSION_FILTER_ENABLED", True):
+            assert is_active_session(_utc(22)) is False
+
+
+class TestIsActiveSessionFilterDisabled:
+    """Tests for is_active_session() when SESSION_FILTER_ENABLED=False (default)."""
+
+    def test_asia_is_active_when_filter_disabled(self):
+        with patch("bot.session_filter.SESSION_FILTER_ENABLED", False):
+            assert is_active_session(_utc(3)) is True
+
+    def test_off_hours_is_active_when_filter_disabled(self):
+        with patch("bot.session_filter.SESSION_FILTER_ENABLED", False):
+            assert is_active_session(_utc(22)) is True
+
+    def test_london_is_active_when_filter_disabled(self):
+        with patch("bot.session_filter.SESSION_FILTER_ENABLED", False):
+            assert is_active_session(_utc(9)) is True
+
+    def test_all_hours_active_when_filter_disabled(self):
+        """All 24 hours should return True when SESSION_FILTER_ENABLED=False."""
+        with patch("bot.session_filter.SESSION_FILTER_ENABLED", False):
+            for hour in range(24):
+                assert is_active_session(_utc(hour)) is True, f"Hour {hour} should be active"
