@@ -38,13 +38,12 @@ def _make_ws_manager(*, connected: bool = True, last_msg_offset: float = 0.0) ->
 def _make_sufficient_store(base: str = "BTC") -> MarketDataStore:
     """Return a MarketDataStore pre-filled with enough candle data for *base*."""
     store = MarketDataStore()
-    ohlcv = [0.0, 1.0, 2.0, 0.5, 1.5, 100.0]
-    for _ in range(50):
-        store.update_candle(base, "5m", ohlcv)
-    for _ in range(30):
-        store.update_candle(base, "4h", ohlcv)
-    for _ in range(30):
-        store.update_candle(base, "1d", ohlcv)
+    for i in range(50):
+        store.update_candle(base, "5m", [float(i * 300_000), 1.0, 2.0, 0.5, 1.5, 100.0])
+    for i in range(30):
+        store.update_candle(base, "4h", [float(i * 14_400_000), 1.0, 2.0, 0.5, 1.5, 100.0])
+    for i in range(30):
+        store.update_candle(base, "1d", [float(i * 86_400_000), 1.0, 2.0, 0.5, 1.5, 100.0])
     store.set_price(base, 1.5)
     return store
 
@@ -295,6 +294,12 @@ class TestFallbackScanJob:
 
         monkeypatch.setattr(_bot, "TELEGRAM_BOT_TOKEN", "fake_token")
         monkeypatch.setattr(_bot, "TELEGRAM_CHANNEL_ID", -1)
+
+        # Mock the resilient exchange to avoid real REST calls in tests
+        self._mock_exchange = MagicMock()
+        self._mock_exchange.fetch_ohlcv.return_value = []
+        self._mock_exchange.fetch_ticker.return_value = {"last": "1.5"}
+        monkeypatch.setattr(_bot, "_resilient_exchange", self._mock_exchange)
 
         yield
 
