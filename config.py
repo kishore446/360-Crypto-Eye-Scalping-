@@ -34,7 +34,7 @@ try:
         tp3_rr: float = 4.0
 
         # ── Safety Protocols ─────────────────────────────────────────────────
-        max_same_side_signals: int = 3
+        max_same_side_signals: int = 5
         stale_signal_hours: int = 4
         be_trigger_fraction: float = 0.50
 
@@ -43,7 +43,7 @@ try:
         coinmarketcal_api_key: str = ""
 
         # ── Session Filter ────────────────────────────────────────────────────
-        session_filter_enabled: bool = True
+        session_filter_enabled: bool = False
 
         # ── Confluence Scoring ────────────────────────────────────────────────
         min_confluence_score: int = 0  # 0 = disabled
@@ -68,7 +68,7 @@ try:
 
         # ── Auto-Scanner ─────────────────────────────────────────────────────
         auto_scan_pairs: str = ""
-        auto_scan_interval_seconds: int = 300
+        auto_scan_interval_seconds: int = 60
         auto_scan_enabled_on_boot: bool = True
 
         @field_validator("telegram_bot_token")
@@ -140,12 +140,12 @@ except ImportError:
     TP1_RR: float = 1.5
     TP2_RR: float = 2.5
     TP3_RR: float = 4.0
-    MAX_SAME_SIDE_SIGNALS: int = 3
+    MAX_SAME_SIDE_SIGNALS: int = 5
     STALE_SIGNAL_HOURS: int = 4
     BE_TRIGGER_FRACTION: float = 0.50
     NEWS_SKIP_WINDOW_MINUTES: int = 60
     COINMARKETCAL_API_KEY: str = os.environ.get("COINMARKETCAL_API_KEY", "")
-    SESSION_FILTER_ENABLED: bool = os.environ.get("SESSION_FILTER_ENABLED", "true").lower() in ("true", "1", "yes")
+    SESSION_FILTER_ENABLED: bool = os.environ.get("SESSION_FILTER_ENABLED", "false").lower() in ("true", "1", "yes")
     MIN_CONFLUENCE_SCORE: int = int(os.environ.get("MIN_CONFLUENCE_SCORE", "0"))
     NEWS_FAIL_SAFE_WINDOW_MINUTES: int = int(os.environ.get("NEWS_FAIL_SAFE_WINDOW_MINUTES", "60"))
     DASHBOARD_LOG_FILE: str = os.environ.get("DASHBOARD_LOG_FILE", "dashboard.json")
@@ -159,7 +159,7 @@ except ImportError:
     WEBHOOK_RATE_LIMIT_MAX: int = int(os.environ.get("WEBHOOK_RATE_LIMIT_MAX", "30"))
     _raw_pairs = os.environ.get("AUTO_SCAN_PAIRS", "")
     AUTO_SCAN_PAIRS: list[str] = [p.strip().upper() for p in _raw_pairs.split(",") if p.strip()]
-    AUTO_SCAN_INTERVAL_SECONDS: int = int(os.environ.get("AUTO_SCAN_INTERVAL_SECONDS", "300"))
+    AUTO_SCAN_INTERVAL_SECONDS: int = int(os.environ.get("AUTO_SCAN_INTERVAL_SECONDS", "60"))
     AUTO_SCAN_ENABLED_ON_BOOT: bool = os.environ.get("AUTO_SCAN_ENABLED_ON_BOOT", "true").lower() in ("true", "1", "yes")
     TIMEFRAMES: dict[str, int] = {"1D": 1440, "4H": 240, "15m": 15, "5m": 5}
 
