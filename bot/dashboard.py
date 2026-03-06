@@ -138,17 +138,24 @@ class Dashboard:
     def total_trades(self) -> int:
         return len([r for r in self._results if r.outcome != "OPEN"])
 
+    def get_closed_trades(self) -> list[TradeResult]:
+        """Return all closed trade results (WIN, LOSS, or BE) in chronological order."""
+        return [r for r in self._results if r.outcome in ("WIN", "LOSS", "BE")]
+
     def sharpe_ratio(self, risk_free_rate: float = 0.0) -> float:
         """
         Return the Sharpe Ratio = (mean_return - risk_free) / std_return.
-        Returns 0.0 when there are fewer than 2 closed trades or std is 0.
+        Returns 0.0 when there are fewer than 3 closed trades or std is 0.
+        Requires n >= 3 because Bessel's correction (n-1) needs at least 2
+        degrees of freedom to produce a meaningful standard deviation.
+        Uses Bessel's correction (n-1) for an unbiased sample variance.
         """
         closed = [r for r in self._results if r.outcome in ("WIN", "LOSS", "BE")]
-        if len(closed) < 2:
+        if len(closed) < 3:
             return 0.0
         returns = [r.pnl_pct for r in closed]
         mean_r = sum(returns) / len(returns)
-        variance = sum((r - mean_r) ** 2 for r in returns) / len(returns)
+        variance = sum((r - mean_r) ** 2 for r in returns) / (len(returns) - 1)
         std_r = math.sqrt(variance)
         if std_r == 0:
             return 0.0

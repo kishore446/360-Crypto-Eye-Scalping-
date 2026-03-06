@@ -1,6 +1,6 @@
 # 360 Crypto Eye Scalping — Institutional Master Blueprint
 
-**Version:** `2.0.0-institutional`  
+**Version:** `3.0.0-domination`  
 **Status:** Canonical Authority — if code differs from this document, the code is wrong.  
 **Purpose:** Single source of truth for architecture, strategy, modules, safety protocols, and deployment.
 
@@ -18,6 +18,8 @@
   - [§2.4 Target Calculation](#24-target-calculation)
   - [§2.5 ATR-Based Dynamic Zones](#25-atr-based-dynamic-zones)
   - [§2.6 Confidence Scoring](#26-confidence-scoring)
+  - [§2.7 Gate ⑧ Funding Rate Sentiment](#27-gate--funding-rate-sentiment)
+  - [§2.8 Gate ⑨ Open Interest Divergence](#28-gate--open-interest-divergence)
 - [§3 — Module-by-Module Specification](#3--module-by-module-specification)
   - [§3.1 config.py](#31-configpy--centralised-configuration)
   - [§3.2 bot/signal_engine.py](#32-botsignal_enginepy--fractal-liquidity-engine)
@@ -30,6 +32,10 @@
   - [§3.9 bot/exchange.py](#39-botexchangepy--resilient-exchange-client)
   - [§3.10 bot/database.py](#310-botdatabasepy--sqlitesqlalchemy-persistence)
   - [§3.11 bot/logging_config.py](#311-botlogging_configpy--structured-logging)
+  - [§3.12 bot/session_filter.py](#312-botsession_filterpy--trading-session-gate)
+  - [§3.13 bot/funding_rate.py](#313-botfunding_ratepy--funding-rate-gate)
+  - [§3.14 bot/open_interest.py](#314-botopen_interestpy--open-interest-monitor)
+  - [§3.15 bot/loss_streak_cooldown.py](#315-botloss_streak_cooldownpy--loss-streak-cooldown)
 - [§4 — Signal Broadcast Template](#4--signal-broadcast-template)
 - [§5 — Safety Protocols](#5--safety-protocols-complete-reference)
 - [§6 — Dashboard Parameters & Formulas](#6--dashboard-parameters--formulas)
@@ -38,6 +44,8 @@
 - [§9 — File Tree (Canonical)](#9--file-tree-canonical)
 - [§10 — Coding Standards & Conventions](#10--coding-standards--conventions)
 - [§11 — Backtesting Framework](#11--backtesting-framework)
+- [§12 — v2.0 Multi-Channel System](#12--v20-multi-channel-system)
+- [§13 — Competitive Edge: Why 360 Eye Dominates](#13--competitive-edge-why-360-eye-dominates)
 
 ---
 
@@ -52,6 +60,14 @@
 - Transparency dashboard with real-time performance metrics
 - News-blackout protection against high-impact macro events
 - TradingView webhook integration + autonomous background scanning
+
+360 Crypto Eye is engineered to be the **definitive all-rounder crypto channel group** —
+sitting above every institutional-level professional crypto channel in existence. Where
+competitors offer one signal feed, we deliver a **5-channel ecosystem** with differentiated
+risk tiers, real-time market intelligence, autonomous risk management, and institutional-
+grade transparency that no paid group can match. Our edge: full automation with zero
+manual intervention, battle-tested confluence logic, and a relentless focus on protecting
+capital before chasing profits.
 
 ### §1.2 Architecture Data Flow
 
@@ -289,6 +305,39 @@ elif direction_match:
 else:
     confidence = Confidence.LOW
 ```
+
+---
+
+### §2.7 Gate ⑧ Funding Rate Sentiment
+
+**Module:** `bot/funding_rate.py`
+
+An **optional** confidence modifier that uses Binance Futures funding rates as a contrarian sentiment signal:
+
+| Condition | Signal Direction | Effect |
+|-----------|-----------------|--------|
+| Extreme negative funding (<-0.01%) | LONG | BOOST — shorts crowded, squeeze risk |
+| Extreme positive funding (>0.05%) | SHORT | BOOST — longs crowded, unwind risk |
+| Extreme negative funding (<-0.01%) | SHORT | REDUCE — too crowded against you |
+| Extreme positive funding (>0.05%) | LONG | REDUCE — too crowded trade |
+| Normal funding | Any | NEUTRAL — no adjustment |
+
+This gate does **not block** signals. It appends a context note (`🚀 CONTRARIAN EDGE` or `⚠️ CROWDED TRADE`) to the signal broadcast. Controlled by `FUNDING_RATE_GATE_ENABLED` (default: `true`).
+
+### §2.8 Gate ⑨ Open Interest Divergence
+
+**Module:** `bot/open_interest.py`
+
+Detects smart money positioning by comparing OI change vs price change:
+
+| OI Change | Price Change | Interpretation | Effect |
+|-----------|-------------|----------------|--------|
+| ↑ Up | ↑ Up | Strong trend continuation | BOOST direction of trend |
+| ↓ Down | ↑ Up | Weak rally / short covering | REDUCE LONG |
+| ↑ Up | ↓ Down | Bearish accumulation | BOOST SHORT |
+| ↓ Down | ↓ Down | Capitulation ending | BOOST LONG |
+
+Only activates when OI change exceeds `OI_CHANGE_THRESHOLD` (default: 5%). Controlled by `OI_MONITOR_ENABLED` (default: `true`). Significant divergences are also posted to CH5 (Insights).
 
 ---
 
@@ -1095,6 +1144,83 @@ Usage: `with timed("binance_fetch"):` wraps API call blocks.
 
 ---
 
+### §3.12 `bot/session_filter.py` — Trading Session Gate
+
+Restricts signal generation to high-liquidity trading sessions.
+
+**Sessions (UTC):**
+
+| Session | Hours (UTC) | Active for Signals |
+|---------|------------|-------------------|
+| `LONDON` | 07:00–12:00 | ✅ Yes |
+| `LONDON+NYC_OVERLAP` | 12:00–16:00 | ✅ Yes (peak liquidity) |
+| `NEW_YORK` | 16:00–21:00 | ✅ Yes |
+| `ASIA` | 00:00–07:00 | ❌ No (suppressed) |
+| `OFF_HOURS` | 21:00–00:00 | ❌ No (suppressed) |
+
+When `SESSION_FILTER_ENABLED=false` (default): 24/7 scanning, no restrictions.
+
+**Key functions:**
+- `get_current_session(now)` → session name string
+- `is_active_session(now)` → `True` if signals are allowed
+
+### §3.13 `bot/funding_rate.py` — Funding Rate Gate
+
+See §2.7 for the gate logic. Key functions:
+
+- `fetch_funding_rate(symbol)` → `Optional[float]` — Binance Futures API, returns `None` on error
+- `get_funding_sentiment(funding_rate, side)` → `"BOOST" | "REDUCE" | "NEUTRAL"`
+
+**Configuration:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FUNDING_RATE_GATE_ENABLED` | `true` | Enable/disable the gate |
+| `FUNDING_EXTREME_NEGATIVE` | `-0.0001` | Threshold for extreme negative funding (-0.01%) |
+| `FUNDING_EXTREME_POSITIVE` | `0.0005` | Threshold for extreme positive funding (+0.05%) |
+
+### §3.14 `bot/open_interest.py` — Open Interest Monitor
+
+See §2.8 for the gate logic. Key functions:
+
+- `fetch_open_interest(symbol)` → `Optional[float]` — Binance Futures API, returns `None` on error
+- `analyze_oi_change(current_oi, previous_oi, price_change_pct, side)` → `"BOOST" | "REDUCE" | "NEUTRAL"`
+
+**Configuration:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OI_MONITOR_ENABLED` | `true` | Enable/disable OI monitoring |
+| `OI_CHANGE_THRESHOLD` | `0.05` | Minimum OI % change to act on (5%) |
+
+### §3.15 `bot/loss_streak_cooldown.py` — Loss Streak Cooldown
+
+After 3+ consecutive losses, automatically activates a protective cooldown:
+
+1. **Position size reduced** to 50% of normal for the next 3 signals
+2. **LOW confidence signals suppressed** entirely during cooldown
+3. **Auto-reset** after 3 profitable signals OR 24 hours
+4. **Warning posted** to CH5 (Insights) when cooldown activates/deactivates
+
+**Class:** `CooldownManager`
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `record_outcome(outcome)` | `bool` | Record WIN/LOSS/BE. Returns `True` if cooldown just activated |
+| `is_cooldown_active()` | `bool` | Check if cooldown is active (auto-resets by time) |
+| `get_risk_modifier()` | `float` | 0.5 during cooldown, 1.0 normal |
+| `should_suppress_low_confidence()` | `bool` | True during cooldown |
+
+**Configuration:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOSS_STREAK_THRESHOLD` | `3` | Consecutive losses to trigger cooldown |
+| `COOLDOWN_SIGNALS` | `3` | Profitable signals needed to exit cooldown early |
+| `COOLDOWN_HOURS` | `24` | Maximum cooldown duration in hours |
+
+---
+
 ## §4 — Signal Broadcast Template
 
 Every Telegram signal message follows this exact format:
@@ -1272,7 +1398,7 @@ risk_free_rate = 0.0
 sharpe_ratio = (mean_return - risk_free_rate) / std_dev
 ```
 
-Returns `0.0` for fewer than 2 trades (cannot compute std_dev).
+Returns `0.0` for fewer than 3 trades (Bessel's correction requires n ≥ 3 for meaningful sample std_dev).
 
 ### §6.4 Maximum Drawdown
 
@@ -1549,14 +1675,34 @@ Key fixtures available to all tests:
 │   ├── exchange.py                # ResilientExchange: CCXT wrapper (§3.9)
 │   ├── database.py                # SQLite/SQLAlchemy persistence (§3.10)
 │   ├── state.py                   # Thread-safe bot state singleton (§3.8)
-│   └── logging_config.py         # Structured JSON logging (§3.11)
+│   ├── logging_config.py         # Structured JSON logging (§3.11)
+│   ├── session_filter.py          # Trading session gate — London/NYC/Asia (§3.12)
+│   ├── funding_rate.py            # Gate ⑧ — Funding rate sentiment (§3.13)
+│   ├── open_interest.py           # Gate ⑨ — OI divergence monitor (§3.14)
+│   ├── loss_streak_cooldown.py    # Smart cooldown after loss streak (§3.15)
+│   └── insights/
+│       ├── __init__.py
+│       ├── btc_structure.py       # CH5A — BTC 4H structure post
+│       ├── fear_greed.py          # CH5B — Fear & Greed Index every 6h
+│       ├── news_digest.py         # CH5C — Daily news brief at 08:00 UTC
+│       ├── regime_detector.py     # CH5D — BULL/BEAR/SIDEWAYS classification
+│       ├── daily_performance.py   # CH5E — Daily Performance Recap at 23:00 UTC
+│       └── weekly_briefing.py     # CH5F — Weekly BTC analysis on Sundays
 │
 └── tests/
     ├── __init__.py
     ├── conftest.py                # Shared fixtures
     ├── test_signal_engine.py      # Unit tests for Fractal Liquidity Engine
     ├── test_risk_manager.py       # Unit tests for safety protocols
-    └── test_dashboard.py          # Unit tests for dashboard statistics
+    ├── test_dashboard.py          # Unit tests for dashboard statistics (incl. Bessel's correction)
+    ├── test_news_fetcher.py       # Unit tests for news fetcher (incl. no-key bug fix)
+    ├── test_signal_tracker.py     # Unit tests for signal tracker (incl. BE-SL bug fix)
+    ├── test_session_filter.py     # Unit tests for trading session gate
+    ├── test_funding_rate.py       # Unit tests for funding rate sentiment gate
+    ├── test_open_interest.py      # Unit tests for OI divergence monitor
+    ├── test_loss_cooldown.py      # Unit tests for loss streak cooldown
+    ├── test_fear_greed.py         # Unit tests for Fear & Greed index
+    └── test_daily_performance.py  # Unit tests for daily performance recap
 ```
 
 ---
@@ -1880,9 +2026,11 @@ Signal Engine (Fractal Liquidity Engine)
 
 #### CH5 — Market Insights (`bot/insights/`)
 - **5A:** BTC Structure post every 4H (`btc_structure.py`)
-- **5B:** Daily news digest at 08:00 UTC (`news_digest.py`)
-- **5C:** Regime detector at 09:00 UTC (`regime_detector.py`) — sets `BotState.market_regime`
-- **5D:** Weekly briefing every Sunday 18:00 UTC (`weekly_briefing.py`)
+- **5B:** Fear & Greed Index every 6 hours (`fear_greed.py`) — score, label, emoji, contextual advice
+- **5C:** Daily news digest at 08:00 UTC (`news_digest.py`)
+- **5D:** Regime detector at 09:00 UTC (`regime_detector.py`) — sets `BotState.market_regime`
+- **5E:** Daily Performance Recap at 23:00 UTC (`daily_performance.py`) — full stats with best/worst signal
+- **5F:** Weekly briefing every Sunday 18:00 UTC (`weekly_briefing.py`)
 - **Env var:** `TELEGRAM_CHANNEL_ID_INSIGHTS`
 
 ### §12.3 Signal Router (`bot/signal_router.py`)
@@ -1954,6 +2102,10 @@ Three critical bugs fixed in v2.0 that caused zero signals on live VPS:
 ```
 bot/
 ├── signal_router.py           # Channel routing + deduplication
+├── session_filter.py          # Trading session gate (London/NYC/Asia)
+├── funding_rate.py            # Gate ⑧ — Binance funding rate sentiment
+├── open_interest.py           # Gate ⑨ — OI divergence monitor
+├── loss_streak_cooldown.py    # Smart cooldown after 3+ consecutive losses
 ├── channels/
 │   ├── __init__.py
 │   ├── hard_scalp.py          # CH1 gate runner (full 7 gates, HIGH only)
@@ -1963,7 +2115,40 @@ bot/
 └── insights/
     ├── __init__.py
     ├── btc_structure.py       # CH5A — BTC 4H structure post
-    ├── regime_detector.py     # CH5C — BULL/BEAR/SIDEWAYS classification
-    ├── news_digest.py         # CH5B — Daily news brief at 08:00 UTC
-    └── weekly_briefing.py     # CH5D — Weekly BTC analysis on Sundays
+    ├── fear_greed.py          # CH5B — Fear & Greed Index every 6 hours
+    ├── regime_detector.py     # CH5D — BULL/BEAR/SIDEWAYS classification
+    ├── news_digest.py         # CH5C — Daily news brief at 08:00 UTC
+    ├── daily_performance.py   # CH5E — Daily Performance Recap at 23:00 UTC
+    └── weekly_briefing.py     # CH5F — Weekly BTC analysis on Sundays
 ```
+
+---
+
+## §13 — Competitive Edge: Why 360 Eye Dominates
+
+### §13.1 Feature Comparison vs Top Crypto Channels
+
+| Feature | 360 Crypto Eye | Palm | Crypto Banter | Jacob Bury |
+|---------|---------------|------|---------------|------------|
+| Multi-channel tiers | 5 channels ✅ | 1 ❌ | 1 ❌ | 1 ❌ |
+| Full automation | Zero manual ✅ | Manual ❌ | Manual ❌ | Manual ❌ |
+| Real-time risk mgmt | BE + Trail + Cap ✅ | None ❌ | None ❌ | None ❌ |
+| News blackout | Auto CoinMarketCal ✅ | None ❌ | None ❌ | None ❌ |
+| Funding rate edge | Contrarian gate ✅ | None ❌ | None ❌ | None ❌ |
+| OI divergence | Auto-detected ✅ | None ❌ | None ❌ | None ❌ |
+| Loss streak protection | Auto-cooldown ✅ | None ❌ | None ❌ | None ❌ |
+| Session awareness | London/NYC filter ✅ | None ❌ | None ❌ | None ❌ |
+| Performance transparency | Live dashboard ✅ | None ❌ | None ❌ | None ❌ |
+| Spot + Futures + Insights | All-in-one ✅ | Futures only ❌ | Mixed ❌ | Futures only ❌ |
+
+### §13.2 The 360 Eye Advantage
+
+No other crypto signal channel can claim:
+1. **Zero human intervention** — every signal is algorithmically generated, tracked, and closed
+2. **5 differentiated channels** — something for every trader profile
+3. **Real-time SL management** — break-even, trailing, and stale-close automation
+4. **Institutional transparency** — Sharpe, drawdown, equity curve posted daily
+5. **Smart cooldown** — protects members during drawdowns automatically
+6. **Market regime awareness** — suppresses wrong-side trades in bear markets
+7. **Funding rate contrarian edge** — detects crowded trades before they unwind
+8. **Open interest intelligence** — sees what smart money is actually doing
