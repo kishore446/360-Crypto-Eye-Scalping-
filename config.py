@@ -141,7 +141,7 @@ except ImportError:
     TP2_RR: float = 2.5
     TP3_RR: float = 4.0
     MAX_SAME_SIDE_SIGNALS: int = 5
-    STALE_SIGNAL_HOURS: int = 4
+    STALE_SIGNAL_HOURS: int = int(os.environ.get("STALE_SIGNAL_HOURS", "4"))
     BE_TRIGGER_FRACTION: float = 0.50
     NEWS_SKIP_WINDOW_MINUTES: int = 60
     COINMARKETCAL_API_KEY: str = os.environ.get("COINMARKETCAL_API_KEY", "")

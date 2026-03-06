@@ -153,6 +153,11 @@ class TestOnCandleCloseGates:
         self._news_cal.is_high_impact_imminent.return_value = False
         monkeypatch.setattr(_bot, "news_calendar", self._news_cal)
 
+        # Mock signal_tracker so check_signal doesn't fail on MagicMock signals
+        self._signal_tracker = MagicMock()
+        self._signal_tracker.check_signal.return_value = []
+        monkeypatch.setattr(_bot, "signal_tracker", self._signal_tracker)
+
         monkeypatch.setattr(_bot, "TELEGRAM_BOT_TOKEN", "fake_token")
         monkeypatch.setattr(_bot, "TELEGRAM_CHANNEL_ID", -1)
 

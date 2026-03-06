@@ -22,6 +22,7 @@ Required environment variable:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import platform
 import time
@@ -52,6 +53,7 @@ from bot.signal_engine import (
     Side,
     run_confluence_check,
 )
+from bot.signal_tracker import SignalTracker
 from bot.state import BotState
 from bot.ws_manager import MarketDataStore, WebSocketManager
 from config import (
@@ -59,6 +61,7 @@ from config import (
     AUTO_SCAN_ENABLED_ON_BOOT,
     AUTO_SCAN_INTERVAL_SECONDS,
     AUTO_SCAN_PAIRS,
+    STALE_SIGNAL_HOURS,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHANNEL_ID,
 )
@@ -70,6 +73,7 @@ logger = logging.getLogger(__name__)
 risk_manager = RiskManager()
 news_calendar = NewsCalendar()
 dashboard = Dashboard()
+signal_tracker = SignalTracker()
 
 # Background scheduler — refreshes the news calendar every 30 minutes
 _scheduler = BackgroundScheduler(daemon=True)
@@ -581,14 +585,46 @@ def _run_trailing_sl_job(context_or_bot=None) -> None:
             new_loop.close()
 
 
+# ── Stale signal cleanup job ──────────────────────────────────────────────────
+
+def _run_stale_signal_job() -> None:
+    """Auto-close signals open longer than STALE_SIGNAL_HOURS."""
+    for sig in list(risk_manager.active_signals):
+        if sig.is_stale():
+            symbol = sig.result.symbol
+            risk_manager.close_signal(symbol, reason="stale")
+            signal_tracker.clear_signal(sig.result.signal_id)
+            logger.info("Auto-closed stale signal: %s", symbol)
+
+            async def _send(sym: str = symbol) -> None:
+                async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
+                    await bot.send_message(
+                        chat_id=TELEGRAM_CHANNEL_ID,
+                        text=(
+                            f"⏰ #{sym}/USDT signal auto-closed — *STALE* "
+                            f"(exceeded {STALE_SIGNAL_HOURS}h limit)."
+                        ),
+                        parse_mode="Markdown",
+                    )
+
+            if _main_loop is not None and _main_loop.is_running():
+                asyncio.run_coroutine_threadsafe(_send(), _main_loop)
+            else:
+                new_loop = asyncio.new_event_loop()
+                try:
+                    new_loop.run_until_complete(_send())
+                finally:
+                    new_loop.close()
+
+
 # ── WebSocket candle-close callback (replaces _run_auto_scan_job) ─────────────
 
 async def on_candle_close(base_symbol: str, timeframe: str) -> None:
     """
     Async callback fired by WebSocketManager every time a 5m candle closes.
 
-    Runs the full confluence engine for *base_symbol* and broadcasts any
-    qualifying signal to the Telegram channel.
+    Checks open signal lifecycle events (TP/SL hits) for *base_symbol* first,
+    then runs the full confluence engine if no signal is currently active.
     """
     if not _bot_state.auto_scan_active:
         return
@@ -596,17 +632,62 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
     if _bot_state.news_freeze or news_calendar.is_high_impact_imminent():
         return
 
-    active_symbols = {sig.result.symbol for sig in risk_manager.active_signals}
-    if base_symbol in active_symbols:
-        logger.debug("on_candle_close: skipping %s — signal already active.", base_symbol)
+    price = market_data.get_price(base_symbol)
+    if price is None:
+        return
+
+    # ── Signal lifecycle tracking for the current symbol ─────────────────────
+    active_for_symbol = [s for s in risk_manager.active_signals if s.result.symbol == base_symbol]
+    for sig in active_for_symbol:
+        messages = signal_tracker.check_signal(sig, price)
+        for msg in messages:
+            try:
+                async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
+                    await bot.send_message(
+                        chat_id=TELEGRAM_CHANNEL_ID,
+                        text=msg,
+                        parse_mode="Markdown",
+                    )
+            except Exception as exc:
+                logger.error("Signal tracker broadcast error for %s: %s", base_symbol, exc)
+
+            if "SL HIT" in msg:
+                risk_manager.close_signal(base_symbol, reason="sl")
+                signal_tracker.clear_signal(sig.result.signal_id)
+                logger.info("Auto-closed signal on SL hit: %s", base_symbol)
+            elif "TP3 HIT" in msg:
+                risk_manager.close_signal(base_symbol, reason="tp3")
+                signal_tracker.clear_signal(sig.result.signal_id)
+                logger.info("Auto-closed signal on TP3 hit: %s", base_symbol)
+            elif "TP1 HIT" in msg and not sig.be_triggered:
+                sig.trigger_be()
+                pnl_pct = abs(sig.result.tp1 - sig.entry_mid) / sig.entry_mid * 100
+                dashboard.record_result(
+                    TradeResult(
+                        symbol=sig.result.symbol,
+                        side=sig.result.side.value,
+                        entry_price=sig.entry_mid,
+                        exit_price=sig.result.tp1,
+                        stop_loss=sig.result.stop_loss,
+                        tp1=sig.result.tp1,
+                        tp2=sig.result.tp2,
+                        tp3=sig.result.tp3,
+                        opened_at=sig.opened_at,
+                        closed_at=time.time(),
+                        outcome="WIN",
+                        pnl_pct=round(pnl_pct, 4),
+                        timeframe="5m",
+                    )
+                )
+                logger.info("Auto-triggered BE on TP1 hit: %s", base_symbol)
+
+    if active_for_symbol:
+        # Symbol already has an active signal — skip new signal generation.
+        logger.debug("on_candle_close: skipping new signal for %s — signal already active.", base_symbol)
         return
 
     if not market_data.has_sufficient_data(base_symbol):
         logger.debug("on_candle_close: insufficient data for %s.", base_symbol)
-        return
-
-    price = market_data.get_price(base_symbol)
-    if price is None:
         return
 
     candles_5m_raw = market_data.get_candles(base_symbol, "5m")
@@ -812,6 +893,7 @@ def _run_fallback_scan_job() -> None:
                     except Exception as exc:
                         logger.error("Fallback signal broadcast error for %s: %s", base_symbol, exc)
                     break  # one signal per symbol per scan pass
+            time.sleep(0.2)  # ~5 pairs/sec → stays well within Binance 1200 req/min limit
         except Exception as exc:
             logger.error("Fallback scan error for %s: %s", base_symbol, exc)
 
@@ -1056,7 +1138,7 @@ def _fetch_binance_candles(symbol: str, side: Side) -> dict:
     # Fetch OHLCV for each required timeframe
     # CCXT returns [[timestamp, open, high, low, close, volume], ...]
     raw_1d = _resilient_exchange.fetch_ohlcv(symbol, "1d", limit=30)
-    raw_4h = _resilient_exchange.fetch_ohlcv(symbol, "4h", limit=10)
+    raw_4h = _resilient_exchange.fetch_ohlcv(symbol, "4h", limit=30)
     raw_5m = _resilient_exchange.fetch_ohlcv(symbol, "5m", limit=50)
 
     def _to_candles(rows: list) -> list[CandleData]:
@@ -1117,31 +1199,38 @@ def _fetch_binance_candles(symbol: str, side: Side) -> dict:
 
 def _seed_historical_candles(symbols: list[str]) -> None:
     """
-    REST-fetch initial candle history at startup to seed the WS ring buffers.
+    REST-fetch initial candle history at startup using parallel threads.
 
+    Uses up to 10 concurrent workers with a short sleep between batches
+    to respect Binance rate limits while reducing boot time from ~2.5min to ~15s.
     Fetches 1D (30), 4H (30), and 5m (50) candles for every pair so the
     signal engine has enough data before the first WS events arrive.
     """
     total = len(symbols)
-    logger.info("Seeding historical candles for %d pairs…", total)
-    for idx, base in enumerate(symbols, 1):
+    logger.info("Seeding historical candles for %d pairs (parallel)…", total)
+
+    def _seed_one(base: str) -> None:
         ccxt_symbol = _normalise_symbol(base)
         try:
             for timeframe, limit in (("1d", 30), ("4h", 30), ("5m", 50)):
                 rows = _resilient_exchange.fetch_ohlcv(ccxt_symbol, timeframe, limit=limit)
                 for row in rows:
                     market_data.update_candle(base, timeframe, row)
-            # Seed price from last 5m close
             rows_5m = market_data.get_candles(base, "5m")
             if rows_5m:
                 market_data.set_price(base, float(rows_5m[-1][4]))
         except Exception as exc:
             logger.warning("Seed failed for %s: %s", base, exc)
 
-        if idx % 50 == 0:
-            logger.info("Seeded %d/%d pairs…", idx, total)
-
-        time.sleep(0.5)  # respect Binance rate limits
+    BATCH_SIZE = 10
+    for i in range(0, total, BATCH_SIZE):
+        batch = symbols[i:i + BATCH_SIZE]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=BATCH_SIZE) as executor:
+            list(executor.map(_seed_one, batch))
+        if i + BATCH_SIZE < total:
+            time.sleep(1.0)  # inter-batch pause to stay within rate limits
+        if (i + BATCH_SIZE) % 50 == 0:
+            logger.info("Seeded ~%d/%d pairs…", min(i + BATCH_SIZE, total), total)
 
     logger.info("Historical candle seeding complete.")
 
@@ -1336,6 +1425,15 @@ def build_application() -> Application:
         "interval",
         seconds=60,
         id="trailing_sl",
+        replace_existing=True,
+    )
+
+    # Stale signal cleanup — auto-close signals open beyond STALE_SIGNAL_HOURS
+    _scheduler.add_job(
+        _run_stale_signal_job,
+        "interval",
+        minutes=15,
+        id="stale_signal_cleanup",
         replace_existing=True,
     )
 
