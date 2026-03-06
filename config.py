@@ -23,6 +23,26 @@ try:
         telegram_channel_id: int = 0
         admin_chat_id: int = 0
 
+        # ── Multi-Channel Telegram ────────────────────────────────────────────
+        telegram_channel_id_hard: int = 0      # CH1: Hard Scalp (replaces telegram_channel_id)
+        telegram_channel_id_medium: int = 0    # CH2: Medium Scalp
+        telegram_channel_id_easy: int = 0      # CH3: Easy Breakout
+        telegram_channel_id_spot: int = 0      # CH4: Spot Momentum
+        telegram_channel_id_insights: int = 0  # CH5: Market Insights
+
+        # ── Channel Thresholds ───────────────────────────────────────────────
+        ch2_news_window_minutes: int = 30         # Medium channel relaxed news window
+        ch3_volume_spike_ratio: float = 1.5       # 150% volume spike for easy breakout
+        ch4_scan_interval_hours: int = 4          # Spot channel scan frequency
+        ch4_accumulation_threshold: float = 0.15  # Within 15% of 90d low for spot
+
+        # ── Insights ─────────────────────────────────────────────────────────
+        btc_fear_greed_url: str = "https://api.alternative.me/fng/"
+        regime_detector_enabled: bool = True
+
+        # ── Signal Deduplication ─────────────────────────────────────────────
+        dedup_window_minutes: int = 15  # Suppress CH2 if same symbol fired CH1 within 15min
+
         # ── Signal Engine ─────────────────────────────────────────────────────
         leverage_min: int = 10
         leverage_max: int = 20
@@ -85,6 +105,22 @@ try:
     TELEGRAM_CHANNEL_ID: int = settings.telegram_channel_id
     ADMIN_CHAT_ID: int = settings.admin_chat_id
 
+    # ── Multi-channel IDs — CH1 falls back to TELEGRAM_CHANNEL_ID ───────────
+    TELEGRAM_CHANNEL_ID_HARD: int = settings.telegram_channel_id_hard or settings.telegram_channel_id
+    TELEGRAM_CHANNEL_ID_MEDIUM: int = settings.telegram_channel_id_medium
+    TELEGRAM_CHANNEL_ID_EASY: int = settings.telegram_channel_id_easy
+    TELEGRAM_CHANNEL_ID_SPOT: int = settings.telegram_channel_id_spot
+    TELEGRAM_CHANNEL_ID_INSIGHTS: int = settings.telegram_channel_id_insights
+
+    CH2_NEWS_WINDOW_MINUTES: int = settings.ch2_news_window_minutes
+    CH3_VOLUME_SPIKE_RATIO: float = settings.ch3_volume_spike_ratio
+    CH4_SCAN_INTERVAL_HOURS: int = settings.ch4_scan_interval_hours
+    CH4_ACCUMULATION_THRESHOLD: float = settings.ch4_accumulation_threshold
+
+    BTC_FEAR_GREED_URL: str = settings.btc_fear_greed_url
+    REGIME_DETECTOR_ENABLED: bool = settings.regime_detector_enabled
+    DEDUP_WINDOW_MINUTES: int = settings.dedup_window_minutes
+
     LEVERAGE_MIN: int = settings.leverage_min
     LEVERAGE_MAX: int = settings.leverage_max
     DEFAULT_RISK_FRACTION: float = settings.default_risk_fraction
@@ -134,6 +170,21 @@ except ImportError:
     TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHANNEL_ID: int = int(os.environ.get("TELEGRAM_CHANNEL_ID", "0"))
     ADMIN_CHAT_ID: int = int(os.environ.get("ADMIN_CHAT_ID", "0"))
+
+    TELEGRAM_CHANNEL_ID_HARD: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_HARD", "0")) or TELEGRAM_CHANNEL_ID
+    TELEGRAM_CHANNEL_ID_MEDIUM: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_MEDIUM", "0"))
+    TELEGRAM_CHANNEL_ID_EASY: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_EASY", "0"))
+    TELEGRAM_CHANNEL_ID_SPOT: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_SPOT", "0"))
+    TELEGRAM_CHANNEL_ID_INSIGHTS: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_INSIGHTS", "0"))
+
+    CH2_NEWS_WINDOW_MINUTES: int = int(os.environ.get("CH2_NEWS_WINDOW_MINUTES", "30"))
+    CH3_VOLUME_SPIKE_RATIO: float = float(os.environ.get("CH3_VOLUME_SPIKE_RATIO", "1.5"))
+    CH4_SCAN_INTERVAL_HOURS: int = int(os.environ.get("CH4_SCAN_INTERVAL_HOURS", "4"))
+    CH4_ACCUMULATION_THRESHOLD: float = float(os.environ.get("CH4_ACCUMULATION_THRESHOLD", "0.15"))
+
+    BTC_FEAR_GREED_URL: str = os.environ.get("BTC_FEAR_GREED_URL", "https://api.alternative.me/fng/")
+    REGIME_DETECTOR_ENABLED: bool = os.environ.get("REGIME_DETECTOR_ENABLED", "true").lower() in ("true", "1", "yes")
+    DEDUP_WINDOW_MINUTES: int = int(os.environ.get("DEDUP_WINDOW_MINUTES", "15"))
     LEVERAGE_MIN: int = 10
     LEVERAGE_MAX: int = 20
     DEFAULT_RISK_FRACTION: float = 0.01

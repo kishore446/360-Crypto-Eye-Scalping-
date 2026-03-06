@@ -17,9 +17,12 @@ Entry is only taken when ALL four confluence checks pass:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class Side(str, Enum):
@@ -110,6 +113,24 @@ def _average_volume(candles: list[CandleData]) -> float:
     return sum(c.volume for c in candles) / len(candles)
 
 
+def _calculate_ema(candles: list[CandleData], period: int) -> float:
+    """
+    Calculate the Exponential Moving Average of closing prices.
+
+    Uses the standard smoothing factor k = 2 / (period + 1).
+    Returns the last close if there are fewer candles than the period.
+    """
+    if not candles:
+        return 0.0
+    if len(candles) < period:
+        return sum(c.close for c in candles) / len(candles)
+    k = 2.0 / (period + 1)
+    ema = sum(c.close for c in candles[:period]) / period
+    for candle in candles[period:]:
+        ema = candle.close * k + ema * (1 - k)
+    return ema
+
+
 def is_discount_zone(price: float, range_low: float, range_high: float) -> bool:
     """
     Return True when *price* sits in the lower 50 % (discount) of the
@@ -149,7 +170,7 @@ def detect_liquidity_sweep(
         LONG → check for a bearish sweep below key_level (stop-hunt of longs).
         SHORT → check for a bullish sweep above key_level.
     """
-    for candle in candles[-3:]:  # inspect only the last three candles
+    for candle in candles[-7:]:  # inspect the last seven candles (~35 min)
         if side == Side.LONG:
             # Wick pierces below the level; body closes above it
             if candle.low < key_level and candle.close > key_level:
@@ -192,7 +213,7 @@ def detect_market_structure_shift(
     prior_candles = candles[:-1]
 
     if side == Side.LONG:
-        swing_high = max(c.high for c in prior_candles)
+        swing_high = max(c.high for c in prior_candles[-7:])  # last 7 candles ≈ 35 min
         if not (last.close > swing_high and last.volume > avg_vol):
             return False
         if min_displacement_pct > 0 and swing_high > 0:
@@ -201,7 +222,7 @@ def detect_market_structure_shift(
                 return False
         return True
     else:
-        swing_low = min(c.low for c in prior_candles)
+        swing_low = min(c.low for c in prior_candles[-7:])  # last 7 candles ≈ 35 min
         if not (last.close < swing_low and last.volume > avg_vol):
             return False
         if min_displacement_pct > 0 and swing_low > 0:
@@ -220,22 +241,33 @@ def assess_macro_bias(
     the two timeframes are in conflict (no-trade condition).
 
     Logic:
-      - 1D bullish  = last close > previous close AND above SMA-20
+      - 1D bullish  = last close > previous close AND (close > SMA-20 OR close > EMA-9)
+      - 1D bearish  = last close < previous close AND (close < SMA-20 OR close < EMA-9)
       - 4H bullish  = last close > previous close
       Both must agree for a directional bias to be returned.
+
+    Using OR between SMA-20 and EMA-9 prevents false negatives during
+    ranging/consolidating markets where only one MA is above price.
     """
     if len(daily_candles) < 20 or len(four_hour_candles) < 2:
         return None
 
     # 1D bias
     sma20_daily = sum(c.close for c in daily_candles[-20:]) / 20
+
+    # EMA-9 on daily candles (smoothing factor k = 2/(9+1) = 0.2)
+    ema9_daily = _calculate_ema(daily_candles, period=9)
+
+    last_daily = daily_candles[-1]
+    prev_daily = daily_candles[-2]
+
     daily_bullish = (
-        daily_candles[-1].close > daily_candles[-2].close
-        and daily_candles[-1].close > sma20_daily
+        last_daily.close > prev_daily.close
+        and (last_daily.close > sma20_daily or last_daily.close > ema9_daily)
     )
     daily_bearish = (
-        daily_candles[-1].close < daily_candles[-2].close
-        and daily_candles[-1].close < sma20_daily
+        last_daily.close < prev_daily.close
+        and (last_daily.close < sma20_daily or last_daily.close < ema9_daily)
     )
 
     # 4H bias
@@ -389,33 +421,44 @@ def run_confluence_check(
     """
     # Gate ⑤ — news blackout
     if news_in_window:
+        logger.info("[GATE_FAIL] %s %s: gate=news reason=high_impact_imminent", symbol, side.value)
         return None
 
     # Gate ① — macro bias
     macro_bias = assess_macro_bias(daily_candles, four_hour_candles)
     if macro_bias != side:
+        logger.info(
+            "[GATE_FAIL] %s %s: gate=macro_bias reason=conflict bias=%s",
+            symbol, side.value, macro_bias.value if macro_bias else "None",
+        )
         return None
 
     # Gate ② — discount / premium zone
     if side == Side.LONG and not is_discount_zone(current_price, range_low, range_high):
+        logger.info("[GATE_FAIL] %s %s: gate=zone reason=price_not_in_discount", symbol, side.value)
         return None
     if side == Side.SHORT and not is_premium_zone(current_price, range_low, range_high):
+        logger.info("[GATE_FAIL] %s %s: gate=zone reason=price_not_in_premium", symbol, side.value)
         return None
 
     # Gate ③ — liquidity sweep
     if not detect_liquidity_sweep(five_min_candles, key_liquidity_level, side):
+        logger.info("[GATE_FAIL] %s %s: gate=liquidity_sweep reason=no_sweep_detected", symbol, side.value)
         return None
 
     # Gate ④ — 5m MSS / ChoCh
     if not detect_market_structure_shift(five_min_candles, side):
+        logger.info("[GATE_FAIL] %s %s: gate=mss reason=no_structure_shift", symbol, side.value)
         return None
 
     # Gate ⑥ — optional FVG check
     if check_fvg and not detect_fair_value_gap(five_min_candles, side):
+        logger.info("[GATE_FAIL] %s %s: gate=fvg reason=no_fvg_detected", symbol, side.value)
         return None
 
     # Gate ⑦ — optional Order Block check
     if check_order_block and not detect_order_block(five_min_candles, side):
+        logger.info("[GATE_FAIL] %s %s: gate=order_block reason=no_ob_detected", symbol, side.value)
         return None
 
     # All gates passed — build signal
@@ -461,6 +504,216 @@ def run_confluence_check(
         stop_loss=stop_loss,
         structure_note=structure_note or f"4H {'Bullish' if side == Side.LONG else 'Bearish'} OB + 5m MSS Confirmed.",
         context_note=context_note or f"{symbol} structure aligned with higher timeframe bias.",
+        leverage_min=leverage_min,
+        leverage_max=leverage_max,
+        signal_id=sig_id,
+    )
+
+
+def calculate_rsi(candles: list[CandleData], period: int = 14) -> float:
+    """
+    Calculate RSI over the last *period* candles.
+
+    Returns 50.0 if there is insufficient data to compute the RSI.
+
+    Parameters
+    ----------
+    candles:
+        OHLCV candles (most-recent last).
+    period:
+        RSI look-back period (default 14).
+    """
+    if len(candles) < period + 1:
+        return 50.0
+
+    closes = [c.close for c in candles[-(period + 1):]]
+    gains = []
+    losses = []
+    for i in range(1, len(closes)):
+        delta = closes[i] - closes[i - 1]
+        if delta > 0:
+            gains.append(delta)
+            losses.append(0.0)
+        else:
+            gains.append(0.0)
+            losses.append(abs(delta))
+
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def assess_macro_bias_relaxed(four_hour_candles: list[CandleData]) -> Optional[Side]:
+    """
+    4H-only bias assessment used by CH2 Medium Scalp and CH3 Easy Breakout.
+
+    Returns LONG if at least 2 of the last 3 4H candles are bullish,
+    SHORT if at least 2 of the last 3 are bearish, or None if mixed.
+
+    This is a lighter-weight bias check that does not require 1D confluence,
+    making it suitable for relaxed-gate channels.
+    """
+    if len(four_hour_candles) < 3:
+        return None
+
+    recent = four_hour_candles[-3:]
+    bullish_count = sum(1 for c in recent if c.close > c.open)
+    bearish_count = sum(1 for c in recent if c.close < c.open)
+
+    if bullish_count >= 2:
+        return Side.LONG
+    if bearish_count >= 2:
+        return Side.SHORT
+    return None
+
+
+def run_confluence_check_relaxed(
+    symbol: str,
+    current_price: float,
+    side: Side,
+    range_low: float,
+    range_high: float,
+    key_liquidity_level: float,
+    five_min_candles: list[CandleData],
+    daily_candles: list[CandleData],
+    four_hour_candles: list[CandleData],
+    news_in_window: bool,
+    stop_loss: float,
+    structure_note: str = "",
+    context_note: str = "",
+    leverage_min: int = 10,
+    leverage_max: int = 20,
+    tp1_rr: float = 1.5,
+    tp2_rr: float = 2.5,
+    tp3_rr: float = 4.0,
+    news_window_minutes: int = 30,
+    sweep_window: int = 10,
+    mss_window: int = 10,
+    **kwargs,
+) -> Optional[SignalResult]:
+    """
+    Relaxed confluence check for CH2 Medium Scalp.
+
+    Differences from :func:`run_confluence_check`:
+
+    - Gate ①: 4H-only bias (skip 1D requirement).
+    - Gate ③: sweep window = *sweep_window* candles (default 10, not 7).
+    - Gate ④: MSS window = *mss_window* candles (default 10, not 7 for CH1).
+    - Gate ⑤: news window = *news_window_minutes* (default 30, not 60).
+    - Gates ⑥⑦ (FVG / OB): always disabled.
+
+    Parameters
+    ----------
+    news_window_minutes:
+        The news blackout window passed in from the caller (default 30 min).
+        When ``news_in_window`` is already pre-evaluated by the caller, this
+        parameter is informational only; the caller supplies the bool.
+    sweep_window:
+        Number of recent 5m candles to inspect for a liquidity sweep.
+    mss_window:
+        Number of prior candles used when computing the swing high/low for
+        the MSS check.
+    """
+    # Gate ⑤ — relaxed news blackout (30-min window instead of 60)
+    if news_in_window:
+        logger.info(
+            "[GATE_FAIL][RELAXED] %s %s: gate=news reason=high_impact_imminent",
+            symbol, side.value,
+        )
+        return None
+
+    # Gate ① — 4H-only macro bias
+    macro_bias = assess_macro_bias_relaxed(four_hour_candles)
+    if macro_bias != side:
+        logger.info(
+            "[GATE_FAIL][RELAXED] %s %s: gate=macro_bias_4h reason=conflict bias=%s",
+            symbol, side.value, macro_bias.value if macro_bias else "None",
+        )
+        return None
+
+    # Gate ② — discount / premium zone (50% threshold — same as CH1)
+    if side == Side.LONG and not is_discount_zone(current_price, range_low, range_high):
+        logger.info(
+            "[GATE_FAIL][RELAXED] %s %s: gate=zone reason=price_not_in_discount",
+            symbol, side.value,
+        )
+        return None
+    if side == Side.SHORT and not is_premium_zone(current_price, range_low, range_high):
+        logger.info(
+            "[GATE_FAIL][RELAXED] %s %s: gate=zone reason=price_not_in_premium",
+            symbol, side.value,
+        )
+        return None
+
+    # Gate ③ — liquidity sweep (wider window)
+    sweep_candles = five_min_candles[-sweep_window:] if len(five_min_candles) >= sweep_window else five_min_candles
+    # Temporarily override the sweep window by slicing; detect_liquidity_sweep always uses [-7:]
+    # so we pass the already-sliced window and rely on the fact it checks [-7:] of what we give
+    _sweep_check_candles = five_min_candles[-sweep_window:]
+    if not any(
+        (side == Side.LONG and c.low < key_liquidity_level and c.close > key_liquidity_level)
+        or (side == Side.SHORT and c.high > key_liquidity_level and c.close < key_liquidity_level)
+        for c in _sweep_check_candles
+    ):
+        logger.info(
+            "[GATE_FAIL][RELAXED] %s %s: gate=liquidity_sweep reason=no_sweep_in_%dc_window",
+            symbol, side.value, sweep_window,
+        )
+        return None
+
+    # Gate ④ — MSS using wider window
+    mss_candles = five_min_candles[-(mss_window + 1):] if len(five_min_candles) >= mss_window + 1 else five_min_candles
+    if not detect_market_structure_shift(mss_candles, side):
+        logger.info(
+            "[GATE_FAIL][RELAXED] %s %s: gate=mss reason=no_structure_shift",
+            symbol, side.value,
+        )
+        return None
+
+    # All gates passed — build signal
+    atr = calculate_atr(five_min_candles)
+    entry_spread = atr * 0.5 if atr > 0 else abs(current_price * 0.001)
+    entry_low = current_price - entry_spread
+    entry_high = current_price + entry_spread
+
+    tp1, tp2, tp3 = calculate_targets(current_price, stop_loss, side, tp1_rr, tp2_rr, tp3_rr)
+
+    # Confidence scoring for relaxed check (no FVG/OB required)
+    if len(four_hour_candles) >= 2:
+        last_4h_rising = four_hour_candles[-1].close > four_hour_candles[-2].close
+        direction_match = (side == Side.LONG and last_4h_rising) or (side == Side.SHORT and not last_4h_rising)
+    else:
+        direction_match = False
+
+    fvg_present = detect_fair_value_gap(five_min_candles, side)
+    ob_present = detect_order_block(five_min_candles, side)
+
+    if direction_match and fvg_present and ob_present:
+        confidence = Confidence.HIGH
+    elif direction_match:
+        confidence = Confidence.MEDIUM
+    else:
+        confidence = Confidence.LOW
+
+    from bot.logging_config import generate_signal_id
+    sig_id = generate_signal_id()
+
+    return SignalResult(
+        symbol=symbol,
+        side=side,
+        confidence=confidence,
+        entry_low=entry_low,
+        entry_high=entry_high,
+        tp1=tp1,
+        tp2=tp2,
+        tp3=tp3,
+        stop_loss=stop_loss,
+        structure_note=structure_note or f"4H {'Bullish' if side == Side.LONG else 'Bearish'} Structure + 5m MSS (Relaxed).",
+        context_note=context_note or f"{symbol} aligned with 4H bias (medium scalp).",
         leverage_min=leverage_min,
         leverage_max=leverage_max,
         signal_id=sig_id,

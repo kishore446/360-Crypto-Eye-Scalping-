@@ -53,6 +53,7 @@ from bot.signal_engine import (
     Side,
     run_confluence_check,
 )
+from bot.signal_router import ChannelTier, SignalRouter
 from bot.signal_tracker import SignalTracker
 from bot.state import BotState
 from bot.ws_manager import MarketDataStore, WebSocketManager
@@ -64,6 +65,12 @@ from config import (
     STALE_SIGNAL_HOURS,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHANNEL_ID,
+    TELEGRAM_CHANNEL_ID_HARD,
+    TELEGRAM_CHANNEL_ID_MEDIUM,
+    TELEGRAM_CHANNEL_ID_EASY,
+    TELEGRAM_CHANNEL_ID_SPOT,
+    TELEGRAM_CHANNEL_ID_INSIGHTS,
+    CH4_SCAN_INTERVAL_HOURS,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,6 +81,15 @@ risk_manager = RiskManager()
 news_calendar = NewsCalendar()
 dashboard = Dashboard()
 signal_tracker = SignalTracker()
+
+# Multi-channel signal router
+signal_router = SignalRouter(
+    channel_hard=TELEGRAM_CHANNEL_ID_HARD,
+    channel_medium=TELEGRAM_CHANNEL_ID_MEDIUM,
+    channel_easy=TELEGRAM_CHANNEL_ID_EASY,
+    channel_spot=TELEGRAM_CHANNEL_ID_SPOT,
+    channel_insights=TELEGRAM_CHANNEL_ID_INSIGHTS,
+)
 
 # Background scheduler — refreshes the news calendar every 30 minutes
 _scheduler = BackgroundScheduler(daemon=True)
@@ -110,6 +126,19 @@ async def _broadcast(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
         text=text,
         parse_mode="Markdown",
     )
+
+
+async def _broadcast_to_channel(text: str, channel_id: int) -> None:
+    """Send *text* to a specific Telegram channel ID using a fresh bot instance."""
+    if channel_id == 0:
+        logger.debug("Skipping broadcast — channel_id is 0 (not configured).")
+        return
+    async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
+        await bot.send_message(
+            chat_id=channel_id,
+            text=text,
+            parse_mode="Markdown",
+        )
 
 
 # ── Command handlers ──────────────────────────────────────────────────────────
@@ -387,7 +416,14 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"📡 WebSocket: {ws_conn}\n"
         f"📋 Scan Pairs: {len(_dynamic_pairs)} loaded\n"
         f"📌 Active Signals: {len(risk_manager.active_signals)} open\n"
-        f"🕐 Uptime: {hours}h {minutes}m"
+        f"🌍 Market Regime: {_bot_state.market_regime}\n"
+        f"🕐 Uptime: {hours}h {minutes}m\n\n"
+        f"📢 Channel IDs:\n"
+        f"  CH1 Hard:    {signal_router.get_channel_id(ChannelTier.HARD) or 'not set'}\n"
+        f"  CH2 Medium:  {signal_router.get_channel_id(ChannelTier.MEDIUM) or 'not set'}\n"
+        f"  CH3 Easy:    {signal_router.get_channel_id(ChannelTier.EASY) or 'not set'}\n"
+        f"  CH4 Spot:    {signal_router.get_channel_id(ChannelTier.SPOT) or 'not set'}\n"
+        f"  CH5 Insights:{signal_router.get_channel_id(ChannelTier.INSIGHTS) or 'not set'}"
     )
     await _reply(update, msg)
 
@@ -450,7 +486,65 @@ async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await _reply(update, msg)
 
 
-async def cmd_risk_calc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_regime(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /regime
+
+    Admin-only: show the current market regime (BULL/BEAR/SIDEWAYS) and
+    its effect on signal generation.
+    """
+    if not _is_admin(update):
+        await _reply(update, "⛔ Admin only.")
+        return
+
+    regime = _bot_state.market_regime
+    regime_emoji = {"BULL": "🟢", "BEAR": "🔴", "SIDEWAYS": "🟡"}.get(regime, "⚪")
+
+    if regime == "BEAR":
+        effect = "⚠️ LONG signals are SUPPRESSED on CH1 and CH2. SHORT setups only."
+    elif regime == "BULL":
+        effect = "✅ All signal directions active. Bias favors LONG setups."
+    elif regime == "SIDEWAYS":
+        effect = "ℹ️ Both directions active. Trade setups evaluated on their own merit."
+    else:
+        effect = "ℹ️ Regime not yet determined (regime detector runs at 09:00 UTC)."
+
+    msg = (
+        f"🌍 *Market Regime: {regime} {regime_emoji}*\n\n"
+        f"{effect}\n\n"
+        f"CH1 Hard Scalp:  {'LONGS SUPPRESSED' if regime == 'BEAR' else 'active'}\n"
+        f"CH2 Medium Scalp: {'LONGS SUPPRESSED' if regime == 'BEAR' else 'active'}\n"
+        f"CH3 Easy Breakout: always active (regime-independent)\n"
+        f"CH4 Spot Momentum: always active (regime-independent)"
+    )
+    await _reply(update, msg)
+
+
+async def cmd_channels(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /channels
+
+    Admin-only: show all 5 channel IDs and their status.
+    """
+    if not _is_admin(update):
+        await _reply(update, "⛔ Admin only.")
+        return
+
+    def _ch_status(tier: ChannelTier) -> str:
+        cid = signal_router.get_channel_id(tier)
+        if cid == 0:
+            return "NOT CONFIGURED ❌"
+        return f"ID: `{cid}` ✅"
+
+    msg = (
+        "📢 *360 Crypto Eye — Channel Status*\n\n"
+        f"CH1 Hard Scalp:    {_ch_status(ChannelTier.HARD)}\n"
+        f"CH2 Medium Scalp:  {_ch_status(ChannelTier.MEDIUM)}\n"
+        f"CH3 Easy Breakout: {_ch_status(ChannelTier.EASY)}\n"
+        f"CH4 Spot Momentum: {_ch_status(ChannelTier.SPOT)}\n"
+        f"CH5 Insights:      {_ch_status(ChannelTier.INSIGHTS)}"
+    )
+    await _reply(update, msg)
     """
     /risk_calc <balance> <entry> <stop_loss>
 
@@ -731,37 +825,95 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
             key_level - atr_proxy if side == Side.LONG else key_level + atr_proxy
         )
 
+        regime = _bot_state.market_regime
+
+        # ── CH1 Hard Scalp ─────────────────────────────────────────────────
         try:
-            result = run_confluence_check(
+            from bot.channels import hard_scalp as _hard_scalp
+            ch1_result = _hard_scalp.run(
                 symbol=base_symbol,
                 current_price=price,
                 side=side,
-                range_low=range_low,
-                range_high=range_high,
-                key_liquidity_level=key_level,
                 five_min_candles=five_m_candles,
                 daily_candles=daily_candles,
                 four_hour_candles=four_h_candles,
-                news_in_window=news_calendar.is_high_impact_imminent(),
+                news_calendar=news_calendar,
+                risk_manager=risk_manager,
+                range_low=range_low,
+                range_high=range_high,
+                key_liquidity_level=key_level,
                 stop_loss=stop_loss,
+                market_regime=regime,
             )
         except Exception as exc:
-            logger.error("on_candle_close confluence error for %s %s: %s", base_symbol, side.value, exc)
-            continue
+            logger.error("CH1 confluence error for %s %s: %s", base_symbol, side.value, exc)
+            ch1_result = None
 
-        if result is not None:
-            risk_manager.add_signal(result)
-            logger.info("WS signal: %s %s", base_symbol, side.value)
+        if ch1_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.HARD):
+            risk_manager.add_signal(ch1_result)
+            signal_router.record_signal(base_symbol, ChannelTier.HARD)
+            logger.info("CH1 signal: %s %s", base_symbol, side.value)
             try:
-                async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
-                    await bot.send_message(
-                        chat_id=TELEGRAM_CHANNEL_ID,
-                        text=result.format_message(),
-                        parse_mode="Markdown",
-                    )
+                await _broadcast_to_channel(ch1_result.format_message(), signal_router.get_channel_id(ChannelTier.HARD))
+                # Fallback: also send to legacy TELEGRAM_CHANNEL_ID if different
+                if TELEGRAM_CHANNEL_ID and TELEGRAM_CHANNEL_ID != signal_router.get_channel_id(ChannelTier.HARD):
+                    await _broadcast_to_channel(ch1_result.format_message(), TELEGRAM_CHANNEL_ID)
             except Exception as exc:
-                logger.error("WS signal broadcast error for %s: %s", base_symbol, exc)
+                logger.error("CH1 broadcast error for %s: %s", base_symbol, exc)
             break  # one signal per symbol per candle close
+
+        # ── CH2 Medium Scalp ───────────────────────────────────────────────
+        if signal_router.is_channel_enabled(ChannelTier.MEDIUM):
+            try:
+                from bot.channels import medium_scalp as _medium_scalp
+                ch2_result = _medium_scalp.run(
+                    symbol=base_symbol,
+                    current_price=price,
+                    side=side,
+                    five_min_candles=five_m_candles,
+                    daily_candles=daily_candles,
+                    four_hour_candles=four_h_candles,
+                    news_calendar=news_calendar,
+                    risk_manager=risk_manager,
+                    range_low=range_low,
+                    range_high=range_high,
+                    key_liquidity_level=key_level,
+                    stop_loss=stop_loss,
+                    market_regime=regime,
+                )
+            except Exception as exc:
+                logger.error("CH2 confluence error for %s %s: %s", base_symbol, side.value, exc)
+                ch2_result = None
+
+            if ch2_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.MEDIUM):
+                signal_router.record_signal(base_symbol, ChannelTier.MEDIUM)
+                logger.info("CH2 signal: %s %s", base_symbol, side.value)
+                try:
+                    await _broadcast_to_channel(ch2_result.format_message(), signal_router.get_channel_id(ChannelTier.MEDIUM))
+                except Exception as exc:
+                    logger.error("CH2 broadcast error for %s: %s", base_symbol, exc)
+
+        # ── CH3 Easy Breakout ──────────────────────────────────────────────
+        if signal_router.is_channel_enabled(ChannelTier.EASY):
+            try:
+                from bot.channels import easy_breakout as _easy_breakout
+                ch3_result = _easy_breakout.run(
+                    symbol=base_symbol,
+                    current_price=price,
+                    five_min_candles=five_m_candles,
+                    four_hour_candles=four_h_candles,
+                )
+            except Exception as exc:
+                logger.error("CH3 breakout error for %s: %s", base_symbol, exc)
+                ch3_result = None
+
+            if ch3_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.EASY):
+                signal_router.record_signal(base_symbol, ChannelTier.EASY)
+                logger.info("CH3 breakout: %s %s", base_symbol, ch3_result.side.value)
+                try:
+                    await _broadcast_to_channel(ch3_result.format_message(), signal_router.get_channel_id(ChannelTier.EASY))
+                except Exception as exc:
+                    logger.error("CH3 broadcast error for %s: %s", base_symbol, exc)
 
 
 # ── Fallback polling scan (runs only when WebSocket stream is unhealthy) ────────
@@ -850,48 +1002,51 @@ def _run_fallback_scan_job() -> None:
                 ) if recent_5m else price
                 stop_loss = key_level - atr_proxy if side == Side.LONG else key_level + atr_proxy
 
+                regime = _bot_state.market_regime
+
+                # CH1 Hard Scalp (fallback path)
                 try:
-                    result = run_confluence_check(
+                    from bot.channels import hard_scalp as _hard_scalp
+                    ch1_result = _hard_scalp.run(
                         symbol=base_symbol,
                         current_price=price,
                         side=side,
-                        range_low=range_low,
-                        range_high=range_high,
-                        key_liquidity_level=key_level,
                         five_min_candles=five_m_candles,
                         daily_candles=daily_candles,
                         four_hour_candles=four_h_candles,
-                        news_in_window=news_calendar.is_high_impact_imminent(),
+                        news_calendar=news_calendar,
+                        risk_manager=risk_manager,
+                        range_low=range_low,
+                        range_high=range_high,
+                        key_liquidity_level=key_level,
                         stop_loss=stop_loss,
+                        market_regime=regime,
                     )
                 except Exception as exc:
-                    logger.error("Fallback scan confluence error for %s %s: %s", base_symbol, side.value, exc)
-                    continue
+                    logger.error("Fallback CH1 error for %s %s: %s", base_symbol, side.value, exc)
+                    ch1_result = None
 
-                if result is not None:
-                    risk_manager.add_signal(result)
-                    logger.info("Fallback signal: %s %s", base_symbol, side.value)
+                if ch1_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.HARD):
+                    risk_manager.add_signal(ch1_result)
+                    signal_router.record_signal(base_symbol, ChannelTier.HARD)
+                    logger.info("Fallback CH1 signal: %s %s", base_symbol, side.value)
+
+                    async def _send_ch1(msg: str = ch1_result.format_message()) -> None:
+                        await _broadcast_to_channel(msg, signal_router.get_channel_id(ChannelTier.HARD))
+                        if TELEGRAM_CHANNEL_ID and TELEGRAM_CHANNEL_ID != signal_router.get_channel_id(ChannelTier.HARD):
+                            await _broadcast_to_channel(msg, TELEGRAM_CHANNEL_ID)
+
                     try:
-                        message_text = result.format_message()
-
-                        async def _send(msg: str = message_text) -> None:
-                            async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
-                                await bot.send_message(
-                                    chat_id=TELEGRAM_CHANNEL_ID,
-                                    text=msg,
-                                    parse_mode="Markdown",
-                                )
-
                         if _main_loop is not None and _main_loop.is_running():
-                            asyncio.run_coroutine_threadsafe(_send(), _main_loop)
+                            asyncio.run_coroutine_threadsafe(_send_ch1(), _main_loop)
                         else:
                             new_loop = asyncio.new_event_loop()
                             try:
-                                new_loop.run_until_complete(_send())
+                                new_loop.run_until_complete(_send_ch1())
                             finally:
                                 new_loop.close()
                     except Exception as exc:
-                        logger.error("Fallback signal broadcast error for %s: %s", base_symbol, exc)
+                        logger.error("Fallback CH1 broadcast error for %s: %s", base_symbol, exc)
                     break  # one signal per symbol per scan pass
             time.sleep(0.2)  # ~5 pairs/sec → stays well within Binance 1200 req/min limit
         except Exception as exc:
@@ -1401,6 +1556,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("backtest", cmd_backtest))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("health", cmd_health))
+    app.add_handler(CommandHandler("regime", cmd_regime))
+    app.add_handler(CommandHandler("channels", cmd_channels))
 
     # Fetch Binance USDT-M perpetual pairs dynamically at startup
     _refresh_dynamic_pairs()
@@ -1474,6 +1631,158 @@ def build_application() -> Application:
         "interval",
         seconds=AUTO_SCAN_INTERVAL_SECONDS,
         id="fallback_scan",
+        replace_existing=True,
+    )
+
+    # ── CH4 — Spot Momentum scan (every CH4_SCAN_INTERVAL_HOURS hours) ─────
+    def _run_spot_scan_job() -> None:
+        if not signal_router.is_channel_enabled(ChannelTier.SPOT):
+            return
+        from bot.channels import spot_momentum as _spot_momentum
+        for base_symbol in list(_dynamic_pairs):
+            try:
+                candles_1d_raw = market_data.get_candles(base_symbol, "1d")
+                candles_4h_raw = market_data.get_candles(base_symbol, "4h")
+                price = market_data.get_price(base_symbol)
+                if price is None or len(candles_1d_raw) < 70 or len(candles_4h_raw) < 4:
+                    continue
+                daily_candles = _fallback_to_candles(candles_1d_raw)
+                four_h_candles = _fallback_to_candles(candles_4h_raw)
+                spot_result = _spot_momentum.run(
+                    symbol=base_symbol,
+                    current_price=price,
+                    daily_candles=daily_candles,
+                    four_hour_candles=four_h_candles,
+                )
+                if spot_result is not None:
+                    logger.info("CH4 spot signal: %s", base_symbol)
+                    msg_text = spot_result.format_message()
+
+                    async def _send_spot(m: str = msg_text) -> None:
+                        await _broadcast_to_channel(m, signal_router.get_channel_id(ChannelTier.SPOT))
+
+                    if _main_loop is not None and _main_loop.is_running():
+                        asyncio.run_coroutine_threadsafe(_send_spot(), _main_loop)
+                    else:
+                        new_loop = asyncio.new_event_loop()
+                        try:
+                            new_loop.run_until_complete(_send_spot())
+                        finally:
+                            new_loop.close()
+            except Exception as exc:
+                logger.error("CH4 spot scan error for %s: %s", base_symbol, exc)
+
+    _scheduler.add_job(
+        _run_spot_scan_job,
+        "interval",
+        hours=CH4_SCAN_INTERVAL_HOURS,
+        id="spot_scan",
+        replace_existing=True,
+    )
+
+    # ── CH5A — BTC Structure post (every 4H) ────────────────────────────────
+    def _post_btc_structure() -> None:
+        if not signal_router.is_channel_enabled(ChannelTier.INSIGHTS):
+            return
+        from bot.insights.btc_structure import format_btc_structure_message
+        btc_price = market_data.get_price("BTC")
+        if btc_price is None:
+            return
+        btc_1d_raw = market_data.get_candles("BTC", "1d")
+        btc_4h_raw = market_data.get_candles("BTC", "4h")
+        if len(btc_4h_raw) < 10:
+            return
+        btc_4h_candles = _fallback_to_candles(btc_4h_raw)
+        msg_text = format_btc_structure_message(btc_4h_candles, btc_price)
+
+        async def _send() -> None:
+            await _broadcast_to_channel(msg_text, signal_router.get_channel_id(ChannelTier.INSIGHTS))
+
+        if _main_loop is not None and _main_loop.is_running():
+            asyncio.run_coroutine_threadsafe(_send(), _main_loop)
+
+    _scheduler.add_job(
+        _post_btc_structure,
+        "interval",
+        hours=4,
+        id="btc_structure",
+        replace_existing=True,
+    )
+
+    # ── CH5B — Daily news digest at 08:00 UTC ───────────────────────────────
+    def _post_news_digest() -> None:
+        if not signal_router.is_channel_enabled(ChannelTier.INSIGHTS):
+            return
+        from bot.insights.news_digest import format_news_digest
+        msg_text = format_news_digest(news_calendar)
+
+        async def _send() -> None:
+            await _broadcast_to_channel(msg_text, signal_router.get_channel_id(ChannelTier.INSIGHTS))
+
+        if _main_loop is not None and _main_loop.is_running():
+            asyncio.run_coroutine_threadsafe(_send(), _main_loop)
+
+    _scheduler.add_job(
+        _post_news_digest,
+        "cron",
+        hour=8,
+        minute=0,
+        id="news_digest",
+        replace_existing=True,
+    )
+
+    # ── CH5C — Regime detector at 09:00 UTC daily ───────────────────────────
+    def _run_regime_detector() -> None:
+        if not signal_router.is_channel_enabled(ChannelTier.INSIGHTS):
+            return
+        from bot.insights.regime_detector import run as _regime_run
+        btc_price = market_data.get_price("BTC")
+        btc_1d_raw = market_data.get_candles("BTC", "1d")
+        if btc_price is None or len(btc_1d_raw) < 10:
+            return
+        btc_daily_candles = _fallback_to_candles(btc_1d_raw)
+        msg_text = _regime_run(btc_daily_candles, btc_price, _bot_state)
+
+        async def _send() -> None:
+            await _broadcast_to_channel(msg_text, signal_router.get_channel_id(ChannelTier.INSIGHTS))
+
+        if _main_loop is not None and _main_loop.is_running():
+            asyncio.run_coroutine_threadsafe(_send(), _main_loop)
+
+    _scheduler.add_job(
+        _run_regime_detector,
+        "cron",
+        hour=9,
+        minute=0,
+        id="regime_detector",
+        replace_existing=True,
+    )
+
+    # ── CH5D — Weekly BTC briefing every Sunday at 18:00 UTC ────────────────
+    def _post_weekly_briefing() -> None:
+        if not signal_router.is_channel_enabled(ChannelTier.INSIGHTS):
+            return
+        from bot.insights.weekly_briefing import format_weekly_briefing
+        btc_price = market_data.get_price("BTC")
+        btc_1d_raw = market_data.get_candles("BTC", "1d")
+        if btc_price is None or len(btc_1d_raw) < 14:
+            return
+        btc_daily_candles = _fallback_to_candles(btc_1d_raw)
+        msg_text = format_weekly_briefing(btc_daily_candles, btc_price)
+
+        async def _send() -> None:
+            await _broadcast_to_channel(msg_text, signal_router.get_channel_id(ChannelTier.INSIGHTS))
+
+        if _main_loop is not None and _main_loop.is_running():
+            asyncio.run_coroutine_threadsafe(_send(), _main_loop)
+
+    _scheduler.add_job(
+        _post_weekly_briefing,
+        "cron",
+        day_of_week="sun",
+        hour=18,
+        minute=0,
+        id="weekly_briefing",
         replace_existing=True,
     )
 

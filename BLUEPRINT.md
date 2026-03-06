@@ -1821,3 +1821,149 @@ Reply includes: trade count, win/loss/BE/stale breakdown, win rate, profit facto
 4. **Compounding capital** — risk % of current equity, not initial.
 5. **Rate limiting** — configurable sleep between Binance pagination requests.
 6. **No new dependencies** — uses stdlib `csv`, `argparse`, `datetime`, `statistics`, `math` plus existing `ccxt`.
+
+---
+
+## §12 — v2.0 Multi-Channel System
+
+> **Added in v2.0** — Five dedicated Telegram channels with tiered gate stacks, regime-aware signal suppression, and multi-module market insights.
+
+### §12.1 Architecture Overview
+
+```
+Binance WS/REST Data
+        │
+        ▼
+Signal Engine (Fractal Liquidity Engine)
+        │
+        ▼
+   SignalRouter ──────────────────────────────────────────────────────┐
+        │                                                              │
+        ├──► CH1 Hard Scalp     (7 gates, HIGH only)                 │
+        ├──► CH2 Medium Scalp   (relaxed gates, HIGH+MEDIUM)          │
+        ├──► CH3 Easy Breakout  (volume+4H+RSI, all confidence)       │
+        ├──► CH4 Spot Momentum  (5 gates, 4H scan interval)           │
+        └──► CH5 Market Insights (BTC Structure + Regime + News)       │
+                                                                       │
+                         Market Regime (BULL/BEAR/SIDEWAYS) ◄─────────┘
+                         feeds back into CH1/CH2 LONG suppression
+```
+
+### §12.2 Channel Definitions
+
+#### CH1 — Hard Scalp (`bot/channels/hard_scalp.py`)
+- **Gates:** All 7 (news 60min + macro bias 1D+4H + zone 50% + sweep 7c + MSS 7c + FVG + OB)
+- **Confidence filter:** HIGH only
+- **Regime:** LONG suppressed in BEAR regime
+- **Signal format:** Full signal with entry zone, TP1/TP2/TP3, SL, leverage
+- **Env var:** `TELEGRAM_CHANNEL_ID_HARD` (falls back to `TELEGRAM_CHANNEL_ID`)
+
+#### CH2 — Medium Scalp (`bot/channels/medium_scalp.py`)
+- **Gates:** news 30min + 4H-only bias + zone 50% + sweep 10c + MSS 10c (no FVG/OB)
+- **Confidence filter:** HIGH + MEDIUM
+- **Regime:** LONG suppressed in BEAR regime
+- **Signal format:** Full signal (same as CH1)
+- **Env var:** `TELEGRAM_CHANNEL_ID_MEDIUM`
+
+#### CH3 — Easy Breakout (`bot/channels/easy_breakout.py`)
+- **Gates:** Volume spike >150% avg + 4H breakout close + RSI momentum (>55 LONG / <45 SHORT)
+- **Confidence filter:** ALL (informational alerts)
+- **Regime:** Never suppressed
+- **Signal format:** Simplified `⚡ MOMENTUM ALERT` (entry, TP1, TP2, SL — no TP3, no leverage)
+- **Env var:** `TELEGRAM_CHANNEL_ID_EASY`
+
+#### CH4 — Spot Momentum (`bot/channels/spot_momentum.py`)
+- **Gates:** Weekly bias (10w SMA) + accumulation zone (within 15% of 90d low) + volume building (3d > 90d avg) + RSI 1D 40–60 + 4H higher lows
+- **Scan frequency:** Every `CH4_SCAN_INTERVAL_HOURS` hours (default 4)
+- **Signal format:** `🎯 SPOT SETUP` — entry zone, TP1/TP2/TP3 (+15%/+30%/+50%), SL, "SPOT ONLY — No Leverage"
+- **Env var:** `TELEGRAM_CHANNEL_ID_SPOT`
+
+#### CH5 — Market Insights (`bot/insights/`)
+- **5A:** BTC Structure post every 4H (`btc_structure.py`)
+- **5B:** Daily news digest at 08:00 UTC (`news_digest.py`)
+- **5C:** Regime detector at 09:00 UTC (`regime_detector.py`) — sets `BotState.market_regime`
+- **5D:** Weekly briefing every Sunday 18:00 UTC (`weekly_briefing.py`)
+- **Env var:** `TELEGRAM_CHANNEL_ID_INSIGHTS`
+
+### §12.3 Signal Router (`bot/signal_router.py`)
+
+The `SignalRouter` class manages channel routing and deduplication:
+- **Channel mapping:** `ChannelTier` enum (HARD/MEDIUM/EASY/SPOT/INSIGHTS) → channel ID
+- **Deduplication:** If the same symbol fires on CH1 within `DEDUP_WINDOW_MINUTES` (default 15), CH2 and CH3 are suppressed
+- **Graceful degradation:** Channels with ID=0 are silently skipped
+
+### §12.4 Market Regime (`bot/insights/regime_detector.py`)
+
+Classifies market into three states daily at 09:00 UTC:
+- **BULL:** BTC price > 200d SMA AND Fear & Greed > 50
+- **BEAR:** BTC price < 200d SMA AND Fear & Greed < 40
+- **SIDEWAYS:** Anything else
+
+In **BEAR** regime:
+- CH1 and CH2 suppress new LONG signals automatically
+- CH3 (Easy Breakout) is unaffected — informational alerts continue
+- CH4 (Spot) is unaffected — accumulation longs are valid regardless of regime
+
+Regime is stored in `BotState.market_regime` and accessible via the `/regime` command.
+
+### §12.5 Bug Fixes in Signal Engine
+
+Three critical bugs fixed in v2.0 that caused zero signals on live VPS:
+
+**Bug 1 — `assess_macro_bias` too strict** (fixed):
+- Old: required `close > prev_close AND close > SMA-20` (AND — too strict)
+- New: requires `close > prev_close AND (close > SMA-20 OR close > EMA-9)` (OR — handles ranging markets)
+
+**Bug 2 — MSS uses all 49 prior candles** (fixed):
+- Old: `swing_high = max(c.high for c in prior_candles)` — all candles (~4 hours)
+- New: `swing_high = max(c.high for c in prior_candles[-7:])` — last 7 candles (~35 min)
+
+**Bug 3 — Liquidity sweep window too narrow** (fixed):
+- Old: `candles[-3:]` — only 15 minutes of data
+- New: `candles[-7:]` — 35 minutes (wider sweep detection window)
+
+**Bug 4 — No gate-level logging** (fixed):
+- Added `[GATE_FAIL]` and `[GATE_FAIL][RELAXED]` INFO-level log entries in `run_confluence_check()` and `run_confluence_check_relaxed()` showing exactly which gate killed each scan
+
+### §12.6 New Commands
+
+| Command | Description |
+|---------|-------------|
+| `/regime` | Show current BULL/BEAR/SIDEWAYS regime and its effect on signal generation |
+| `/channels` | Show all 5 channel IDs and their configuration status |
+
+### §12.7 Configuration Reference (v2.0 additions)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TELEGRAM_CHANNEL_ID_HARD` | `0` | CH1 Hard Scalp channel (falls back to `TELEGRAM_CHANNEL_ID`) |
+| `TELEGRAM_CHANNEL_ID_MEDIUM` | `0` | CH2 Medium Scalp channel |
+| `TELEGRAM_CHANNEL_ID_EASY` | `0` | CH3 Easy Breakout channel |
+| `TELEGRAM_CHANNEL_ID_SPOT` | `0` | CH4 Spot Momentum channel |
+| `TELEGRAM_CHANNEL_ID_INSIGHTS` | `0` | CH5 Market Insights channel |
+| `CH2_NEWS_WINDOW_MINUTES` | `30` | Relaxed news window for CH2 (vs 60 for CH1) |
+| `CH3_VOLUME_SPIKE_RATIO` | `1.5` | Volume must be 150% of 20-period avg for CH3 |
+| `CH4_SCAN_INTERVAL_HOURS` | `4` | Spot scan frequency in hours |
+| `CH4_ACCUMULATION_THRESHOLD` | `0.15` | Price within 15% of 90d low for spot entry |
+| `BTC_FEAR_GREED_URL` | `https://api.alternative.me/fng/` | Fear & Greed API endpoint |
+| `REGIME_DETECTOR_ENABLED` | `true` | Enable/disable regime classification |
+| `DEDUP_WINDOW_MINUTES` | `15` | Suppress CH2/CH3 if CH1 fired same symbol within N minutes |
+
+### §12.8 New v2.0 File Tree
+
+```
+bot/
+├── signal_router.py           # Channel routing + deduplication
+├── channels/
+│   ├── __init__.py
+│   ├── hard_scalp.py          # CH1 gate runner (full 7 gates, HIGH only)
+│   ├── medium_scalp.py        # CH2 gate runner (relaxed gates, HIGH+MEDIUM)
+│   ├── easy_breakout.py       # CH3 breakout detector + BreakoutResult
+│   └── spot_momentum.py       # CH4 spot scanner + SpotSignalResult
+└── insights/
+    ├── __init__.py
+    ├── btc_structure.py       # CH5A — BTC 4H structure post
+    ├── regime_detector.py     # CH5C — BULL/BEAR/SIDEWAYS classification
+    ├── news_digest.py         # CH5B — Daily news brief at 08:00 UTC
+    └── weekly_briefing.py     # CH5D — Weekly BTC analysis on Sundays
+```
