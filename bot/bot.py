@@ -3,11 +3,14 @@ Telegram Bot — 360 Crypto Eye Scalping Signals
 ================================================
 Implements all admin & user commands from Section IV of the master blueprint:
 
-  /signal_gen   — Auto-scans and generates a formatted 360 Eye signal.
-  /move_be      — Broadcasts "Move SL to Entry (Risk-Free Mode ON)."
-  /trail_sl     — Activates auto-trailing SL behind every 5m HL/LH.
-  /news_caution — Freezes new signals; triggers partial-close alert.
-  /risk_calc    — Calculates exact position size from balance & SL distance.
+  /signal_gen        — Auto-scans and generates a formatted 360 Eye signal.
+  /move_be           — Broadcasts "Move SL to Entry (Risk-Free Mode ON)."
+  /trail_sl on|off   — Explicitly enable/disable trailing SL.
+  /auto_scan on|off  — Explicitly enable/disable auto-scanner.
+  /news_caution on|off — Explicitly enable/disable news freeze.
+  /risk_calc         — Calculates exact position size from balance & SL distance.
+  /status            — Show bot status dashboard.
+  /health            — Show detailed health diagnostics.
 
 The bot also handles incoming TradingView webhook payloads forwarded by
 the Flask receiver (webhook.py) via the shared ``process_webhook`` function.
@@ -20,8 +23,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import platform
 import time
 from typing import Optional
+
+try:
+    import resource as _resource
+except ImportError:
+    _resource = None  # type: ignore[assignment]
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -74,6 +83,9 @@ ws_manager = WebSocketManager(store=market_data)
 
 # Reference to the main asyncio event loop (set in build_application)
 _main_loop: Optional[asyncio.AbstractEventLoop] = None
+
+# Boot time — used by /status and /health to compute uptime
+_boot_time: float = time.time()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -227,54 +239,80 @@ async def cmd_move_be(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def cmd_trail_sl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    /trail_sl
+    /trail_sl [on|off]
 
-    Admin-only: toggle auto-trailing SL behind every 5m Higher Low (long) /
-    Lower High (short).
+    Admin-only: explicitly enable or disable auto-trailing SL.
+    With no argument, reports current state without changing it.
     """
     if not _is_admin(update):
         await _reply(update, "⛔ Admin only.")
         return
 
-    _bot_state.trail_active = not _bot_state.trail_active
-    state = "ACTIVATED ✅" if _bot_state.trail_active else "DEACTIVATED ❌"
-    msg = f"📈 Auto-Trailing SL is now *{state}*."
-    await _broadcast(context, msg)
-    await _reply(update, msg)
+    args = context.args or []
+    if not args:
+        state = "ACTIVE ✅" if _bot_state.trail_active else "INACTIVE ❌"
+        await _reply(update, f"📈 Auto-Trailing SL is currently *{state}*.")
+        return
+
+    arg = args[0].lower()
+    if arg == "on":
+        _bot_state.trail_active = True
+        msg = "📈 Auto-Trailing SL *ACTIVATED* ✅."
+        await _broadcast(context, msg)
+        await _reply(update, msg)
+    elif arg == "off":
+        _bot_state.trail_active = False
+        msg = "📈 Auto-Trailing SL *DEACTIVATED* ❌."
+        await _broadcast(context, msg)
+        await _reply(update, msg)
+    else:
+        await _reply(update, "Usage: `/trail_sl on` or `/trail_sl off`")
 
 
 async def cmd_auto_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    /auto_scan
+    /auto_scan [on|off]
 
-    Admin-only: toggle the background auto-scanner that periodically checks
-    all watchlist pairs and broadcasts signals when confluence is met.
+    Admin-only: explicitly enable or disable the background auto-scanner.
+    With no argument, reports current state without changing it.
     """
     if not _is_admin(update):
         await _reply(update, "⛔ Admin only.")
         return
 
-    _bot_state.auto_scan_active = not _bot_state.auto_scan_active
+    args = context.args or []
+    if not args:
+        state = "ACTIVE ✅" if _bot_state.auto_scan_active else "INACTIVE ❌"
+        mode = f" (WebSocket mode)" if ws_manager.is_healthy() else " (fallback polling)"
+        await _reply(update, f"🔍 Auto-Scanner is currently *{state}*{mode}.")
+        return
 
-    if _bot_state.auto_scan_active:
+    arg = args[0].lower()
+    if arg == "on":
+        _bot_state.auto_scan_active = True
         mode = "WebSocket" if ws_manager.is_healthy() else "fallback polling"
         msg = (
-            f"🔍 Auto-Scanner ACTIVATED ✅ — {mode} mode, "
+            f"🔍 Auto-Scanner *ACTIVATED* ✅ — {mode} mode, "
             f"monitoring {len(_dynamic_pairs)} pairs."
         )
+        await _broadcast(context, msg)
+        await _reply(update, msg)
+    elif arg == "off":
+        _bot_state.auto_scan_active = False
+        msg = "🔍 Auto-Scanner *DEACTIVATED* ❌ — both WS-triggered and fallback scanning halted."
+        await _broadcast(context, msg)
+        await _reply(update, msg)
     else:
-        msg = "🔍 Auto-Scanner DEACTIVATED ❌ — both WS-triggered and fallback scanning halted."
-
-    await _broadcast(context, msg)
-    await _reply(update, msg)
+        await _reply(update, "Usage: `/auto_scan on` or `/auto_scan off`")
 
 
 async def cmd_news_caution(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    /news_caution
+    /news_caution [on|off]
 
-    Admin-only: toggle the news-freeze mode.
-    When active:
+    Admin-only: explicitly enable or disable news-freeze mode.
+    With no argument, reports current state without changing it.
+    When activated:
       • New signals are blocked.
       • A partial-close recommendation is broadcast to the channel.
     """
@@ -282,9 +320,15 @@ async def cmd_news_caution(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await _reply(update, "⛔ Admin only.")
         return
 
-    _bot_state.news_freeze = not _bot_state.news_freeze
+    args = context.args or []
+    if not args:
+        state = "ACTIVE ✅" if _bot_state.news_freeze else "INACTIVE ❌"
+        await _reply(update, f"⚠️ News Caution Mode is currently *{state}*.")
+        return
 
-    if _bot_state.news_freeze:
+    arg = args[0].lower()
+    if arg == "on":
+        _bot_state.news_freeze = True
         active_list = "\n".join(
             f"  • #{s.result.symbol}/USDT {s.result.side.value}"
             for s in risk_manager.active_signals
@@ -296,10 +340,109 @@ async def cmd_news_caution(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             f"{active_list}\n\n"
             + news_calendar.format_caution_message()
         )
-    else:
+        await _broadcast(context, msg)
+        await _reply(update, msg)
+    elif arg == "off":
+        _bot_state.news_freeze = False
         msg = "✅ *News Caution Mode DEACTIVATED.* Signal generation is now active."
+        await _broadcast(context, msg)
+        await _reply(update, msg)
+    else:
+        await _reply(update, "Usage: `/news_caution on` or `/news_caution off`")
 
-    await _broadcast(context, msg)
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /status
+
+    Admin-only: show a comprehensive status dashboard of all bot systems.
+    """
+    if not _is_admin(update):
+        await _reply(update, "⛔ Admin only.")
+        return
+
+    auto_scan_label = "ACTIVE ✅" if _bot_state.auto_scan_active else "INACTIVE ❌"
+    ws_mode = " (WebSocket mode)" if ws_manager.is_healthy() else " (fallback polling)"
+    trail_label = "ACTIVE ✅" if _bot_state.trail_active else "INACTIVE ❌"
+    news_label = "ACTIVE ✅" if _bot_state.news_freeze else "INACTIVE ❌"
+
+    ws_conn = "Connected ✅" if ws_manager.is_connected else "Disconnected ❌"
+    if ws_manager.last_message_at > 0.0:
+        ws_age = int(time.monotonic() - ws_manager.last_message_at)
+        ws_conn += f" (last msg {ws_age}s ago)"
+
+    uptime_secs = int(time.time() - _boot_time)
+    hours, rem = divmod(uptime_secs, 3600)
+    minutes, _ = divmod(rem, 60)
+
+    msg = (
+        "📊 *360 Crypto Eye — Status Dashboard*\n\n"
+        f"🔍 Auto-Scanner: {auto_scan_label}{ws_mode}\n"
+        f"📈 Trailing SL: {trail_label}\n"
+        f"⚠️ News Caution: {news_label}\n"
+        f"📡 WebSocket: {ws_conn}\n"
+        f"📋 Scan Pairs: {len(_dynamic_pairs)} loaded\n"
+        f"📌 Active Signals: {len(risk_manager.active_signals)} open\n"
+        f"🕐 Uptime: {hours}h {minutes}m"
+    )
+    await _reply(update, msg)
+
+
+async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /health
+
+    Admin-only: show detailed technical diagnostics.
+    """
+    if not _is_admin(update):
+        await _reply(update, "⛔ Admin only.")
+        return
+
+    ws_conn = "Connected ✅" if ws_manager.is_connected else "Disconnected ❌"
+    if ws_manager.last_message_at > 0.0:
+        ws_age = round(time.monotonic() - ws_manager.last_message_at, 1)
+    else:
+        ws_age = None
+    ws_tasks = len(ws_manager._tasks)
+
+    scheduler_running = _scheduler.running
+    jobs = _scheduler.get_jobs()
+    job_lines = "\n".join(f"   - {j.id}" for j in jobs) if jobs else "   (none)"
+
+    if _resource is not None:
+        rss = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+        # Linux: ru_maxrss is in KiB; macOS: ru_maxrss is in bytes
+        divisor = 1024 if platform.system() != "Darwin" else (1024 * 1024)
+        mem_str = f"{rss / divisor:.1f} MiB"
+    else:
+        mem_str = "N/A"
+
+    auto_scan_label = "ACTIVE ✅" if _bot_state.auto_scan_active else "INACTIVE ❌"
+    trail_label = "ACTIVE ✅" if _bot_state.trail_active else "INACTIVE ❌"
+    news_label = "ACTIVE ✅" if _bot_state.news_freeze else "INACTIVE ❌"
+
+    ws_detail = f"📡 WebSocket: {ws_conn}\n"
+    if ws_age is not None:
+        ws_detail += f"   Last message: {ws_age}s ago\n"
+    ws_detail += f"   Connections: {ws_tasks} active\n"
+
+    scheduler_status = "Running" if scheduler_running else "Stopped"
+    sched_detail = (
+        f"🔄 Scheduler: {scheduler_status} ({len(jobs)} jobs)\n"
+        f"{job_lines}\n"
+    )
+
+    msg = (
+        "🏥 *360 Crypto Eye — Health Check*\n\n"
+        "🟢 Bot Process: Running\n"
+        + ws_detail
+        + sched_detail
+        + f"💾 Memory: {mem_str}\n"
+        f"📊 Active Signals: {len(risk_manager.active_signals)}\n"
+        f"🔍 Auto-Scanner: {auto_scan_label}\n"
+        f"📈 Trailing SL: {trail_label}\n"
+        f"⚠️ News Freeze: {news_label}"
+    )
     await _reply(update, msg)
 
 
@@ -1167,6 +1310,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("close_signal", cmd_close_signal))
     app.add_handler(CommandHandler("pairs", cmd_pairs))
     app.add_handler(CommandHandler("backtest", cmd_backtest))
+    app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("health", cmd_health))
 
     # Fetch Binance USDT-M perpetual pairs dynamically at startup
     _refresh_dynamic_pairs()
