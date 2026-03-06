@@ -161,6 +161,13 @@ class TestOnCandleCloseGates:
         monkeypatch.setattr(_bot, "TELEGRAM_BOT_TOKEN", "fake_token")
         monkeypatch.setattr(_bot, "TELEGRAM_CHANNEL_ID", -1)
 
+        # Mock signal_router so dedup/channel checks don't interfere
+        self._signal_router = MagicMock()
+        self._signal_router.should_suppress_duplicate.return_value = False
+        self._signal_router.is_channel_enabled.return_value = False  # disable CH2/CH3/CH4/CH5
+        self._signal_router.get_channel_id.return_value = -1
+        monkeypatch.setattr(_bot, "signal_router", self._signal_router)
+
         yield
 
         # Restore singleton
@@ -231,37 +238,37 @@ class TestOnCandleCloseGates:
         from bot.signal_engine import SignalResult, Side as _Side
 
         fake_result = MagicMock(spec=SignalResult)
+        fake_result.confidence = MagicMock()
+        fake_result.confidence.value = "High"
         fake_result.format_message.return_value = "signal text"
+        fake_result.side = _Side.LONG
 
-        with patch("bot.bot.run_confluence_check", return_value=fake_result):
-            with patch("bot.bot.Bot") as mock_bot_cls:
-                mock_bot_instance = AsyncMock()
-                mock_bot_cls.return_value.__aenter__ = AsyncMock(return_value=mock_bot_instance)
-                mock_bot_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-                self._run(_bot.on_candle_close("BTC", "5m"))
+        # Patch hard_scalp.run to return our fake result (CH1 path)
+        with patch("bot.channels.hard_scalp.run", return_value=fake_result):
+            self._run(_bot.on_candle_close("BTC", "5m"))
 
         self._risk.add_signal.assert_called_once_with(fake_result)
 
     def test_one_signal_per_candle_close(self):
-        """on_candle_close stops after the first successful signal (break after first hit)."""
+        """on_candle_close stops after the first successful CH1 signal (break after first hit)."""
         import bot.bot as _bot
-        from bot.signal_engine import SignalResult
+        from bot.signal_engine import SignalResult, Side as _Side
 
         fake_result = MagicMock(spec=SignalResult)
+        fake_result.confidence = MagicMock()
+        fake_result.confidence.value = "High"
         fake_result.format_message.return_value = "signal text"
+        fake_result.side = _Side.LONG
 
         call_count = 0
 
-        def _confluence(*args, **kwargs):
+        def _hard_scalp(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             return fake_result  # always succeeds
 
-        with patch("bot.bot.run_confluence_check", side_effect=_confluence):
-            with patch("bot.bot.Bot") as mock_bot_cls:
-                mock_bot_cls.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
-                mock_bot_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-                self._run(_bot.on_candle_close("BTC", "5m"))
+        with patch("bot.channels.hard_scalp.run", side_effect=_hard_scalp):
+            self._run(_bot.on_candle_close("BTC", "5m"))
 
         # Should stop after the first side (LONG) succeeds
         assert call_count == 1
@@ -300,6 +307,13 @@ class TestFallbackScanJob:
         monkeypatch.setattr(_bot, "TELEGRAM_BOT_TOKEN", "fake_token")
         monkeypatch.setattr(_bot, "TELEGRAM_CHANNEL_ID", -1)
 
+        # Mock signal_router so dedup/channel checks don't interfere
+        self._signal_router = MagicMock()
+        self._signal_router.should_suppress_duplicate.return_value = False
+        self._signal_router.is_channel_enabled.return_value = False  # disable CH2/CH3/CH4/CH5
+        self._signal_router.get_channel_id.return_value = -1
+        monkeypatch.setattr(_bot, "signal_router", self._signal_router)
+
         # Mock the resilient exchange to avoid real REST calls in tests
         self._mock_exchange = MagicMock()
         self._mock_exchange.fetch_ohlcv.return_value = []
@@ -334,15 +348,15 @@ class TestFallbackScanJob:
             mock_conf.assert_not_called()
 
     def test_activates_when_ws_unhealthy(self, monkeypatch):
-        """Fallback job runs confluence when WebSocket is unhealthy."""
+        """Fallback job runs hard_scalp.run when WebSocket is unhealthy."""
         import bot.bot as _bot
 
         unhealthy_mgr = _make_ws_manager(connected=False)
         monkeypatch.setattr(_bot, "ws_manager", unhealthy_mgr)
 
-        with patch("bot.bot.run_confluence_check", return_value=None) as mock_conf:
+        with patch("bot.channels.hard_scalp.run", return_value=None) as mock_hard:
             _bot._run_fallback_scan_job()
-            assert mock_conf.called
+            assert mock_hard.called
 
     def test_activates_when_ws_stale(self, monkeypatch):
         """Fallback job runs when stream is connected but messages are stale."""
@@ -351,9 +365,9 @@ class TestFallbackScanJob:
         stale_mgr = _make_ws_manager(connected=True, last_msg_offset=_STALE_THRESHOLD + 10)
         monkeypatch.setattr(_bot, "ws_manager", stale_mgr)
 
-        with patch("bot.bot.run_confluence_check", return_value=None) as mock_conf:
+        with patch("bot.channels.hard_scalp.run", return_value=None) as mock_hard:
             _bot._run_fallback_scan_job()
-            assert mock_conf.called
+            assert mock_hard.called
 
     def test_no_duplicate_signal_skips_active_symbol(self, monkeypatch):
         """Fallback scan skips symbols that already have active signals."""
@@ -371,22 +385,21 @@ class TestFallbackScanJob:
             mock_conf.assert_not_called()
 
     def test_fallback_signal_broadcast(self, monkeypatch):
-        """Fallback scan broadcasts signal when confluence passes."""
+        """Fallback scan broadcasts signal when hard_scalp gate passes."""
         import bot.bot as _bot
-        from bot.signal_engine import SignalResult
+        from bot.signal_engine import SignalResult, Side as _Side
 
         unhealthy_mgr = _make_ws_manager(connected=False)
         monkeypatch.setattr(_bot, "ws_manager", unhealthy_mgr)
 
         fake_result = MagicMock(spec=SignalResult)
+        fake_result.confidence = MagicMock()
+        fake_result.confidence.value = "High"
         fake_result.format_message.return_value = "fallback signal"
+        fake_result.side = _Side.LONG
 
-        with patch("bot.bot.run_confluence_check", return_value=fake_result):
-            with patch("bot.bot.Bot") as mock_bot_cls:
-                mock_instance = MagicMock()
-                mock_instance.send_message = AsyncMock()
-                mock_bot_cls.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
-                mock_bot_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        with patch("bot.channels.hard_scalp.run", return_value=fake_result):
+            with patch("bot.bot._broadcast_to_channel", new_callable=AsyncMock):
                 _bot._run_fallback_scan_job()
 
         self._risk.add_signal.assert_called_once_with(fake_result)

@@ -22,6 +22,7 @@ class BotState:
                     inst._news_freeze = False
                     inst._trail_active = False
                     inst._auto_scan_active = bool(_AUTO_SCAN_ENABLED_ON_BOOT)
+                    inst._market_regime = "UNKNOWN"
                     cls._instance = inst
         return cls._instance
 
@@ -54,3 +55,17 @@ class BotState:
     def auto_scan_active(self, value: bool) -> None:
         with self._state_lock:
             self._auto_scan_active = value
+
+    @property
+    def market_regime(self) -> str:
+        """Current market regime: 'BULL', 'BEAR', 'SIDEWAYS', or 'UNKNOWN'."""
+        with self._state_lock:
+            return self._market_regime
+
+    @market_regime.setter
+    def market_regime(self, value: str) -> None:
+        valid = ("BULL", "BEAR", "SIDEWAYS", "UNKNOWN")
+        if value not in valid:
+            raise ValueError(f"market_regime must be one of {valid}, got {value!r}")
+        with self._state_lock:
+            self._market_regime = value
