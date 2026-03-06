@@ -545,6 +545,9 @@ async def cmd_channels(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"CH5 Insights:      {_ch_status(ChannelTier.INSIGHTS)}"
     )
     await _reply(update, msg)
+
+
+async def cmd_risk_calc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     /risk_calc <balance> <entry> <stop_loss>
 

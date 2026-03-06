@@ -93,8 +93,10 @@ def run(
         return None
 
     # Gate 2 — 4H breakout (close above recent 4H high OR below recent 4H low)
-    recent_4h_high = max(c.high for c in four_hour_candles[-1:])
-    recent_4h_low = min(c.low for c in four_hour_candles[-1:])
+    # Use last 3 4H candles (~12 hours) to establish the breakout reference range
+    recent_4h = four_hour_candles[-3:] if len(four_hour_candles) >= 3 else four_hour_candles
+    recent_4h_high = max(c.high for c in recent_4h)
+    recent_4h_low = min(c.low for c in recent_4h)
 
     long_breakout = current_price > recent_4h_high
     short_breakout = current_price < recent_4h_low
