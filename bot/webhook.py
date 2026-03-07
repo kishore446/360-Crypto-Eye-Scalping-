@@ -30,7 +30,8 @@ from typing import Any
 
 from flask import Flask, Response, jsonify, request
 
-from bot.bot import process_webhook, risk_manager
+from bot.bot import process_webhook, risk_manager, signal_router
+from bot.signal_router import ChannelTier
 from config import (
     ALLOWED_WEBHOOK_IPS,
     TELEGRAM_BOT_TOKEN,
@@ -194,8 +195,22 @@ def create_app() -> Flask:
             resp.headers["X-Request-ID"] = request_id
             return resp, 200
 
+        # Unpack (message, tier) tuple from process_webhook, or handle legacy str
+        if isinstance(message, tuple):
+            text, tier = message
+        else:
+            # Legacy path: process_webhook returned a plain string (e.g., from mocks/older code)
+            logger.debug("process_webhook returned a plain string — using legacy TELEGRAM_CHANNEL_ID fallback")
+            text, tier = message, None
+
+        # Route to the appropriate channel via SignalRouter
+        if tier is not None and signal_router.is_channel_enabled(tier):
+            channel_id = signal_router.get_channel_id(tier)
+        else:
+            channel_id = TELEGRAM_CHANNEL_ID
+
         # Async broadcast via Telegram Bot API
-        _send_telegram_message(message)
+        _send_telegram_message(text, channel_id)
         resp = jsonify({"status": "signal_broadcast"})
         resp.headers["X-Request-ID"] = request_id
         return resp, 200
@@ -203,9 +218,9 @@ def create_app() -> Flask:
     return app
 
 
-def _send_telegram_message(text: str) -> None:
+def _send_telegram_message(text: str, channel_id: int = TELEGRAM_CHANNEL_ID) -> None:
     """
-    Send *text* to the public channel using the Telegram Bot API (synchronous).
+    Send *text* to the specified Telegram channel using the Bot API (synchronous).
 
     In production prefer the async handler in bot.py.  This synchronous
     helper exists specifically for the webhook context where an async event
@@ -221,7 +236,7 @@ def _send_telegram_message(text: str) -> None:
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = _json.dumps({
-        "chat_id": TELEGRAM_CHANNEL_ID,
+        "chat_id": channel_id,
         "text": text,
         "parse_mode": "Markdown",
     }).encode()

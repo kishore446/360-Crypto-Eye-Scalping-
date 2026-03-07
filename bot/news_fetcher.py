@@ -136,11 +136,10 @@ def fetch_and_reload(calendar: NewsCalendar) -> None:
     It never raises — any error is logged and the calendar is left unchanged.
     """
     if not COINMARKETCAL_API_KEY:
-        logger.warning(
-            "COINMARKETCAL_API_KEY is not set — marking calendar as fetch-failed."
+        logger.info(
+            "COINMARKETCAL_API_KEY is not set — news filtering disabled, signals allowed."
         )
-        calendar.mark_fetch_failed()
-        return
+        return  # Do NOT call mark_fetch_failed() — that would freeze signals
     try:
         events = fetch_coinmarketcal_events()
         if events is not None:

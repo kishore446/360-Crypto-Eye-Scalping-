@@ -65,6 +65,24 @@ try:
         # ── Session Filter ────────────────────────────────────────────────────
         session_filter_enabled: bool = False
 
+        # ── Funding Rate Gate ─────────────────────────────────────────────────
+        funding_rate_gate_enabled: bool = True
+        funding_extreme_negative: float = -0.0001
+        funding_extreme_positive: float = 0.0005
+
+        # ── Open Interest Monitor ─────────────────────────────────────────────
+        oi_monitor_enabled: bool = True
+        oi_change_threshold: float = 0.05  # 5% OI change is significant
+
+        # ── Loss Streak Cooldown ──────────────────────────────────────────────
+        loss_streak_threshold: int = 3
+        cooldown_signals: int = 3
+        cooldown_hours: int = 24
+
+        # ── Insights Schedule ─────────────────────────────────────────────────
+        fear_greed_interval_hours: int = 6
+        daily_performance_hour: int = 23  # UTC hour for daily recap
+
         # ── Confluence Scoring ────────────────────────────────────────────────
         min_confluence_score: int = 0  # 0 = disabled
 
@@ -137,6 +155,20 @@ try:
     COINMARKETCAL_API_KEY: str = settings.coinmarketcal_api_key
 
     SESSION_FILTER_ENABLED: bool = settings.session_filter_enabled
+
+    FUNDING_RATE_GATE_ENABLED: bool = settings.funding_rate_gate_enabled
+    FUNDING_EXTREME_NEGATIVE: float = settings.funding_extreme_negative
+    FUNDING_EXTREME_POSITIVE: float = settings.funding_extreme_positive
+
+    OI_MONITOR_ENABLED: bool = settings.oi_monitor_enabled
+    OI_CHANGE_THRESHOLD: float = settings.oi_change_threshold
+
+    LOSS_STREAK_THRESHOLD: int = settings.loss_streak_threshold
+    COOLDOWN_SIGNALS: int = settings.cooldown_signals
+    COOLDOWN_HOURS: int = settings.cooldown_hours
+
+    FEAR_GREED_INTERVAL_HOURS: int = settings.fear_greed_interval_hours
+    DAILY_PERFORMANCE_HOUR: int = settings.daily_performance_hour
     MIN_CONFLUENCE_SCORE: int = settings.min_confluence_score
     NEWS_FAIL_SAFE_WINDOW_MINUTES: int = settings.news_fail_safe_window_minutes
 
@@ -197,6 +229,20 @@ except ImportError:
     NEWS_SKIP_WINDOW_MINUTES: int = 60
     COINMARKETCAL_API_KEY: str = os.environ.get("COINMARKETCAL_API_KEY", "")
     SESSION_FILTER_ENABLED: bool = os.environ.get("SESSION_FILTER_ENABLED", "false").lower() in ("true", "1", "yes")
+
+    FUNDING_RATE_GATE_ENABLED: bool = os.environ.get("FUNDING_RATE_GATE_ENABLED", "true").lower() in ("true", "1", "yes")
+    FUNDING_EXTREME_NEGATIVE: float = float(os.environ.get("FUNDING_EXTREME_NEGATIVE", "-0.0001"))
+    FUNDING_EXTREME_POSITIVE: float = float(os.environ.get("FUNDING_EXTREME_POSITIVE", "0.0005"))
+
+    OI_MONITOR_ENABLED: bool = os.environ.get("OI_MONITOR_ENABLED", "true").lower() in ("true", "1", "yes")
+    OI_CHANGE_THRESHOLD: float = float(os.environ.get("OI_CHANGE_THRESHOLD", "0.05"))
+
+    LOSS_STREAK_THRESHOLD: int = int(os.environ.get("LOSS_STREAK_THRESHOLD", "3"))
+    COOLDOWN_SIGNALS: int = int(os.environ.get("COOLDOWN_SIGNALS", "3"))
+    COOLDOWN_HOURS: int = int(os.environ.get("COOLDOWN_HOURS", "24"))
+
+    FEAR_GREED_INTERVAL_HOURS: int = int(os.environ.get("FEAR_GREED_INTERVAL_HOURS", "6"))
+    DAILY_PERFORMANCE_HOUR: int = int(os.environ.get("DAILY_PERFORMANCE_HOUR", "23"))
     MIN_CONFLUENCE_SCORE: int = int(os.environ.get("MIN_CONFLUENCE_SCORE", "0"))
     NEWS_FAIL_SAFE_WINDOW_MINUTES: int = int(os.environ.get("NEWS_FAIL_SAFE_WINDOW_MINUTES", "60"))
     DASHBOARD_LOG_FILE: str = os.environ.get("DASHBOARD_LOG_FILE", "data/dashboard.json")

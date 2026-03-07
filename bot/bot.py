@@ -1135,15 +1135,17 @@ async def cmd_close_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 # ── Webhook processor (called by webhook.py) ──────────────────────────────────
 
-def process_webhook(payload: dict) -> Optional[str]:
+def process_webhook(payload: dict) -> Optional[tuple[str, ChannelTier]]:
     """
-    Parse an incoming TradingView webhook payload and return a formatted
-    signal message if all confluence checks pass, otherwise None.
+    Parse an incoming TradingView webhook payload and return a
+    ``(message, tier)`` tuple if all confluence checks pass, otherwise None.
 
     Expected payload keys:
         symbol, side
 
     All market data (price, candles, levels) is fetched live from Binance.
+    The channel tier is determined by signal confidence so the webhook can
+    route through the SignalRouter instead of the legacy single channel.
     The bot.py caller is responsible for broadcasting the returned message.
     """
     try:
@@ -1188,7 +1190,16 @@ def process_webhook(payload: dict) -> Optional[str]:
         return None
 
     risk_manager.add_signal(result)
-    return result.format_message()
+
+    # Determine the target channel tier from signal confidence
+    if result.confidence == Confidence.HIGH:
+        tier = ChannelTier.HARD
+    elif result.confidence == Confidence.MEDIUM:
+        tier = ChannelTier.MEDIUM
+    else:
+        tier = ChannelTier.EASY
+
+    return result.format_message(), tier
 
 
 # ── Binance live data helpers ─────────────────────────────────────────────────

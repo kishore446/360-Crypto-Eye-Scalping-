@@ -114,6 +114,50 @@ class TestDashboard:
         assert "Profit Factor" in summary
         assert "Open PnL" in summary
 
+    def test_sharpe_requires_at_least_3_trades(self):
+        """Sharpe ratio should return 0.0 for fewer than 3 closed trades."""
+        self.db.record_result(_make_trade(outcome="WIN", pnl_pct=2.0))
+        self.db.record_result(_make_trade(outcome="LOSS", pnl_pct=-1.0))
+        assert self.db.sharpe_ratio() == 0.0
+
+    def test_sharpe_uses_bessels_correction(self):
+        """
+        Sharpe ratio must use sample variance (n-1) not population variance (n).
+        For returns [2.0, -1.0, 1.5]:
+          mean = 2.5/3 ≈ 0.8333
+          sample variance = sum((r - mean)^2) / (3-1)
+          NOT population variance = sum((r - mean)^2) / 3
+        """
+        import math
+        returns = [2.0, -1.0, 1.5]
+        for r in returns:
+            outcome = "WIN" if r > 0 else "LOSS"
+            self.db.record_result(_make_trade(outcome=outcome, pnl_pct=r))
+
+        mean_r = sum(returns) / len(returns)
+        sample_var = sum((r - mean_r) ** 2 for r in returns) / (len(returns) - 1)
+        expected_sharpe = round(mean_r / math.sqrt(sample_var), 4)
+
+        assert self.db.sharpe_ratio() == pytest.approx(expected_sharpe, rel=1e-4)
+
+    def test_sharpe_differs_from_biased_estimate_with_few_samples(self):
+        """Sample variance (n-1) > population variance (n), so Sharpe is LOWER with correction."""
+        import math
+        returns = [3.0, -1.0, 2.0]  # n=3
+        for r in returns:
+            outcome = "WIN" if r > 0 else "LOSS"
+            self.db.record_result(_make_trade(outcome=outcome, pnl_pct=r))
+
+        sharpe_actual = self.db.sharpe_ratio()
+
+        # Compute the old (biased) Sharpe for comparison
+        mean_r = sum(returns) / len(returns)
+        pop_var = sum((r - mean_r) ** 2 for r in returns) / len(returns)
+        biased_sharpe = mean_r / math.sqrt(pop_var)
+
+        # With Bessel's correction, std is larger → Sharpe is smaller
+        assert sharpe_actual < biased_sharpe
+
 
 # ── NewsCalendar tests ────────────────────────────────────────────────────────
 
