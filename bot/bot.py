@@ -44,7 +44,7 @@ from telegram.ext import (
 from bot.auto_close_monitor import AutoCloseMonitor
 from bot.backtester import Backtester, HistoricalDataFetcher
 from bot.dashboard import Dashboard, TradeResult
-from bot.exchange import _resilient_exchange
+from bot.exchange import _resilient_exchange, _spot_resilient_exchange
 from bot.loss_streak_cooldown import CooldownManager
 from bot.news_fetcher import fetch_and_reload
 from bot.news_filter import NewsCalendar
@@ -1570,7 +1570,7 @@ def _seed_historical_candles(symbols: list[str]) -> None:
     def _seed_one(base: str) -> None:
         ccxt_symbol = _normalise_symbol(base)
         try:
-            for timeframe, limit in (("1d", 30), ("4h", 30), ("5m", 50), ("15m", 50)):
+            for timeframe, limit in (("1d", 100), ("4h", 30), ("5m", 50), ("15m", 50)):
                 rows = _resilient_exchange.fetch_ohlcv(ccxt_symbol, timeframe, limit=limit)
                 for row in rows:
                     market_data.update_candle(base, timeframe, row)
@@ -1591,6 +1591,44 @@ def _seed_historical_candles(symbols: list[str]) -> None:
             logger.info("Seeded ~%d/%d pairs…", min(i + BATCH_SIZE, total), total)
 
     logger.info("Historical candle seeding complete.")
+
+
+def _seed_spot_historical_candles(pairs: list[dict]) -> None:
+    """
+    REST-fetch initial candle history for spot pairs at startup.
+
+    Uses up to 10 concurrent workers with a short sleep between batches
+    to respect Binance rate limits.  Fetches 1D (100), 4H (30), and 1H (50)
+    candles for every spot pair so the spot signal engine has data on boot.
+    """
+    total = len(pairs)
+    logger.info("Seeding spot historical candles for %d pairs (parallel)…", total)
+
+    def _seed_one_spot(pair_info: dict) -> None:
+        base = pair_info["symbol"]
+        ccxt_symbol = pair_info["ccxt_symbol"]  # e.g. "BTC/USDT" (no :USDT suffix)
+        try:
+            for timeframe, limit in (("1d", 100), ("4h", 30), ("1h", 50)):
+                rows = _spot_resilient_exchange.fetch_ohlcv(ccxt_symbol, timeframe, limit=limit)
+                for row in rows:
+                    spot_market_data.update_candle(base, timeframe, row)
+            rows_1h = spot_market_data.get_candles(base, "1h")
+            if rows_1h:
+                spot_market_data.set_price(base, float(rows_1h[-1][4]))
+        except Exception as exc:
+            logger.warning("Spot seed failed for %s: %s", base, exc)
+
+    BATCH_SIZE = 10
+    for i in range(0, total, BATCH_SIZE):
+        batch = pairs[i:i + BATCH_SIZE]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=BATCH_SIZE) as executor:
+            list(executor.map(_seed_one_spot, batch))
+        if i + BATCH_SIZE < total:
+            time.sleep(1.0)  # inter-batch pause to stay within rate limits
+        if (i + BATCH_SIZE) % 50 == 0:
+            logger.info("Seeded ~%d/%d spot pairs…", min(i + BATCH_SIZE, total), total)
+
+    logger.info("Spot historical candle seeding complete.")
 
 
 async def cmd_pairs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1851,6 +1889,13 @@ def build_application() -> Application:
         global _main_loop
         _main_loop = asyncio.get_event_loop()
         await ws_manager.start(_dynamic_pairs, on_candle_close)
+        spot_symbols = [p["symbol"] for p in spot_scanner._pairs]
+        if spot_symbols:
+            await spot_ws.start(spot_symbols, None)
+            logger.info(
+                "Spot WebSocket manager started for %d pairs.",
+                len(spot_symbols),
+            )
         await auto_close_monitor.start()
         logger.info(
             "WebSocket manager started for %d pairs (primary scanning path).",
@@ -1860,6 +1905,7 @@ def build_application() -> Application:
     async def _post_shutdown(application: Application) -> None:
         await auto_close_monitor.stop()
         await ws_manager.stop()
+        await spot_ws.stop()
         logger.info("WebSocket manager stopped.")
 
     app = (
@@ -1969,11 +2015,12 @@ def build_application() -> Application:
         if not signal_router.is_channel_enabled(ChannelTier.SPOT):
             return
         from bot.channels import spot_momentum as _spot_momentum
-        for base_symbol in list(_dynamic_pairs):
+        for pair_info in list(spot_scanner._pairs):
+            base_symbol = pair_info["symbol"]
             try:
-                candles_1d_raw = market_data.get_candles(base_symbol, "1d")
-                candles_4h_raw = market_data.get_candles(base_symbol, "4h")
-                price = market_data.get_price(base_symbol)
+                candles_1d_raw = spot_market_data.get_candles(base_symbol, "1d")
+                candles_4h_raw = spot_market_data.get_candles(base_symbol, "4h")
+                price = spot_market_data.get_price(base_symbol)
                 if price is None or len(candles_1d_raw) < 70 or len(candles_4h_raw) < 4:
                     continue
                 daily_candles = _fallback_to_candles(candles_1d_raw)
@@ -2013,6 +2060,7 @@ def build_application() -> Application:
     # ── SpotScanner: load pair list on boot ────────────────────────────────
     if SPOT_SCAN_ENABLED:
         spot_scanner.refresh_pairs()
+        _seed_spot_historical_candles(spot_scanner._pairs)
 
     # ── SpotScanner pair list refresh (every 6 hours) ──────────────────────
     _scheduler.add_job(
