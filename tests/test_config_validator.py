@@ -115,10 +115,9 @@ class TestValidateConfig:
 
     def test_empty_webhook_secret_only_warns(self, caplog) -> None:
         """Empty WEBHOOK_SECRET should log a warning, not raise."""
-        import logging
         cfg = _make_valid_config(WEBHOOK_SECRET="")
         with patch.dict("sys.modules", {"config": cfg}):
-            with caplog.at_level(logging.WARNING):
+            with caplog.at_level("WARNING"):
                 validate_config()  # Must not raise
         assert any("WEBHOOK_SECRET" in r.message for r in caplog.records)
 

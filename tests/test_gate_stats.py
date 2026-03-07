@@ -152,4 +152,4 @@ class TestFormatGateStatsLine:
                 _insert_signal(conn, f"P{i}", gates=gates, close_reason="tp3")
 
         result = format_gate_stats_line(gates)
-        assert "100%" in result
+        assert "100.0%" in result

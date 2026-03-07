@@ -174,7 +174,7 @@ def _build_signal_message(
     }
     channel_key = _tier_to_channel_key.get(tier.value, "AGGREGATE")
     watermark = get_watermark_line(dashboard, channel_key)
-    exchange_links = get_exchange_links_text(result.symbol, _ref_ids) if any(_ref_ids.values()) else ""
+    exchange_links = get_exchange_links_text(result.symbol, _ref_ids)
     return result.format_message(
         watermark_line=watermark,
         exchange_links_line=exchange_links,

@@ -130,7 +130,5 @@ def format_gate_stats_line(
     if total < 5:
         return ""
     win_rate = float(stats.get("win_rate_pct", 0.0))
-    return (
-        f"📊 This gate combo: {win_rate:.0f}% TP2+ rate "
-        f"({total} signals over {lookback_days} days)"
-    )
+    return f"📊 This gate combo: {win_rate:.1f}% TP2+ rate " \
+           f"({total} signals over {lookback_days} days)"

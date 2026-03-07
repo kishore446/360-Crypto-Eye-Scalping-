@@ -49,6 +49,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt pytest-cov
       - name: Validate config
+        # Non-blocking: no real bot token is available in CI, but this ensures
+        # the validator module imports and runs without syntax errors.
         run: python -c "from bot.config_validator import validate_config; validate_config()" || true
       - name: Run tests with coverage
         run: pytest tests/ -v --cov=bot --cov-report=term-missing --cov-report=xml

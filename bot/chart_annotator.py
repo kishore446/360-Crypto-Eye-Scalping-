@@ -117,7 +117,7 @@ def generate_signal_chart(
         shade_color = "rgba(0,200,0,0.15)" if side.upper() == "LONG" else "rgba(200,0,0,0.15)"
 
         # Ensure output directory exists
-        os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
         mpf.plot(
             df,
