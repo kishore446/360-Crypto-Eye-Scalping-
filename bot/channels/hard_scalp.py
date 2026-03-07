@@ -33,6 +33,8 @@ def run(
     key_liquidity_level: float,
     stop_loss: float,
     market_regime: str = "UNKNOWN",
+    fifteen_min_candles: Optional[list[CandleData]] = None,
+    funding_rate: Optional[float] = None,
 ) -> Optional[SignalResult]:
     """
     Run the CH1 Hard Scalp gate stack.
@@ -42,6 +44,10 @@ def run(
     market_regime:
         Current market regime from BotState. In BEAR regime, LONG signals
         are suppressed.
+    fifteen_min_candles:
+        Optional 15m candles for FVG / OB scoring per Blueprint §2.1.
+    funding_rate:
+        Optional current funding rate for score adjustment.
 
     Returns
     -------
@@ -68,6 +74,8 @@ def run(
         stop_loss=stop_loss,
         check_fvg=True,
         check_order_block=True,
+        fifteen_min_candles=fifteen_min_candles,
+        funding_rate=funding_rate,
     )
 
     if result is None:

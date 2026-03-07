@@ -114,6 +114,22 @@ try:
         auto_scan_interval_seconds: int = 60
         auto_scan_enabled_on_boot: bool = True
 
+        # ── Whale Alert API (optional) ────────────────────────────────────────
+        whale_alert_api_key: str = ""
+
+        # ── Coinglass API (optional) ──────────────────────────────────────────
+        coinglass_api_key: str = ""
+
+        # ── Signal Broadcast Rate Limiting ────────────────────────────────────
+        min_signal_gap_seconds: int = 300  # 5 minutes minimum between signals per channel
+
+        # ── Admin Alerting ────────────────────────────────────────────────────
+        admin_alert_enabled: bool = True
+        admin_alert_win_rate_threshold: int = 40
+
+        # ── OI Divergence Detection ───────────────────────────────────────────
+        oi_divergence_enabled: bool = True
+
         @field_validator("telegram_bot_token")
         @classmethod
         def token_not_placeholder(cls, v: str) -> str:
@@ -200,6 +216,13 @@ try:
     AUTO_SCAN_INTERVAL_SECONDS: int = settings.auto_scan_interval_seconds
     AUTO_SCAN_ENABLED_ON_BOOT: bool = settings.auto_scan_enabled_on_boot
 
+    WHALE_ALERT_API_KEY: str = settings.whale_alert_api_key
+    COINGLASS_API_KEY: str = settings.coinglass_api_key
+    MIN_SIGNAL_GAP_SECONDS: int = settings.min_signal_gap_seconds
+    ADMIN_ALERT_ENABLED: bool = settings.admin_alert_enabled
+    ADMIN_ALERT_WIN_RATE_THRESHOLD: int = settings.admin_alert_win_rate_threshold
+    OI_DIVERGENCE_ENABLED: bool = settings.oi_divergence_enabled
+
     TIMEFRAMES: dict[str, int] = {
         "1D": 1440,
         "4H": 240,
@@ -273,5 +296,11 @@ except ImportError:
     AUTO_SCAN_PAIRS: list[str] = [p.strip().upper() for p in _raw_pairs.split(",") if p.strip()]
     AUTO_SCAN_INTERVAL_SECONDS: int = int(os.environ.get("AUTO_SCAN_INTERVAL_SECONDS", "60"))
     AUTO_SCAN_ENABLED_ON_BOOT: bool = os.environ.get("AUTO_SCAN_ENABLED_ON_BOOT", "true").lower() in ("true", "1", "yes")
+    WHALE_ALERT_API_KEY: str = os.environ.get("WHALE_ALERT_API_KEY", "")
+    COINGLASS_API_KEY: str = os.environ.get("COINGLASS_API_KEY", "")
+    MIN_SIGNAL_GAP_SECONDS: int = int(os.environ.get("MIN_SIGNAL_GAP_SECONDS", "300"))
+    ADMIN_ALERT_ENABLED: bool = os.environ.get("ADMIN_ALERT_ENABLED", "true").lower() in ("true", "1", "yes")
+    ADMIN_ALERT_WIN_RATE_THRESHOLD: int = int(os.environ.get("ADMIN_ALERT_WIN_RATE_THRESHOLD", "40"))
+    OI_DIVERGENCE_ENABLED: bool = os.environ.get("OI_DIVERGENCE_ENABLED", "true").lower() in ("true", "1", "yes")
     TIMEFRAMES: dict[str, int] = {"1D": 1440, "4H": 240, "15m": 15, "5m": 5}
 
