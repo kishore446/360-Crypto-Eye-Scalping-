@@ -73,6 +73,7 @@ from config import (
     TELEGRAM_CHANNEL_ID_SPOT,
     TELEGRAM_CHANNEL_ID_INSIGHTS,
     CH4_SCAN_INTERVAL_HOURS,
+    MIN_SIGNAL_GAP_SECONDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,9 @@ _bot_state = BotState()
 # WebSocket market data store and manager
 market_data = MarketDataStore()
 ws_manager = WebSocketManager(store=market_data)
+
+# Rate limiting: track last broadcast time per channel tier
+_last_signal_broadcast_time: dict[str, float] = {}
 
 # Auto-close monitor — watches TP/SL hits for all active signals
 auto_close_monitor = AutoCloseMonitor(
@@ -741,6 +745,11 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
     if _bot_state.news_freeze or news_calendar.is_high_impact_imminent():
         return
 
+    # Loss streak cooldown gate — skip signal generation during active cooldown
+    if cooldown_manager.is_cooldown_active():
+        logger.debug("on_candle_close: skipping %s — loss streak cooldown active.", base_symbol)
+        return
+
     price = market_data.get_price(base_symbol)
     if price is None:
         return
@@ -764,6 +773,38 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                 risk_manager.close_signal(base_symbol, reason="sl")
                 signal_tracker.clear_signal(sig.result.signal_id)
                 logger.info("Auto-closed signal on SL hit: %s", base_symbol)
+                # Generate and broadcast postmortem analysis to CH5 Insights
+                try:
+                    from bot.postmortem import generate_postmortem
+                    from bot.dashboard import TradeResult as _TradeResult
+                    _pnl_pct = -(abs(sig.result.stop_loss - sig.entry_mid) / sig.entry_mid * 100)
+                    _pm_result = _TradeResult(
+                        symbol=sig.result.symbol,
+                        side=sig.result.side.value,
+                        entry_price=sig.entry_mid,
+                        exit_price=sig.result.stop_loss,
+                        stop_loss=sig.result.stop_loss,
+                        tp1=sig.result.tp1,
+                        tp2=sig.result.tp2,
+                        tp3=sig.result.tp3,
+                        opened_at=sig.opened_at,
+                        closed_at=time.time(),
+                        outcome="LOSS",
+                        pnl_pct=round(_pnl_pct, 4),
+                        timeframe="5m",
+                        channel_tier="CH1_HARD",
+                    )
+                    _pm_msg = generate_postmortem(
+                        trade_result=_pm_result,
+                        gates_fired=["discount_zone", "liquidity_sweep", "market_structure_shift"],
+                        regime=_bot_state.market_regime,
+                        session="UNKNOWN",
+                    )
+                    _insights_id = signal_router.get_channel_id(ChannelTier.INSIGHTS)
+                    if _insights_id:
+                        await _broadcast_to_channel(_pm_msg, _insights_id)
+                except Exception as _pm_exc:
+                    logger.warning("Postmortem generation failed for %s: %s", base_symbol, _pm_exc)
             elif "TP3 HIT" in msg:
                 risk_manager.close_signal(base_symbol, reason="tp3")
                 signal_tracker.clear_signal(sig.result.signal_id)
@@ -802,6 +843,7 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
     candles_5m_raw = market_data.get_candles(base_symbol, "5m")
     candles_4h_raw = market_data.get_candles(base_symbol, "4h")
     candles_1d_raw = market_data.get_candles(base_symbol, "1d")
+    candles_15m_raw = market_data.get_candles(base_symbol, "15m")
 
     def _to_candles(rows: list) -> list[CandleData]:
         return [
@@ -818,6 +860,14 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
     four_h_candles = _to_candles(candles_4h_raw)
     daily_candles = _to_candles(candles_1d_raw)
     five_m_candles = _to_candles(candles_5m_raw)
+    fifteen_m_candles = _to_candles(candles_15m_raw)
+
+    # Fetch funding rate for score adjustment (best-effort; None on failure)
+    try:
+        from bot.funding_rate import fetch_funding_rate
+        funding_rate = fetch_funding_rate(base_symbol)
+    except Exception:
+        funding_rate = None
 
     # range_low / range_high from last 10 4H candles
     recent_4h = four_h_candles[-10:] if len(four_h_candles) >= 10 else four_h_candles
@@ -859,6 +909,8 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                 key_liquidity_level=key_level,
                 stop_loss=stop_loss,
                 market_regime=regime,
+                fifteen_min_candles=fifteen_m_candles,
+                funding_rate=funding_rate,
             )
         except Exception as exc:
             logger.error("CH1 confluence error for %s %s: %s", base_symbol, side.value, exc)
@@ -868,13 +920,25 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
             risk_manager.add_signal(ch1_result)
             signal_router.record_signal(base_symbol, ChannelTier.HARD)
             logger.info("CH1 signal: %s %s", base_symbol, side.value)
-            try:
-                await _broadcast_to_channel(ch1_result.format_message(), signal_router.get_channel_id(ChannelTier.HARD))
-                # Fallback: also send to legacy TELEGRAM_CHANNEL_ID if different
-                if TELEGRAM_CHANNEL_ID and TELEGRAM_CHANNEL_ID != signal_router.get_channel_id(ChannelTier.HARD):
-                    await _broadcast_to_channel(ch1_result.format_message(), TELEGRAM_CHANNEL_ID)
-            except Exception as exc:
-                logger.error("CH1 broadcast error for %s: %s", base_symbol, exc)
+            _now = time.time()
+            _tier_key = ChannelTier.HARD.value
+            _last_broadcast = _last_signal_broadcast_time.get(_tier_key, 0.0)
+            if _now - _last_broadcast >= MIN_SIGNAL_GAP_SECONDS:
+                _last_signal_broadcast_time[_tier_key] = _now
+                try:
+                    await _broadcast_to_channel(ch1_result.format_message(), signal_router.get_channel_id(ChannelTier.HARD))
+                    # Fallback: also send to legacy TELEGRAM_CHANNEL_ID if different
+                    if TELEGRAM_CHANNEL_ID and TELEGRAM_CHANNEL_ID != signal_router.get_channel_id(ChannelTier.HARD):
+                        await _broadcast_to_channel(ch1_result.format_message(), TELEGRAM_CHANNEL_ID)
+                except Exception as exc:
+                    logger.error("CH1 broadcast error for %s: %s", base_symbol, exc)
+            else:
+                logger.debug(
+                    "CH1 signal rate-limited for %s — %ds since last broadcast (min gap %ds).",
+                    base_symbol,
+                    int(_now - _last_broadcast),
+                    MIN_SIGNAL_GAP_SECONDS,
+                )
             break  # one signal per symbol per candle close
 
         # ── CH2 Medium Scalp ───────────────────────────────────────────────
@@ -895,6 +959,8 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                     key_liquidity_level=key_level,
                     stop_loss=stop_loss,
                     market_regime=regime,
+                    fifteen_min_candles=fifteen_m_candles,
+                    funding_rate=funding_rate,
                 )
             except Exception as exc:
                 logger.error("CH2 confluence error for %s %s: %s", base_symbol, side.value, exc)
@@ -903,10 +969,21 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
             if ch2_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.MEDIUM):
                 signal_router.record_signal(base_symbol, ChannelTier.MEDIUM)
                 logger.info("CH2 signal: %s %s", base_symbol, side.value)
-                try:
-                    await _broadcast_to_channel(ch2_result.format_message(), signal_router.get_channel_id(ChannelTier.MEDIUM))
-                except Exception as exc:
-                    logger.error("CH2 broadcast error for %s: %s", base_symbol, exc)
+                _now = time.time()
+                _tier_key = ChannelTier.MEDIUM.value
+                _last_broadcast = _last_signal_broadcast_time.get(_tier_key, 0.0)
+                if _now - _last_broadcast >= MIN_SIGNAL_GAP_SECONDS:
+                    _last_signal_broadcast_time[_tier_key] = _now
+                    try:
+                        await _broadcast_to_channel(ch2_result.format_message(), signal_router.get_channel_id(ChannelTier.MEDIUM))
+                    except Exception as exc:
+                        logger.error("CH2 broadcast error for %s: %s", base_symbol, exc)
+                else:
+                    logger.debug(
+                        "CH2 signal rate-limited for %s — %ds since last broadcast.",
+                        base_symbol,
+                        int(_now - _last_broadcast),
+                    )
 
         # ── CH3 Easy Breakout ──────────────────────────────────────────────
         if signal_router.is_channel_enabled(ChannelTier.EASY):

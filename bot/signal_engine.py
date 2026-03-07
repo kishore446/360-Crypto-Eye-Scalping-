@@ -104,6 +104,21 @@ class SignalResult:
             f"`{self.symbol}/USDT {self.side.value} ENTRY {copy_trade_entry} "
             f"TP {tp_list} SL {self.stop_loss:.4f}`"
         )
+        okx_copy = (
+            f"\n\n👇 CLICK TO COPY FOR OKX:\n"
+            f"`{self.symbol}/USDT {self.side.value} ENTRY {copy_trade_entry} "
+            f"TP {tp_list} SL {self.stop_loss:.4f}`"
+        )
+        bitget_copy = (
+            f"\n\n👇 CLICK TO COPY FOR BITGET:\n"
+            f"`{self.symbol}/USDT {self.side.value} ENTRY {copy_trade_entry} "
+            f"TP {tp_list} SL {self.stop_loss:.4f}`"
+        )
+        hyperliquid_copy = (
+            f"\n\n👇 CLICK TO COPY FOR HYPERLIQUID:\n"
+            f"`{self.symbol}-USD {self.side.value} ENTRY {copy_trade_entry} "
+            f"TP {tp_list} SL {self.stop_loss:.4f}`"
+        )
 
         return (
             f"🚀 #{self.symbol}/USDT ({self.side.value}) | 360 EYE SCALP\n"
@@ -123,6 +138,9 @@ class SignalResult:
             f"`{self.symbol} {self.side.value} ENTRY {copy_trade_entry} "
             f"TP {tp_list} SL {self.stop_loss:.4f}`"
             f"{bybit_copy}"
+            f"{okx_copy}"
+            f"{bitget_copy}"
+            f"{hyperliquid_copy}"
         )
 
 
@@ -355,50 +373,100 @@ def calculate_atr(candles: list[CandleData], period: int = 14) -> float:
     return sum(window) / len(window)
 
 
-def detect_fair_value_gap(candles: list[CandleData], side: Side) -> bool:
+def detect_fair_value_gap(
+    candles: list[CandleData],
+    side: Side,
+    current_price: Optional[float] = None,
+) -> bool:
     """
-    Detect a Fair Value Gap (FVG) in the last three candles.
+    Detect an unfilled Fair Value Gap (FVG) in the last ten candles.
 
-    A bullish FVG exists when candle[i].low > candle[i-2].high
-    (gap between candle i-2's high and candle i's low, with a large middle candle).
+    A bullish FVG exists when candle[i].low > candle[i-2].high.
     A bearish FVG exists when candle[i].high < candle[i-2].low.
+
+    Parameters
+    ----------
+    candles:
+        OHLCV candles (most-recent last).
+    side:
+        Signal direction to look for.
+    current_price:
+        When provided, only return True if the gap has NOT been filled.
+        A bullish FVG is considered filled if current_price < c0.high.
+        A bearish FVG is considered filled if current_price > c0.low.
+        When None (default), the fill check is skipped (backward compatible).
     """
     if len(candles) < 3:
         return False
-    c0 = candles[-3]
-    c2 = candles[-1]
-    if side == Side.LONG:
-        return c2.low > c0.high
-    else:
-        return c2.high < c0.low
+    window = candles[-10:]
+    for i in range(len(window) - 1, 1, -1):
+        c0 = window[i - 2]
+        c2 = window[i]
+        if side == Side.LONG:
+            if c2.low > c0.high:
+                # Gap found — verify it has not been filled
+                if current_price is not None and current_price < c0.high:
+                    continue  # price entered the gap zone — filled
+                return True
+        else:
+            if c2.high < c0.low:
+                if current_price is not None and current_price > c0.low:
+                    continue  # price entered the gap zone — filled
+                return True
+    return False
 
 
-def detect_order_block(candles: list[CandleData], side: Side) -> bool:
+def detect_order_block(
+    candles: list[CandleData],
+    side: Side,
+    atr: float = 0,
+) -> bool:
     """
     Detect an Order Block — the last opposing candle before an impulse move.
 
-    For LONG: look for the last bearish candle (close < open) before a
-    sequence of bullish candles.
-    For SHORT: look for the last bullish candle (close > open) before a
-    sequence of bearish candles.
+    Requires at least **two consecutive** directional impulse candles following
+    the opposing OB candle to confirm displacement (reduces false positives).
 
-    Returns True if an order block exists within the last 10 candles.
+    For LONG: look for the last bearish candle (close < open) before two
+    consecutive bullish candles.
+    For SHORT: look for the last bullish candle (close > open) before two
+    consecutive bearish candles.
+
+    Parameters
+    ----------
+    candles:
+        OHLCV candles (most-recent last).
+    side:
+        Signal direction.
+    atr:
+        When > 0, the impulse move (from OB close to the highest/lowest
+        point of the two impulse candles) must cover at least 0.5 × ATR.
+        Defaults to 0 which disables the ATR displacement check.
+
+    Returns True if a qualifying order block exists within the last 10 candles.
     """
     if len(candles) < 3:
         return False
     window = candles[-10:]
     if side == Side.LONG:
-        # Find last bearish candle followed by a bullish impulse
-        for i in range(len(window) - 2, 0, -1):
-            if window[i].close < window[i].open:  # bearish
-                # Check that subsequent candles are bullish
-                if window[i + 1].close > window[i + 1].open:
+        for i in range(len(window) - 3, -1, -1):
+            if window[i].close < window[i].open:  # bearish OB candidate
+                c1, c2 = window[i + 1], window[i + 2]
+                if c1.close > c1.open and c2.close > c2.open:  # 2 bullish impulse candles
+                    if atr > 0:
+                        impulse = max(c1.high, c2.high) - window[i].close
+                        if impulse < atr * 0.5:
+                            continue
                     return True
     else:
-        # Find last bullish candle followed by a bearish impulse
-        for i in range(len(window) - 2, 0, -1):
-            if window[i].close > window[i].open:  # bullish
-                if window[i + 1].close < window[i + 1].open:
+        for i in range(len(window) - 3, -1, -1):
+            if window[i].close > window[i].open:  # bullish OB candidate
+                c1, c2 = window[i + 1], window[i + 2]
+                if c1.close < c1.open and c2.close < c2.open:  # 2 bearish impulse candles
+                    if atr > 0:
+                        impulse = window[i].close - min(c1.low, c2.low)
+                        if impulse < atr * 0.5:
+                            continue
                     return True
     return False
 
@@ -426,6 +494,8 @@ def run_confluence_check(
     check_order_block: bool = False,
     fifteen_min_candles: Optional[list[CandleData]] = None,
     min_displacement_pct: Optional[float] = None,
+    funding_rate: Optional[float] = None,
+    oi_change: Optional[float] = None,
 ) -> Optional[SignalResult]:
     """
     Run all four confluence gates and return a :class:`SignalResult` when
@@ -449,6 +519,12 @@ def run_confluence_check(
     min_displacement_pct:
         Override the displacement filter for Gate ④.  When ``None``, the
         value from ``config.MIN_DISPLACEMENT_PCT`` (default 0.15) is used.
+    funding_rate:
+        Optional current funding rate.  When provided, adjusts the confluence
+        score by ±5 based on contrarian / crowded-trade conditions.
+    oi_change:
+        Optional OI percentage change (positive = OI rising).  When provided,
+        adjusts the score by ±5 based on OI / price divergence signals.
     """
     try:
         from config import MIN_DISPLACEMENT_PCT as _cfg_displacement
@@ -491,18 +567,18 @@ def run_confluence_check(
     # Candles to use for FVG / OB detection (prefer 15m per Blueprint §2.1)
     scoring_candles = fifteen_min_candles if fifteen_min_candles else five_min_candles
 
-    # Gate ⑥ — optional FVG check
-    if check_fvg and not detect_fair_value_gap(scoring_candles, side):
+    # Gate ⑥ — optional FVG check (pass current_price to verify gap is unfilled)
+    if check_fvg and not detect_fair_value_gap(scoring_candles, side, current_price=current_price):
         logger.info("[GATE_FAIL] %s %s: gate=fvg reason=no_fvg_detected", symbol, side.value)
         return None
 
-    # Gate ⑦ — optional Order Block check
-    if check_order_block and not detect_order_block(scoring_candles, side):
+    # Gate ⑦ — optional Order Block check (pass ATR for displacement verification)
+    atr = calculate_atr(five_min_candles)
+    if check_order_block and not detect_order_block(scoring_candles, side, atr=atr):
         logger.info("[GATE_FAIL] %s %s: gate=order_block reason=no_ob_detected", symbol, side.value)
         return None
 
     # All gates passed — build signal
-    atr = calculate_atr(five_min_candles)
     if atr > 0:
         entry_spread = atr * 0.5
     else:
@@ -519,8 +595,8 @@ def run_confluence_check(
     else:
         direction_match = False
 
-    fvg_present = detect_fair_value_gap(scoring_candles, side)
-    ob_present = detect_order_block(scoring_candles, side)
+    fvg_present = detect_fair_value_gap(scoring_candles, side, current_price=current_price)
+    ob_present = detect_order_block(scoring_candles, side, atr=atr)
 
     # Weighted confluence score (gates that passed earn their points)
     score = 0
@@ -531,15 +607,73 @@ def run_confluence_check(
     score += 10 if fvg_present else 0           # Gate ⑥
     score += 15 if ob_present else 0            # Gate ⑦
 
-    if direction_match and fvg_present and ob_present:
+    # Gate ⑧ — optional funding rate sentiment adjustment
+    if funding_rate is not None:
+        try:
+            from config import FUNDING_EXTREME_NEGATIVE, FUNDING_EXTREME_POSITIVE
+        except ImportError:
+            FUNDING_EXTREME_NEGATIVE = -0.0001
+            FUNDING_EXTREME_POSITIVE = 0.0005
+        if side == Side.LONG:
+            if funding_rate < FUNDING_EXTREME_NEGATIVE:
+                score += 5   # contrarian: extreme short crowding → bullish edge
+            elif funding_rate > FUNDING_EXTREME_POSITIVE:
+                score -= 5   # risky: extreme long crowding
+        else:
+            if funding_rate > FUNDING_EXTREME_POSITIVE:
+                score += 5   # contrarian: extreme long crowding → bearish edge
+            elif funding_rate < FUNDING_EXTREME_NEGATIVE:
+                score -= 5   # risky: extreme short crowding
+
+    # OI divergence / confirmation adjustment
+    if oi_change is not None and len(five_min_candles) >= 2:
+        price_up = five_min_candles[-1].close > five_min_candles[-2].close
+        oi_up = oi_change > 0
+        if side == Side.LONG:
+            if price_up and not oi_up:
+                score -= 5   # price new high but OI declining — divergence warning
+            elif price_up and oi_up:
+                score += 5   # OI confirms bullish move
+        else:
+            if not price_up and not oi_up:
+                score -= 5   # price new low but OI declining — short-squeeze risk
+            elif not price_up and oi_up:
+                score += 5   # OI confirms bearish move
+
+    # Score-based confidence: score is the primary driver
+    if score >= 90:
         confidence = Confidence.HIGH
-    elif direction_match:
+    elif score >= 75:
+        if direction_match and fvg_present and ob_present:
+            confidence = Confidence.HIGH
+        else:
+            confidence = Confidence.MEDIUM
+    elif score >= 60:
         confidence = Confidence.MEDIUM
     else:
         confidence = Confidence.LOW
 
     from bot.logging_config import generate_signal_id
     sig_id = generate_signal_id()
+
+    # Wire narrative generator for richer signal descriptions
+    if not structure_note and not context_note:
+        try:
+            from bot.narrative import generate_signal_narrative
+            gates_fired = ["macro_bias", "zone", "sweep", "mss"]
+            if fvg_present:
+                gates_fired.append("fvg")
+            if ob_present:
+                gates_fired.append("order_block")
+            structure_note, context_note = generate_signal_narrative(
+                symbol=symbol,
+                side=side.value,
+                confidence=confidence.value,
+                gates_fired=gates_fired,
+                confluence_score=score,
+            )
+        except Exception:
+            pass
 
     return SignalResult(
         symbol=symbol,
@@ -645,6 +779,8 @@ def run_confluence_check_relaxed(
     mss_window: int = 10,
     fifteen_min_candles: Optional[list[CandleData]] = None,
     min_displacement_pct: Optional[float] = None,
+    funding_rate: Optional[float] = None,
+    oi_change: Optional[float] = None,
     **kwargs,
 ) -> Optional[SignalResult]:
     """
@@ -675,6 +811,12 @@ def run_confluence_check_relaxed(
     min_displacement_pct:
         Override the displacement filter for Gate ④.  When ``None``, the
         value from ``config.MIN_DISPLACEMENT_PCT`` (default 0.15) is used.
+    funding_rate:
+        Optional current funding rate.  When provided, adjusts the confluence
+        score by ±5 based on contrarian / crowded-trade conditions.
+    oi_change:
+        Optional OI percentage change (positive = OI rising).  When provided,
+        adjusts the score by ±5 based on OI / price divergence signals.
     """
     try:
         from config import MIN_DISPLACEMENT_PCT as _cfg_displacement
@@ -756,8 +898,8 @@ def run_confluence_check_relaxed(
     else:
         direction_match = False
 
-    fvg_present = detect_fair_value_gap(scoring_candles, side)
-    ob_present = detect_order_block(scoring_candles, side)
+    fvg_present = detect_fair_value_gap(scoring_candles, side, current_price=current_price)
+    ob_present = detect_order_block(scoring_candles, side, atr=atr)
 
     # Weighted confluence score
     score = 0
@@ -768,15 +910,73 @@ def run_confluence_check_relaxed(
     score += 10 if fvg_present else 0           # Gate ⑥
     score += 15 if ob_present else 0            # Gate ⑦
 
-    if direction_match and fvg_present and ob_present:
+    # Gate ⑧ — optional funding rate sentiment adjustment
+    if funding_rate is not None:
+        try:
+            from config import FUNDING_EXTREME_NEGATIVE, FUNDING_EXTREME_POSITIVE
+        except ImportError:
+            FUNDING_EXTREME_NEGATIVE = -0.0001
+            FUNDING_EXTREME_POSITIVE = 0.0005
+        if side == Side.LONG:
+            if funding_rate < FUNDING_EXTREME_NEGATIVE:
+                score += 5
+            elif funding_rate > FUNDING_EXTREME_POSITIVE:
+                score -= 5
+        else:
+            if funding_rate > FUNDING_EXTREME_POSITIVE:
+                score += 5
+            elif funding_rate < FUNDING_EXTREME_NEGATIVE:
+                score -= 5
+
+    # OI divergence / confirmation adjustment
+    if oi_change is not None and len(five_min_candles) >= 2:
+        price_up = five_min_candles[-1].close > five_min_candles[-2].close
+        oi_up = oi_change > 0
+        if side == Side.LONG:
+            if price_up and not oi_up:
+                score -= 5
+            elif price_up and oi_up:
+                score += 5
+        else:
+            if not price_up and not oi_up:
+                score -= 5
+            elif not price_up and oi_up:
+                score += 5
+
+    # Score-based confidence: score is the primary driver
+    if score >= 90:
         confidence = Confidence.HIGH
-    elif direction_match:
+    elif score >= 75:
+        if direction_match and fvg_present and ob_present:
+            confidence = Confidence.HIGH
+        else:
+            confidence = Confidence.MEDIUM
+    elif score >= 60:
         confidence = Confidence.MEDIUM
     else:
         confidence = Confidence.LOW
 
     from bot.logging_config import generate_signal_id
     sig_id = generate_signal_id()
+
+    # Wire narrative generator for richer signal descriptions
+    if not structure_note and not context_note:
+        try:
+            from bot.narrative import generate_signal_narrative
+            gates_fired = ["macro_bias", "zone", "sweep", "mss"]
+            if fvg_present:
+                gates_fired.append("fvg")
+            if ob_present:
+                gates_fired.append("order_block")
+            structure_note, context_note = generate_signal_narrative(
+                symbol=symbol,
+                side=side.value,
+                confidence=confidence.value,
+                gates_fired=gates_fired,
+                confluence_score=score,
+            )
+        except Exception:
+            pass
 
     return SignalResult(
         symbol=symbol,
