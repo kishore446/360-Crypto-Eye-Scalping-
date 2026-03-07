@@ -3,8 +3,6 @@ Config sync tests — verify config defaults match Blueprint v3.0.0-domination v
 """
 from __future__ import annotations
 
-import pytest
-
 
 class TestConfigSyncBlueprintValues:
     """Verify that all config defaults match the Blueprint specifications."""
@@ -102,8 +100,9 @@ class TestDashboardTradeResultFields:
         )
 
     def test_default_channel_tier_is_aggregate(self):
-        from bot.dashboard import TradeResult
         import time
+
+        from bot.dashboard import TradeResult
         r = TradeResult(
             symbol="BTC", side="LONG", entry_price=100.0, exit_price=102.0,
             stop_loss=98.0, tp1=102.0, tp2=104.0, tp3=106.0,
@@ -113,8 +112,9 @@ class TestDashboardTradeResultFields:
         assert r.channel_tier == "AGGREGATE"
 
     def test_default_session_is_unknown(self):
-        from bot.dashboard import TradeResult
         import time
+
+        from bot.dashboard import TradeResult
         r = TradeResult(
             symbol="BTC", side="LONG", entry_price=100.0, exit_price=102.0,
             stop_loss=98.0, tp1=102.0, tp2=104.0, tp3=106.0,

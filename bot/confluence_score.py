@@ -4,10 +4,21 @@ Multi-Timeframe Confluence Score
 Computes a weighted score (0-100) across all confluence factors.
 """
 from __future__ import annotations
+
 import logging
 from dataclasses import dataclass
-from typing import Optional
-from bot.signal_engine import CandleData, Side, assess_macro_bias, detect_fair_value_gap, detect_order_block, detect_liquidity_sweep, is_discount_zone, is_premium_zone, detect_market_structure_shift
+
+from bot.signal_engine import (
+    CandleData,
+    Side,
+    assess_macro_bias,
+    detect_fair_value_gap,
+    detect_liquidity_sweep,
+    detect_market_structure_shift,
+    detect_order_block,
+    is_discount_zone,
+    is_premium_zone,
+)
 
 logger = logging.getLogger(__name__)
 

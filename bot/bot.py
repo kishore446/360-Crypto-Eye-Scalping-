@@ -34,7 +34,6 @@ except ImportError:
     _resource = None  # type: ignore[assignment]
 
 from apscheduler.schedulers.background import BackgroundScheduler
-
 from telegram import Bot, Update
 from telegram.ext import (
     Application,
@@ -42,10 +41,10 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from bot.backtester import Backtester, HistoricalDataFetcher
 from bot.auto_close_monitor import AutoCloseMonitor
+from bot.backtester import Backtester, HistoricalDataFetcher
 from bot.dashboard import Dashboard, TradeResult
-from bot.exchange import ResilientExchange, _resilient_exchange
+from bot.exchange import _resilient_exchange
 from bot.loss_streak_cooldown import CooldownManager
 from bot.news_fetcher import fetch_and_reload
 from bot.news_filter import NewsCalendar
@@ -65,16 +64,16 @@ from config import (
     AUTO_SCAN_ENABLED_ON_BOOT,
     AUTO_SCAN_INTERVAL_SECONDS,
     AUTO_SCAN_PAIRS,
+    CH4_SCAN_INTERVAL_HOURS,
+    MIN_SIGNAL_GAP_SECONDS,
     STALE_SIGNAL_HOURS,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHANNEL_ID,
-    TELEGRAM_CHANNEL_ID_HARD,
-    TELEGRAM_CHANNEL_ID_MEDIUM,
     TELEGRAM_CHANNEL_ID_EASY,
-    TELEGRAM_CHANNEL_ID_SPOT,
+    TELEGRAM_CHANNEL_ID_HARD,
     TELEGRAM_CHANNEL_ID_INSIGHTS,
-    CH4_SCAN_INTERVAL_HOURS,
-    MIN_SIGNAL_GAP_SECONDS,
+    TELEGRAM_CHANNEL_ID_MEDIUM,
+    TELEGRAM_CHANNEL_ID_SPOT,
 )
 
 logger = logging.getLogger(__name__)
@@ -348,7 +347,7 @@ async def cmd_auto_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     args = context.args or []
     if not args:
         state = "ACTIVE ✅" if _bot_state.auto_scan_active else "INACTIVE ❌"
-        mode = f" (WebSocket mode)" if ws_manager.is_healthy() else " (fallback polling)"
+        mode = " (WebSocket mode)" if ws_manager.is_healthy() else " (fallback polling)"
         await _reply(update, f"🔍 Auto-Scanner is currently *{state}*{mode}.")
         return
 
@@ -797,8 +796,8 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                 logger.info("Auto-closed signal on SL hit: %s", base_symbol)
                 # Generate and broadcast postmortem analysis to CH5 Insights
                 try:
-                    from bot.postmortem import generate_postmortem
                     from bot.dashboard import TradeResult as _TradeResult
+                    from bot.postmortem import generate_postmortem
                     _pnl_pct = -(abs(sig.result.stop_loss - sig.entry_mid) / sig.entry_mid * 100)
                     _pm_result = _TradeResult(
                         symbol=sig.result.symbol,
@@ -1841,7 +1840,6 @@ def build_application() -> Application:
         btc_price = market_data.get_price("BTC")
         if btc_price is None:
             return
-        btc_1d_raw = market_data.get_candles("BTC", "1d")
         btc_4h_raw = market_data.get_candles("BTC", "4h")
         if len(btc_4h_raw) < 10:
             return

@@ -16,7 +16,6 @@ from bot.performance import (
     sharpe_ratio,
 )
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 class _Trade:

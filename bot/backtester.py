@@ -34,7 +34,6 @@ from bot.signal_engine import (
     run_confluence_check,
 )
 
-
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 # Window sizes that match the live engine's candle requirements

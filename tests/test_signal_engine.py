@@ -24,7 +24,6 @@ from bot.signal_engine import (
     run_confluence_check,
 )
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 def _bullish_daily_candles(n: int = 20, base: float = 100.0) -> list[CandleData]:
@@ -715,6 +714,7 @@ class TestDisplacementConfigDefault:
 
     def test_default_displacement_is_0_15(self):
         from inspect import signature
+
         from bot.signal_engine import detect_market_structure_shift
         sig = signature(detect_market_structure_shift)
         default = sig.parameters["min_displacement_pct"].default

@@ -16,9 +16,9 @@ import time
 
 try:
     from config import (
-        LOSS_STREAK_THRESHOLD,
-        COOLDOWN_SIGNALS,
         COOLDOWN_HOURS,
+        COOLDOWN_SIGNALS,
+        LOSS_STREAK_THRESHOLD,
     )
 except ImportError:
     LOSS_STREAK_THRESHOLD: int = 3

@@ -4,7 +4,9 @@ VWAP Calculator
 Computes Volume-Weighted Average Price for intraday candles.
 """
 from __future__ import annotations
+
 import logging
+
 from bot.signal_engine import CandleData
 
 logger = logging.getLogger(__name__)

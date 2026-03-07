@@ -1,9 +1,10 @@
 """Tests for bot/structure_detector.py"""
 from __future__ import annotations
+
 import pytest
+
 from bot.signal_engine import CandleData, Side
 from bot.structure_detector import (
-    SwingPoint,
     DealingRange,
     detect_swing_points,
     find_dealing_range,
@@ -13,8 +14,8 @@ from bot.structure_detector import (
 
 def _candles(highs: list[float], lows: list[float], close_offset: float = 0.0) -> list[CandleData]:
     return [
-        CandleData(open=l + 0.1, high=h, low=l, close=l + close_offset, volume=100.0)
-        for h, l in zip(highs, lows)
+        CandleData(open=lo + 0.1, high=h, low=lo, close=lo + close_offset, volume=100.0)
+        for h, lo in zip(highs, lows)
     ]
 
 

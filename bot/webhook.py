@@ -31,7 +31,6 @@ from typing import Any
 from flask import Flask, Response, jsonify, request
 
 from bot.bot import process_webhook, risk_manager, signal_router
-from bot.signal_router import ChannelTier
 from config import (
     ALLOWED_WEBHOOK_IPS,
     TELEGRAM_BOT_TOKEN,
@@ -226,9 +225,9 @@ def _send_telegram_message(text: str, channel_id: int = TELEGRAM_CHANNEL_ID) -> 
     helper exists specifically for the webhook context where an async event
     loop is not available.
     """
-    import urllib.request
-    import urllib.error
     import json as _json
+    import urllib.error
+    import urllib.request
 
     if not TELEGRAM_BOT_TOKEN:
         logger.warning("TELEGRAM_BOT_TOKEN not set — skipping Telegram broadcast.")

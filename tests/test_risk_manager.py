@@ -12,7 +12,6 @@ from bot.risk_manager import ActiveSignal, RiskManager, calculate_position_size
 from bot.signal_engine import Confidence, Side, SignalResult
 from config import MAX_SAME_SIDE_SIGNALS, STALE_SIGNAL_HOURS
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _make_signal(symbol: str = "BTC", side: Side = Side.LONG) -> SignalResult:

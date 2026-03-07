@@ -3,17 +3,14 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 
 import pytest
 
 import bot.database as db_module
 from bot.database import (
-    get_db_path,
+    _get_conn,
     init_db,
     migrate_from_json,
-    set_db_path,
-    _get_conn,
 )
 
 

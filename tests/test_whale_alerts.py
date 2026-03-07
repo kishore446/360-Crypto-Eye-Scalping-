@@ -3,10 +3,9 @@ from __future__ import annotations
 
 import pytest
 
-from bot.insights.whale_alerts import WhaleAlertMonitor
-from bot.insights.liquidation_map import LiquidationMonitor
 from bot.insights.funding_dashboard import format_funding_dashboard
-
+from bot.insights.liquidation_map import LiquidationMonitor
+from bot.insights.whale_alerts import WhaleAlertMonitor
 
 # ── Whale Alert ──────────────────────────────────────────────────────────────
 

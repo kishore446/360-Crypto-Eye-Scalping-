@@ -4,6 +4,7 @@ Signal Tracker
 Real-time signal lifecycle tracking with auto-update broadcasts.
 """
 from __future__ import annotations
+
 import logging
 import threading
 from typing import Optional
@@ -154,7 +155,7 @@ class SignalTracker:
         when ATR is unavailable.
         """
         try:
-            from bot.signal_engine import calculate_atr, Side
+            from bot.signal_engine import Side
         except ImportError:
             return None
 
@@ -178,11 +179,6 @@ class SignalTracker:
         trail_extreme = state.get("trailing_extreme_price")
         trail_sl = state.get("trailing_stop_loss")
         if trail_sl is None:
-            return None
-
-        try:
-            from bot.signal_engine import calculate_atr
-        except ImportError:
             return None
 
         atr = getattr(signal, 'atr', None)
@@ -214,7 +210,6 @@ class SignalTracker:
     @staticmethod
     def _effective_sl(signal, state: dict) -> float:
         """Return the current effective stop-loss price."""
-        from bot.signal_engine import Side
 
         if state.get("trailing_stop_loss") is not None:
             return state["trailing_stop_loss"]

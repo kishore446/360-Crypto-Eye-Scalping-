@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
 from bot.dashboard import TradeResult
 from bot.postmortem import generate_postmortem
 

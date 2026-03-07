@@ -856,9 +856,6 @@ def run_confluence_check_relaxed(
         return None
 
     # Gate ③ — liquidity sweep (wider window)
-    sweep_candles = five_min_candles[-sweep_window:] if len(five_min_candles) >= sweep_window else five_min_candles
-    # Temporarily override the sweep window by slicing; detect_liquidity_sweep always uses [-7:]
-    # so we pass the already-sliced window and rely on the fact it checks [-7:] of what we give
     _sweep_check_candles = five_min_candles[-sweep_window:]
     if not any(
         (side == Side.LONG and c.low < key_liquidity_level and c.close > key_liquidity_level)

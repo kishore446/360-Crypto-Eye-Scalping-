@@ -1,12 +1,10 @@
 """Tests for calculate_correlation() and format_correlation_report()."""
 from __future__ import annotations
 
-import math
-
 import pytest
 
-from bot.signal_engine import CandleData
 from bot.insights.correlation_matrix import calculate_correlation, format_correlation_report
+from bot.signal_engine import CandleData
 
 
 def _make_candles(closes: list[float]) -> list[CandleData]:

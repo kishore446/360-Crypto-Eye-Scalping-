@@ -8,7 +8,6 @@ posted to CH5 Insights at the start of each new month.
 from __future__ import annotations
 
 import calendar
-import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:

@@ -214,7 +214,6 @@ class TestDurationStr:
 
 @pytest.mark.asyncio
 async def test_process_close_records_dashboard(monitor):
-    from bot.dashboard import TradeResult
     result = _make_signal_result()
     signal = _make_active_signal(result)
 

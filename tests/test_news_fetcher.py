@@ -7,8 +7,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 import bot.news_fetcher as news_fetcher_module
 from bot.news_fetcher import fetch_and_reload
 from bot.news_filter import NewsCalendar
@@ -81,8 +79,9 @@ class TestFetchAndReloadWithApiKey:
 
     def test_with_api_key_loads_returned_events(self):
         """Events returned by the API should be loaded into the calendar."""
-        from bot.news_filter import NewsEvent
         import time
+
+        from bot.news_filter import NewsEvent
 
         fake_event = NewsEvent("FOMC", time.time() + 3600, "HIGH", "USD")
         calendar = MagicMock(spec=NewsCalendar)

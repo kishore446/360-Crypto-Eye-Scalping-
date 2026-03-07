@@ -1,10 +1,13 @@
 """Tests for bot/chart_generator.py"""
 from __future__ import annotations
+
 import sys
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import MagicMock, patch
-from bot.signal_engine import CandleData, Side, Confidence, SignalResult
+
 from bot.chart_generator import generate_signal_chart
+from bot.signal_engine import CandleData, Confidence, Side, SignalResult
 
 
 def _make_candles(n: int = 20) -> list[CandleData]:
@@ -54,6 +57,6 @@ class TestGenerateSignalChart:
     def test_handles_exception_gracefully(self):
         # Should never raise
         try:
-            result = generate_signal_chart(_make_candles(20), _make_signal())
+            generate_signal_chart(_make_candles(20), _make_signal())
         except Exception:
             pytest.fail("generate_signal_chart should not raise exceptions")

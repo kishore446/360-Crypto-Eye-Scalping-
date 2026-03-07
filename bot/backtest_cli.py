@@ -32,7 +32,6 @@ from bot.backtester import (
     HistoricalDataFetcher,
 )
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 

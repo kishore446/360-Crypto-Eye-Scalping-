@@ -4,8 +4,9 @@ BTC Correlation Gate
 Blocks altcoin signals when BTC macro bias conflicts with the signal direction.
 """
 from __future__ import annotations
+
 import logging
-from typing import Optional
+
 from bot.signal_engine import CandleData, Side, assess_macro_bias
 
 logger = logging.getLogger(__name__)

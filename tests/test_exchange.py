@@ -7,11 +7,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from bot.exchange import (
+    _CACHE_TTL,
+    _CIRCUIT_BREAKER_THRESHOLD,
     CircuitBreakerOpen,
     ResilientExchange,
-    _CIRCUIT_BREAKER_THRESHOLD,
-    _CIRCUIT_BREAKER_COOLDOWN,
-    _CACHE_TTL,
 )
 
 

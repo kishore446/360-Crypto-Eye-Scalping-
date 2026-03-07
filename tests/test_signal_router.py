@@ -5,8 +5,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
 from bot.signal_router import ChannelTier, SignalRouter
 
 

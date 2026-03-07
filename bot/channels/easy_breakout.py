@@ -18,9 +18,9 @@ from bot.signal_engine import (
     CandleData,
     Side,
     _average_volume,
+    calculate_atr,
     calculate_rsi,
     calculate_targets,
-    calculate_atr,
 )
 
 try:

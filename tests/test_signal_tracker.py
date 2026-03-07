@@ -7,8 +7,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 from bot.signal_engine import Side
 from bot.signal_tracker import SignalTracker
 

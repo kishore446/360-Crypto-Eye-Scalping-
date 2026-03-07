@@ -3,11 +3,10 @@ Tests for bot/open_interest.py — Open Interest Change Monitor.
 """
 from __future__ import annotations
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-import bot.open_interest as oi_module
 from bot.open_interest import analyze_oi_change, fetch_open_interest
 from bot.signal_engine import Side
 

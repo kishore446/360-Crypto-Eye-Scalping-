@@ -3,9 +3,7 @@ Tests for bot/insights/fear_greed.py — Fear & Greed Index (CH5B).
 """
 from __future__ import annotations
 
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from bot.insights.fear_greed import fetch_fear_greed_index, format_fear_greed_message
 

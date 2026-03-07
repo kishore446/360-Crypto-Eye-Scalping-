@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import logging
 import random
-import time
 import threading
+import time
 from typing import Any, Optional
 
 import ccxt
@@ -150,7 +150,7 @@ class ResilientExchange:
                 return self._exchange.markets
             except CircuitBreakerOpen:
                 raise
-            except Exception as exc:
+            except Exception:
                 self._record_failure()
                 if attempt < _RETRY_COUNT:
                     delay = self._backoff_delay(attempt)
@@ -173,7 +173,7 @@ class ResilientExchange:
                 return ticker
             except CircuitBreakerOpen:
                 raise
-            except Exception as exc:
+            except Exception:
                 self._record_failure()
                 if attempt < _RETRY_COUNT:
                     delay = self._backoff_delay(attempt)

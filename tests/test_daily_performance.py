@@ -39,7 +39,8 @@ class TestFormatDailyPerformanceZeroTrades:
     """Edge case: no trades recorded."""
 
     def setup_method(self, tmp_path=None):
-        import tempfile, os
+        import os
+        import tempfile
         self._tmpdir = tempfile.mkdtemp()
         self.db = Dashboard(log_file=os.path.join(self._tmpdir, "dash.json"))
 
@@ -67,7 +68,8 @@ class TestFormatDailyPerformanceMixedResults:
     """Mixed win/loss results."""
 
     def setup_method(self, tmp_path=None):
-        import tempfile, os
+        import os
+        import tempfile
         self._tmpdir = tempfile.mkdtemp()
         self.db = Dashboard(log_file=os.path.join(self._tmpdir, "dash.json"))
 
@@ -103,7 +105,8 @@ class TestFormatDailyPerformanceStreak:
     """Streak calculation."""
 
     def setup_method(self, tmp_path=None):
-        import tempfile, os
+        import os
+        import tempfile
         self._tmpdir = tempfile.mkdtemp()
         self.db = Dashboard(log_file=os.path.join(self._tmpdir, "dash.json"))
 

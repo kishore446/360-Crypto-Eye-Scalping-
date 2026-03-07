@@ -4,7 +4,6 @@ Tests for bot/loss_streak_cooldown.py — Smart Cooldown After Loss Streak.
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
 
 import pytest
 

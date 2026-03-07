@@ -7,8 +7,9 @@ Algorithmically detects what a human trader reads from chart structure:
 - Key liquidity level identification for LONG/SHORT setups
 """
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Optional
+
 from bot.signal_engine import CandleData, Side
 
 

@@ -16,13 +16,11 @@ Covers:
 from __future__ import annotations
 
 import time
-import types
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
-from bot.ws_manager import MarketDataStore, WebSocketManager, _STALE_THRESHOLD
-
+from bot.ws_manager import _STALE_THRESHOLD, MarketDataStore, WebSocketManager
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -235,7 +233,8 @@ class TestOnCandleCloseGates:
     def test_signal_generated_when_all_gates_pass(self, monkeypatch):
         """on_candle_close broadcasts a signal when all gates pass and confluence succeeds."""
         import bot.bot as _bot
-        from bot.signal_engine import SignalResult, Side as _Side
+        from bot.signal_engine import Side as _Side
+        from bot.signal_engine import SignalResult
 
         fake_result = MagicMock(spec=SignalResult)
         fake_result.confidence = MagicMock()
@@ -252,7 +251,8 @@ class TestOnCandleCloseGates:
     def test_one_signal_per_candle_close(self):
         """on_candle_close stops after the first successful CH1 signal (break after first hit)."""
         import bot.bot as _bot
-        from bot.signal_engine import SignalResult, Side as _Side
+        from bot.signal_engine import Side as _Side
+        from bot.signal_engine import SignalResult
 
         fake_result = MagicMock(spec=SignalResult)
         fake_result.confidence = MagicMock()
@@ -387,7 +387,8 @@ class TestFallbackScanJob:
     def test_fallback_signal_broadcast(self, monkeypatch):
         """Fallback scan broadcasts signal when hard_scalp gate passes."""
         import bot.bot as _bot
-        from bot.signal_engine import SignalResult, Side as _Side
+        from bot.signal_engine import Side as _Side
+        from bot.signal_engine import SignalResult
 
         unhealthy_mgr = _make_ws_manager(connected=False)
         monkeypatch.setattr(_bot, "ws_manager", unhealthy_mgr)
