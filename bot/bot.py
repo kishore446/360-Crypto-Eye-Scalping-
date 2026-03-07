@@ -64,7 +64,12 @@ from config import (
     AUTO_SCAN_ENABLED_ON_BOOT,
     AUTO_SCAN_INTERVAL_SECONDS,
     AUTO_SCAN_PAIRS,
+    BRIEFING_ENABLED,
+    BRIEFING_HOUR_UTC,
     CH4_SCAN_INTERVAL_HOURS,
+    CORRELATION_ALERT_ENABLED,
+    CORRELATION_MAX_SAME_GROUP,
+    DB_ARCHIVE_DAYS,
     MIN_SIGNAL_GAP_SECONDS,
     STALE_SIGNAL_HOURS,
     TELEGRAM_BOT_TOKEN,
@@ -115,6 +120,7 @@ auto_close_monitor = AutoCloseMonitor(
     cooldown_manager=cooldown_manager,
     market_data_store=market_data,
     signal_router=signal_router,
+    bot_state=_bot_state,
 )
 
 # Reference to the main asyncio event loop (set in build_application)
@@ -938,8 +944,20 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
             ch1_result = None
 
         if ch1_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.HARD):
-            risk_manager.add_signal(ch1_result, origin_channel=signal_router.get_channel_id(ChannelTier.HARD))
+            risk_manager.add_signal(ch1_result, origin_channel=signal_router.get_channel_id(ChannelTier.HARD), created_regime=regime)
             signal_router.record_signal(base_symbol, ChannelTier.HARD)
+            # ── Correlation guard check ──────────────────────────────────────
+            if CORRELATION_ALERT_ENABLED:
+                from bot.correlation_guard import check_correlation_risk
+                corr_warn = check_correlation_risk(risk_manager.active_signals, max_same_group=CORRELATION_MAX_SAME_GROUP)
+                if corr_warn and ADMIN_CHAT_ID:
+                    try:
+                        async def _send_corr_alert(msg: str = corr_warn) -> None:
+                            async with Bot(token=TELEGRAM_BOT_TOKEN) as _b:
+                                await _b.send_message(chat_id=ADMIN_CHAT_ID, text=msg)
+                        await _send_corr_alert()
+                    except Exception as _corr_exc:
+                        logger.warning("Correlation alert DM failed: %s", _corr_exc)
             logger.info("CH1 signal: %s %s", base_symbol, side.value)
             _now = time.time()
             _tier_key = ChannelTier.HARD.value
@@ -1140,7 +1158,7 @@ def _run_fallback_scan_job() -> None:
                     ch1_result = None
 
                 if ch1_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.HARD):
-                    risk_manager.add_signal(ch1_result, origin_channel=signal_router.get_channel_id(ChannelTier.HARD))
+                    risk_manager.add_signal(ch1_result, origin_channel=signal_router.get_channel_id(ChannelTier.HARD), created_regime=regime)
                     signal_router.record_signal(base_symbol, ChannelTier.HARD)
                     logger.info("Fallback CH1 signal: %s %s", base_symbol, side.value)
 
@@ -1516,7 +1534,7 @@ def _seed_historical_candles(symbols: list[str]) -> None:
     def _seed_one(base: str) -> None:
         ccxt_symbol = _normalise_symbol(base)
         try:
-            for timeframe, limit in (("1d", 30), ("4h", 30), ("5m", 50)):
+            for timeframe, limit in (("1d", 30), ("4h", 30), ("5m", 50), ("15m", 50)):
                 rows = _resilient_exchange.fetch_ohlcv(ccxt_symbol, timeframe, limit=limit)
                 for row in rows:
                     market_data.update_candle(base, timeframe, row)
@@ -1663,6 +1681,43 @@ async def cmd_backtest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _reply(update, report)
 
 
+async def cmd_briefing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /briefing
+
+    Admin-only: generate and post the daily market briefing on demand.
+    """
+    if not _is_admin(update):
+        await _reply(update, "⛔ Admin only.")
+        return
+
+    from bot.insights.market_briefing import generate_daily_briefing
+    briefing_text = generate_daily_briefing(dashboard, risk_manager, _bot_state, market_data)
+    channel_id = signal_router.get_channel_id(ChannelTier.INSIGHTS)
+    if channel_id:
+        await _broadcast_to_channel(briefing_text, channel_id)
+    await _reply(update, "✅ Daily briefing posted to CH5.")
+
+
+async def cmd_db_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /db_maintenance
+
+    Admin-only: archive old signals and run VACUUM on the database.
+    """
+    if not _is_admin(update):
+        await _reply(update, "⛔ Admin only.")
+        return
+
+    from bot.database import archive_old_signals
+    try:
+        archived = archive_old_signals(days=DB_ARCHIVE_DAYS)
+        await _reply(update, f"✅ DB maintenance complete — {archived} signals archived (>{DB_ARCHIVE_DAYS}d old).")
+    except Exception as exc:
+        logger.error("DB maintenance error: %s", exc)
+        await _reply(update, f"❌ DB maintenance failed: {exc}")
+
+
 # ── Application bootstrap ─────────────────────────────────────────────────────
 
 def build_application() -> Application:
@@ -1710,6 +1765,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("health", cmd_health))
     app.add_handler(CommandHandler("regime", cmd_regime))
     app.add_handler(CommandHandler("channels", cmd_channels))
+    app.add_handler(CommandHandler("briefing", cmd_briefing))
+    app.add_handler(CommandHandler("db_maintenance", cmd_db_maintenance))
 
     # Fetch Binance USDT-M perpetual pairs dynamically at startup
     _refresh_dynamic_pairs()
@@ -1934,6 +1991,49 @@ def build_application() -> Application:
         hour=18,
         minute=0,
         id="weekly_briefing",
+        replace_existing=True,
+    )
+
+    # ── CH5E — Daily Market Briefing at BRIEFING_HOUR_UTC ───────────────────
+    def _post_daily_briefing() -> None:
+        if not BRIEFING_ENABLED:
+            return
+        if not signal_router.is_channel_enabled(ChannelTier.INSIGHTS):
+            return
+        from bot.insights.market_briefing import generate_daily_briefing
+        msg_text = generate_daily_briefing(dashboard, risk_manager, _bot_state, market_data)
+
+        async def _send() -> None:
+            await _broadcast_to_channel(msg_text, signal_router.get_channel_id(ChannelTier.INSIGHTS))
+
+        if _main_loop is not None and _main_loop.is_running():
+            asyncio.run_coroutine_threadsafe(_send(), _main_loop)
+
+    _scheduler.add_job(
+        _post_daily_briefing,
+        "cron",
+        hour=BRIEFING_HOUR_UTC,
+        minute=0,
+        id="daily_briefing",
+        replace_existing=True,
+    )
+
+    # ── Weekly DB maintenance — every Sunday at 04:00 UTC ───────────────────
+    def _run_db_maintenance() -> None:
+        from bot.database import archive_old_signals
+        try:
+            archived = archive_old_signals(days=DB_ARCHIVE_DAYS)
+            logger.info("Scheduled DB maintenance: archived %d signals.", archived)
+        except Exception as exc:
+            logger.error("Scheduled DB maintenance failed: %s", exc)
+
+    _scheduler.add_job(
+        _run_db_maintenance,
+        "cron",
+        day_of_week="sun",
+        hour=4,
+        minute=0,
+        id="db_maintenance",
         replace_existing=True,
     )
 

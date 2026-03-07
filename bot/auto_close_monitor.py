@@ -90,6 +90,7 @@ class AutoCloseMonitor:
         market_data_store: "MarketDataStore",
         signal_router: "SignalRouter",
         poll_interval: float = 30.0,
+        bot_state: "object | None" = None,
     ) -> None:
         self._risk_manager = signal_tracker
         self._dashboard = dashboard
@@ -97,6 +98,7 @@ class AutoCloseMonitor:
         self._market_data = market_data_store
         self._router = signal_router
         self._poll_interval = poll_interval
+        self._bot_state = bot_state
         self._running = False
         self._task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
 
@@ -151,8 +153,63 @@ class AutoCloseMonitor:
             close_result = self._check_tp_sl_hit(signal, current_price)
             if close_result is not None:
                 await self._process_close(signal, close_result)
+                continue
+
+            # ── Invalidation check ───────────────────────────────────────────
+            await self._check_invalidation(signal, current_price)
 
     # ── detection helpers ─────────────────────────────────────────────────────
+
+    async def _check_invalidation(self, signal: "ActiveSignal", current_price: float) -> None:
+        """Run invalidation checks; broadcast alert if thesis breaks."""
+        try:
+            from config import INVALIDATION_CHECK_ENABLED
+            if not INVALIDATION_CHECK_ENABLED:
+                return
+        except ImportError:
+            pass
+
+        from bot.invalidation_detector import InvalidationDetector
+        from bot.signal_engine import CandleData
+
+        symbol = signal.result.symbol
+        candles_5m_raw = self._market_data.get_candles(symbol, "5m")
+        candles_4h_raw = self._market_data.get_candles(symbol, "4h")
+
+        def _to_candle(row: list) -> "CandleData":
+            return CandleData(
+                timestamp=row[0],
+                open=row[1],
+                high=row[2],
+                low=row[3],
+                close=row[4],
+                volume=row[5] if len(row) > 5 else 0.0,
+            )
+
+        candles_5m = [_to_candle(r) for r in candles_5m_raw]
+        candles_4h = [_to_candle(r) for r in candles_4h_raw]
+        market_regime = getattr(self._bot_state, "market_regime", "UNKNOWN") if self._bot_state else "UNKNOWN"
+
+        detector = InvalidationDetector()
+        reason = detector.check_invalidation(signal, current_price, candles_5m, candles_4h, market_regime)
+        if reason:
+            alert = detector.format_alert(signal, reason, current_price)
+            await self._broadcast_close_raw(alert)
+
+    async def _broadcast_close_raw(self, message: str) -> None:
+        """Broadcast a raw text message to the insights channel."""
+        from bot.signal_router import ChannelTier
+        channel_id = self._router.get_channel_id(ChannelTier.INSIGHTS)
+        if not channel_id:
+            return
+        try:
+            from telegram import Bot
+
+            from config import TELEGRAM_BOT_TOKEN
+            bot = Bot(token=TELEGRAM_BOT_TOKEN)
+            await bot.send_message(chat_id=channel_id, text=message, parse_mode="Markdown")
+        except Exception as exc:
+            logger.warning("Failed to broadcast invalidation alert: %s", exc)
 
     def _check_tp_sl_hit(self, signal: "ActiveSignal", current_price: float) -> Optional[CloseResult]:
         """

@@ -69,6 +69,30 @@ def init_db() -> None:
                 confluence_gates_json TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS signals_archived (
+                id TEXT PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL,
+                confidence TEXT NOT NULL,
+                entry_low REAL NOT NULL,
+                entry_high REAL NOT NULL,
+                tp1 REAL NOT NULL,
+                tp2 REAL NOT NULL,
+                tp3 REAL NOT NULL,
+                stop_loss REAL NOT NULL,
+                structure_note TEXT,
+                context_note TEXT,
+                leverage_min INTEGER,
+                leverage_max INTEGER,
+                opened_at REAL NOT NULL,
+                closed_at REAL,
+                be_triggered INTEGER DEFAULT 0,
+                closed INTEGER DEFAULT 0,
+                close_reason TEXT,
+                created_by TEXT DEFAULT 'manual',
+                confluence_gates_json TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS trade_results (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
@@ -167,3 +191,58 @@ def migrate_from_json(signals_file: str = "signals.json", dashboard_file: str = 
             logger.info("Migrated %d trade results from %s", len(raw), dashboard_file)
         except Exception as exc:
             logger.warning("Dashboard migration failed: %s", exc)
+
+
+def archive_old_signals(days: int = 90) -> int:
+    """
+    Move closed signals older than *days* days to the ``signals_archived`` table,
+    delete the originals, and run VACUUM to reclaim space.
+
+    Parameters
+    ----------
+    days:
+        Age threshold in days. Closed signals with ``closed_at`` older than
+        this are moved to the archive. Default is 90.
+
+    Returns
+    -------
+    int
+        Number of signals archived.
+    """
+    cutoff = time.time() - days * 86400
+    archived_count = 0
+    with _get_conn() as conn:
+        # Copy qualifying rows to archive
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO signals_archived
+            SELECT * FROM signals
+            WHERE closed = 1 AND closed_at IS NOT NULL AND closed_at < ?
+            """,
+            (cutoff,),
+        )
+        # Count how many were moved
+        row = conn.execute(
+            "SELECT COUNT(*) FROM signals_archived WHERE closed_at < ?", (cutoff,)
+        ).fetchone()
+        archived_count = row[0] if row else 0
+        # Delete originals
+        conn.execute(
+            "DELETE FROM signals WHERE closed = 1 AND closed_at IS NOT NULL AND closed_at < ?",
+            (cutoff,),
+        )
+    # VACUUM outside a transaction
+    vacuum_conn = None
+    try:
+        vacuum_conn = __import__("sqlite3").connect(_DB_PATH)
+        vacuum_conn.execute("VACUUM")
+        vacuum_conn.close()
+    except Exception as exc:
+        logger.warning("VACUUM failed after archiving: %s", exc)
+        if vacuum_conn is not None:
+            try:
+                vacuum_conn.close()
+            except Exception:
+                pass
+    logger.info("Archived %d signals older than %d days.", archived_count, days)
+    return archived_count
