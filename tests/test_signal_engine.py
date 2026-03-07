@@ -609,3 +609,113 @@ class TestOptionalGates:
         kwargs = self._base_args()
         result = run_confluence_check(**kwargs, check_order_block=False)
         assert result is not None
+
+
+# ── Confluence scoring tests ──────────────────────────────────────────────────
+
+class TestConfluenceScoring:
+    """run_confluence_check should populate confluence_score on a valid signal."""
+
+    def _base_args(self):
+        base = 100.0
+        sweep_level = base - 1.0
+        return dict(
+            symbol="ETH",
+            current_price=base - 2.5,
+            side=Side.LONG,
+            range_low=base - 5.0,
+            range_high=base + 5.0,
+            key_liquidity_level=sweep_level,
+            five_min_candles=_long_5m_candles(sweep_level=sweep_level),
+            daily_candles=_bullish_daily_candles(),
+            four_hour_candles=_bullish_4h_candles(),
+            news_in_window=False,
+            stop_loss=sweep_level - 0.5,
+        )
+
+    def test_score_is_positive_on_valid_signal(self):
+        result = run_confluence_check(**self._base_args())
+        assert result is not None
+        assert result.confluence_score > 0
+
+    def test_score_at_most_100(self):
+        result = run_confluence_check(**self._base_args())
+        assert result is not None
+        assert result.confluence_score <= 100
+
+    def test_score_shown_in_message_when_positive(self):
+        result = run_confluence_check(**self._base_args())
+        assert result is not None
+        assert result.confluence_score > 0
+        msg = result.format_message()
+        assert "Score:" in msg
+
+    def test_score_not_shown_in_message_when_zero(self):
+        result = SignalResult(
+            symbol="BTC",
+            side=Side.LONG,
+            confidence=Confidence.HIGH,
+            entry_low=100.0,
+            entry_high=101.0,
+            tp1=103.0,
+            tp2=105.0,
+            tp3=108.0,
+            stop_loss=98.0,
+            structure_note="Test",
+            context_note="Test ctx",
+            leverage_min=10,
+            leverage_max=20,
+            confluence_score=0,
+        )
+        msg = result.format_message()
+        assert "Score:" not in msg
+
+
+# ── 15m candles parameter tests ───────────────────────────────────────────────
+
+class TestFifteenMinCandles:
+    """run_confluence_check should accept fifteen_min_candles without error."""
+
+    def _base_args(self):
+        base = 100.0
+        sweep_level = base - 1.0
+        return dict(
+            symbol="ETH",
+            current_price=base - 2.5,
+            side=Side.LONG,
+            range_low=base - 5.0,
+            range_high=base + 5.0,
+            key_liquidity_level=sweep_level,
+            five_min_candles=_long_5m_candles(sweep_level=sweep_level),
+            daily_candles=_bullish_daily_candles(),
+            four_hour_candles=_bullish_4h_candles(),
+            news_in_window=False,
+            stop_loss=sweep_level - 0.5,
+        )
+
+    def test_fifteen_min_candles_accepted(self):
+        """Passing fifteen_min_candles should not raise."""
+        fifteen_m = _long_5m_candles()  # reuse 5m fixture as proxy 15m data
+        kwargs = self._base_args()
+        kwargs["fifteen_min_candles"] = fifteen_m
+        result = run_confluence_check(**kwargs)
+        assert result is not None
+
+    def test_none_fifteen_min_falls_back_to_five_min(self):
+        """When fifteen_min_candles is None, function uses five_min_candles."""
+        kwargs = self._base_args()
+        result = run_confluence_check(**kwargs, fifteen_min_candles=None)
+        assert result is not None
+
+
+# ── MIN_DISPLACEMENT_PCT config integration ───────────────────────────────────
+
+class TestDisplacementConfigDefault:
+    """The default min_displacement_pct should be 0.15 (Blueprint §2.2)."""
+
+    def test_default_displacement_is_0_15(self):
+        from inspect import signature
+        from bot.signal_engine import detect_market_structure_shift
+        sig = signature(detect_market_structure_shift)
+        default = sig.parameters["min_displacement_pct"].default
+        assert default == pytest.approx(0.15)

@@ -98,7 +98,7 @@ bot/dashboard.py (Sharpe, drawdown, equity curve, win-rate by TF)
 
 ### §1.3 Version
 
-`2.0.0-institutional`
+`3.0.0-domination`
 
 ### §1.4 Technology Stack
 
@@ -735,7 +735,7 @@ Returns status information (no authentication required):
 {
     "status": "ok",
     "service": "360-crypto-eye-scalping",
-    "version": "2.0.0-institutional",
+    "version": "3.0.0-domination",
     "uptime_seconds": 1234,
     "last_scan_time": "2025-01-01T12:00:00Z",
     "active_signal_count": 2
@@ -1818,7 +1818,7 @@ refactor: extract exchange module from bot.py
 
 ---
 
-*End of Blueprint — version `2.0.0-institutional`*  
+*End of Blueprint — version `3.0.0-domination`*  
 *Maintained by the 360 Crypto Eye development team.*  
 *If code behaviour differs from this document, the code must be corrected to match.*
 
