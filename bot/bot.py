@@ -57,6 +57,7 @@ from bot.signal_engine import (
 )
 from bot.signal_router import ChannelTier, SignalRouter
 from bot.signal_tracker import SignalTracker
+from bot.spot_scanner import SpotScanner
 from bot.state import BotState
 from bot.ws_manager import MarketDataStore, WebSocketManager
 from config import (
@@ -70,7 +71,11 @@ from config import (
     CORRELATION_ALERT_ENABLED,
     CORRELATION_MAX_SAME_GROUP,
     DB_ARCHIVE_DAYS,
+    FUTURES_SCAN_BATCH_DELAY,
+    FUTURES_SCAN_BATCH_SIZE,
     MIN_SIGNAL_GAP_SECONDS,
+    SPOT_SCAN_ENABLED,
+    SPOT_SCAN_INTERVAL_MINUTES,
     STALE_SIGNAL_HOURS,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHANNEL_ID,
@@ -106,9 +111,20 @@ _scheduler = BackgroundScheduler(daemon=True)
 # Thread-safe bot state singleton
 _bot_state = BotState()
 
-# WebSocket market data store and manager
-market_data = MarketDataStore()
-ws_manager = WebSocketManager(store=market_data)
+# Futures market data store and manager (CH1/CH2/CH3)
+futures_market_data = MarketDataStore(market_type="futures")
+futures_ws = WebSocketManager(store=futures_market_data, market_type="futures")
+
+# Backward-compatible aliases (used by existing code and tests)
+market_data = futures_market_data
+ws_manager = futures_ws
+
+# Spot market data store and manager (CH4 spot scanner)
+spot_market_data = MarketDataStore(market_type="spot")
+spot_ws = WebSocketManager(store=spot_market_data, market_type="spot")
+
+# Spot scanner instance
+spot_scanner = SpotScanner(spot_market_data=spot_market_data)
 
 # Rate limiting: track last broadcast time per channel tier
 _last_signal_broadcast_time: dict[str, float] = {}
@@ -142,9 +158,13 @@ async def _reply(update: Update, text: str, parse_mode: str = "Markdown") -> Non
 
 
 async def _broadcast(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    """Send *text* to the public Telegram channel."""
+    """Send *text* to the primary Telegram channel (CH1 Hard or legacy fallback)."""
+    channel_id = TELEGRAM_CHANNEL_ID_HARD or TELEGRAM_CHANNEL_ID
+    if channel_id == 0:
+        logger.debug("Skipping _broadcast — no channel ID configured.")
+        return
     await context.bot.send_message(
-        chat_id=TELEGRAM_CHANNEL_ID,
+        chat_id=channel_id,
         text=text,
         parse_mode="Markdown",
     )
@@ -663,7 +683,7 @@ def _run_trailing_sl_job(context_or_bot=None) -> None:
 
         last_3 = raw_5m_rows[-3:]
         current_sl = sig.result.stop_loss
-        target_channel = sig.origin_channel if sig.origin_channel else TELEGRAM_CHANNEL_ID
+        target_channel = sig.origin_channel if sig.origin_channel else (TELEGRAM_CHANNEL_ID_HARD or TELEGRAM_CHANNEL_ID)
 
         if sig.result.side == Side.LONG:
             # Per the spec: "Higher Low" = min low of the last 3 candles.
@@ -731,7 +751,7 @@ def _run_stale_signal_job() -> None:
     for sig in list(risk_manager.active_signals):
         if sig.is_stale():
             symbol = sig.result.symbol
-            target_channel = sig.origin_channel if sig.origin_channel else TELEGRAM_CHANNEL_ID
+            target_channel = sig.origin_channel if sig.origin_channel else (TELEGRAM_CHANNEL_ID_HARD or TELEGRAM_CHANNEL_ID)
             risk_manager.close_signal(symbol, reason="stale")
             signal_tracker.clear_signal(sig.result.signal_id)
             logger.info("Auto-closed stale signal: %s", symbol)
@@ -1062,7 +1082,7 @@ def _fallback_to_candles(rows: list) -> list[CandleData]:
 def _run_fallback_scan_job() -> None:
     """
     APScheduler synchronous job: lightweight fallback scan across all
-    monitored pairs.
+    monitored pairs in batches.
 
     Runs the same per-symbol confluence path as ``on_candle_close`` but is
     triggered by the scheduler rather than a WS candle-close event.  The
@@ -1071,6 +1091,8 @@ def _run_fallback_scan_job() -> None:
 
     When the WS is unhealthy, fresh candle data is fetched via REST before
     running the confluence check to avoid operating on stale data.
+    Pairs are scanned in batches of FUTURES_SCAN_BATCH_SIZE with a small
+    sleep between batches to respect Binance API rate limits.
     """
     if not _bot_state.auto_scan_active:
         return
@@ -1079,109 +1101,115 @@ def _run_fallback_scan_job() -> None:
         # WS is live — primary path is active, skip fallback
         return
 
-    logger.info("Fallback scan: WS unhealthy — running poll-based scan for %d pairs.", len(_dynamic_pairs))
+    pairs = list(_dynamic_pairs)
+    logger.info("Fallback scan: WS unhealthy — running poll-based scan for %d pairs.", len(pairs))
 
-    for base_symbol in list(_dynamic_pairs):
-        try:
-            if _bot_state.news_freeze or news_calendar.is_high_impact_imminent():
-                break  # news freeze applies globally; no need to iterate further
-
-            active_symbols = {sig.result.symbol for sig in risk_manager.active_signals}
-            if base_symbol in active_symbols:
-                continue
-
-            # Fetch fresh REST data since WS is unhealthy and store data is stale
-            ccxt_symbol = _normalise_symbol(base_symbol)
+    for batch_start in range(0, len(pairs), FUTURES_SCAN_BATCH_SIZE):
+        batch = pairs[batch_start : batch_start + FUTURES_SCAN_BATCH_SIZE]
+        for base_symbol in batch:
             try:
-                for timeframe, limit in (("1d", 30), ("4h", 30), ("5m", 50)):
-                    rows = _resilient_exchange.fetch_ohlcv(ccxt_symbol, timeframe, limit=limit)
-                    for row in rows:
-                        market_data.update_candle(base_symbol, timeframe, row)
-                ticker = _resilient_exchange.fetch_ticker(ccxt_symbol)
-                price = float(ticker["last"])
-                market_data.set_price(base_symbol, price)
-            except Exception as exc:
-                logger.warning("Fallback scan REST fetch failed for %s: %s", base_symbol, exc)
-                # Fall back to cached data if REST fetch fails
-                price = market_data.get_price(base_symbol)
-                if price is None:
+                if _bot_state.news_freeze or news_calendar.is_high_impact_imminent():
+                    return  # news freeze applies globally; exit the entire scan
+
+                active_symbols = {sig.result.symbol for sig in risk_manager.active_signals}
+                if base_symbol in active_symbols:
                     continue
 
-            if not market_data.has_sufficient_data(base_symbol):
-                continue
-
-            candles_5m_raw = market_data.get_candles(base_symbol, "5m")
-            candles_4h_raw = market_data.get_candles(base_symbol, "4h")
-            candles_1d_raw = market_data.get_candles(base_symbol, "1d")
-
-            four_h_candles = _fallback_to_candles(candles_4h_raw)
-            daily_candles = _fallback_to_candles(candles_1d_raw)
-            five_m_candles = _fallback_to_candles(candles_5m_raw)
-
-            recent_4h = four_h_candles[-10:] if len(four_h_candles) >= 10 else four_h_candles
-            range_low = min(c.low for c in recent_4h) if recent_4h else price * 0.99
-            range_high = max(c.high for c in recent_4h) if recent_4h else price * 1.01
-            atr_proxy = (range_high - range_low) * 0.01
-
-            for side in (Side.LONG, Side.SHORT):
-                if not risk_manager.can_open_signal(side):
-                    continue
-
-                recent_5m = five_m_candles[-10:] if len(five_m_candles) >= 10 else five_m_candles
-                key_level = (
-                    min(c.low for c in recent_5m) if side == Side.LONG else max(c.high for c in recent_5m)
-                ) if recent_5m else price
-                stop_loss = key_level - atr_proxy if side == Side.LONG else key_level + atr_proxy
-
-                regime = _bot_state.market_regime
-
-                # CH1 Hard Scalp (fallback path)
+                # Fetch fresh REST data since WS is unhealthy and store data is stale
+                ccxt_symbol = _normalise_symbol(base_symbol)
                 try:
-                    from bot.channels import hard_scalp as _hard_scalp
-                    ch1_result = _hard_scalp.run(
-                        symbol=base_symbol,
-                        current_price=price,
-                        side=side,
-                        five_min_candles=five_m_candles,
-                        daily_candles=daily_candles,
-                        four_hour_candles=four_h_candles,
-                        news_calendar=news_calendar,
-                        risk_manager=risk_manager,
-                        range_low=range_low,
-                        range_high=range_high,
-                        key_liquidity_level=key_level,
-                        stop_loss=stop_loss,
-                        market_regime=regime,
-                    )
+                    for timeframe, limit in (("1d", 30), ("4h", 30), ("5m", 50)):
+                        rows = _resilient_exchange.fetch_ohlcv(ccxt_symbol, timeframe, limit=limit)
+                        for row in rows:
+                            market_data.update_candle(base_symbol, timeframe, row)
+                    ticker = _resilient_exchange.fetch_ticker(ccxt_symbol)
+                    price = float(ticker["last"])
+                    market_data.set_price(base_symbol, price)
                 except Exception as exc:
-                    logger.error("Fallback CH1 error for %s %s: %s", base_symbol, side.value, exc)
-                    ch1_result = None
+                    logger.warning("Fallback scan REST fetch failed for %s: %s", base_symbol, exc)
+                    # Fall back to cached data if REST fetch fails
+                    price = market_data.get_price(base_symbol)
+                    if price is None:
+                        continue
 
-                if ch1_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.HARD):
-                    risk_manager.add_signal(ch1_result, origin_channel=signal_router.get_channel_id(ChannelTier.HARD), created_regime=regime)
-                    signal_router.record_signal(base_symbol, ChannelTier.HARD)
-                    logger.info("Fallback CH1 signal: %s %s", base_symbol, side.value)
+                if not market_data.has_sufficient_data(base_symbol):
+                    continue
 
-                    async def _send_ch1(msg: str = ch1_result.format_message()) -> None:
-                        await _broadcast_to_channel(msg, signal_router.get_channel_id(ChannelTier.HARD))
-                        if TELEGRAM_CHANNEL_ID and TELEGRAM_CHANNEL_ID != signal_router.get_channel_id(ChannelTier.HARD):
-                            await _broadcast_to_channel(msg, TELEGRAM_CHANNEL_ID)
+                candles_5m_raw = market_data.get_candles(base_symbol, "5m")
+                candles_4h_raw = market_data.get_candles(base_symbol, "4h")
+                candles_1d_raw = market_data.get_candles(base_symbol, "1d")
 
+                four_h_candles = _fallback_to_candles(candles_4h_raw)
+                daily_candles = _fallback_to_candles(candles_1d_raw)
+                five_m_candles = _fallback_to_candles(candles_5m_raw)
+
+                recent_4h = four_h_candles[-10:] if len(four_h_candles) >= 10 else four_h_candles
+                range_low = min(c.low for c in recent_4h) if recent_4h else price * 0.99
+                range_high = max(c.high for c in recent_4h) if recent_4h else price * 1.01
+                atr_proxy = (range_high - range_low) * 0.01
+
+                for side in (Side.LONG, Side.SHORT):
+                    if not risk_manager.can_open_signal(side):
+                        continue
+
+                    recent_5m = five_m_candles[-10:] if len(five_m_candles) >= 10 else five_m_candles
+                    key_level = (
+                        min(c.low for c in recent_5m) if side == Side.LONG else max(c.high for c in recent_5m)
+                    ) if recent_5m else price
+                    stop_loss = key_level - atr_proxy if side == Side.LONG else key_level + atr_proxy
+
+                    regime = _bot_state.market_regime
+
+                    # CH1 Hard Scalp (fallback path)
                     try:
-                        if _main_loop is not None and _main_loop.is_running():
-                            asyncio.run_coroutine_threadsafe(_send_ch1(), _main_loop)
-                        else:
-                            new_loop = asyncio.new_event_loop()
-                            try:
-                                new_loop.run_until_complete(_send_ch1())
-                            finally:
-                                new_loop.close()
+                        from bot.channels import hard_scalp as _hard_scalp
+                        ch1_result = _hard_scalp.run(
+                            symbol=base_symbol,
+                            current_price=price,
+                            side=side,
+                            five_min_candles=five_m_candles,
+                            daily_candles=daily_candles,
+                            four_hour_candles=four_h_candles,
+                            news_calendar=news_calendar,
+                            risk_manager=risk_manager,
+                            range_low=range_low,
+                            range_high=range_high,
+                            key_liquidity_level=key_level,
+                            stop_loss=stop_loss,
+                            market_regime=regime,
+                        )
                     except Exception as exc:
-                        logger.error("Fallback CH1 broadcast error for %s: %s", base_symbol, exc)
-                    break  # one signal per symbol per scan pass
-            time.sleep(0.2)  # ~5 pairs/sec → stays well within Binance 1200 req/min limit
-        except Exception as exc:
-            logger.error("Fallback scan error for %s: %s", base_symbol, exc)
+                        logger.error("Fallback CH1 error for %s %s: %s", base_symbol, side.value, exc)
+                        ch1_result = None
+
+                    if ch1_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.HARD):
+                        risk_manager.add_signal(ch1_result, origin_channel=signal_router.get_channel_id(ChannelTier.HARD), created_regime=regime)
+                        signal_router.record_signal(base_symbol, ChannelTier.HARD)
+                        logger.info("Fallback CH1 signal: %s %s", base_symbol, side.value)
+
+                        async def _send_ch1(msg: str = ch1_result.format_message()) -> None:
+                            await _broadcast_to_channel(msg, signal_router.get_channel_id(ChannelTier.HARD))
+                            if TELEGRAM_CHANNEL_ID and TELEGRAM_CHANNEL_ID != signal_router.get_channel_id(ChannelTier.HARD):
+                                await _broadcast_to_channel(msg, TELEGRAM_CHANNEL_ID)
+
+                        try:
+                            if _main_loop is not None and _main_loop.is_running():
+                                asyncio.run_coroutine_threadsafe(_send_ch1(), _main_loop)
+                            else:
+                                new_loop = asyncio.new_event_loop()
+                                try:
+                                    new_loop.run_until_complete(_send_ch1())
+                                finally:
+                                    new_loop.close()
+                        except Exception as exc:
+                            logger.error("Fallback CH1 broadcast error for %s: %s", base_symbol, exc)
+                        break  # one signal per symbol per scan pass
+                time.sleep(0.1)  # brief per-symbol pause within a batch
+            except Exception as exc:
+                logger.error("Fallback scan error for %s: %s", base_symbol, exc)
+        # Inter-batch sleep to respect Binance API rate limits
+        if batch_start + FUTURES_SCAN_BATCH_SIZE < len(pairs):
+            time.sleep(FUTURES_SCAN_BATCH_DELAY)
 
 
 async def cmd_close_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1428,10 +1456,17 @@ def fetch_binance_futures_pairs() -> list[str]:
 
 
 def _refresh_dynamic_pairs() -> None:
-    """Periodic job: re-fetch the active Binance USDT-M pairs (every 6 hours)."""
+    """
+    Periodic job: re-fetch the active Binance USDT-M pairs (every 6 hours).
+
+    When AUTO_SCAN_PAIRS is empty (default), uses ALL fetched pairs.
+    When AUTO_SCAN_PAIRS is set, treats it as a whitelist override for testing.
+    When FUTURES_MIN_24H_VOLUME_USDT > 0, optionally filters by volume.
+    """
     global _dynamic_pairs
     fetched = fetch_binance_futures_pairs()
     if AUTO_SCAN_PAIRS:
+        # Whitelist override mode (e.g. for testing or manual curation)
         fetched_set = set(fetched)
         filtered = [p for p in AUTO_SCAN_PAIRS if p in fetched_set]
         missing = [p for p in AUTO_SCAN_PAIRS if p not in fetched_set]
@@ -1442,6 +1477,7 @@ def _refresh_dynamic_pairs() -> None:
             )
         _dynamic_pairs = filtered or fetched
     else:
+        # Default: scan ALL Binance Futures USDT-M pairs
         _dynamic_pairs = fetched
     logger.info(
         "Pairs refreshed — %d Binance Futures USDT pairs loaded.", len(_dynamic_pairs)
@@ -1571,6 +1607,83 @@ async def cmd_pairs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     more = f"\n... and {count - 30} more" if count > 30 else ""
     msg = f"🔍 *Loaded {count} Binance Futures pairs:*\n{sample}{more}"
     await _reply(update, msg)
+
+
+async def cmd_spot_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /spot_scan [on|off]
+
+    Admin-only: toggle the spot scanner on or off.
+    With no argument, reports current state.
+    """
+    if not _is_admin(update):
+        await _reply(update, "⛔ Admin only.")
+        return
+
+    args = context.args or []
+    if not args:
+        state = "ACTIVE ✅" if spot_scanner.is_enabled else "INACTIVE ❌"
+        await _reply(update, f"💎 Spot Scanner is currently *{state}*.")
+        return
+
+    arg = args[0].lower()
+    if arg == "on":
+        spot_scanner.set_enabled(True)
+        await _reply(update, "💎 Spot Scanner *ACTIVATED* ✅")
+    elif arg == "off":
+        spot_scanner.set_enabled(False)
+        await _reply(update, "💎 Spot Scanner *DEACTIVATED* ❌")
+    else:
+        await _reply(update, "Usage: `/spot_scan on` or `/spot_scan off`")
+
+
+async def cmd_spot_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /spot_status — Show spot scanner status.
+    Admin only.
+    """
+    if not _is_admin(update):
+        await _reply(update, "⛔ Admin only.")
+        return
+
+    status = spot_scanner.get_status()
+    import datetime as _dt
+    last_scan = (
+        _dt.datetime.fromtimestamp(status["last_scan"], tz=_dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        if status["last_scan"] > 0
+        else "Never"
+    )
+    msg = (
+        f"💎 *Spot Scanner Status*\n\n"
+        f"State: {'ACTIVE ✅' if status['enabled'] else 'INACTIVE ❌'}\n"
+        f"Pairs Loaded: {status['pairs_loaded']}\n"
+        f"Last Scan: {last_scan}\n"
+        f"Gems Found (total): {status['gems_found_total']}\n"
+        f"Scam Alerts (total): {status['scams_found_total']}"
+    )
+    await _reply(update, msg)
+
+
+async def cmd_scam_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /scam_check SYMBOL — Manual scam pattern check for a spot pair.
+    Admin only.
+    """
+    if not _is_admin(update):
+        await _reply(update, "⛔ Admin only.")
+        return
+
+    args = context.args or []
+    if not args:
+        await _reply(update, "Usage: `/scam_check SYMBOL` e.g. `/scam_check PEPE`")
+        return
+
+    symbol = args[0].upper()
+    scam = spot_scanner.scam_check_symbol(symbol)
+    if scam is None:
+        await _reply(update, f"✅ No scam patterns detected for #{symbol}/USDT.")
+    else:
+        await _reply(update, scam.format_message())
 
 
 async def cmd_backtest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1732,17 +1845,34 @@ def build_application() -> Application:
     async def _post_init(application: Application) -> None:
         global _main_loop
         _main_loop = asyncio.get_event_loop()
-        await ws_manager.start(_dynamic_pairs, on_candle_close)
+        # Start futures WebSocket (primary path for CH1/CH2/CH3)
+        await futures_ws.start(_dynamic_pairs, on_candle_close)
         await auto_close_monitor.start()
         logger.info(
-            "WebSocket manager started for %d pairs (primary scanning path).",
+            "Futures WebSocket manager started for %d pairs.",
             len(_dynamic_pairs),
         )
+        # Start spot WebSocket only when there are pairs and scanner is enabled
+        if SPOT_SCAN_ENABLED and spot_scanner._pairs:
+            try:
+                async def _noop_spot_candle(base_symbol: str, timeframe: str) -> None:
+                    pass  # spot candles are processed by spot_scanner.scan_once()
+                await spot_ws.start(
+                    [p["symbol"] for p in spot_scanner._pairs[:100]],  # limit for initial boot
+                    _noop_spot_candle,
+                )
+                logger.info("Spot WebSocket manager started.")
+            except Exception as exc:
+                logger.warning("Spot WebSocket failed to start: %s", exc)
 
     async def _post_shutdown(application: Application) -> None:
         await auto_close_monitor.stop()
-        await ws_manager.stop()
-        logger.info("WebSocket manager stopped.")
+        await futures_ws.stop()
+        try:
+            await spot_ws.stop()
+        except Exception:
+            pass
+        logger.info("WebSocket managers stopped.")
 
     app = (
         Application.builder()
@@ -1767,12 +1897,19 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("channels", cmd_channels))
     app.add_handler(CommandHandler("briefing", cmd_briefing))
     app.add_handler(CommandHandler("db_maintenance", cmd_db_maintenance))
+    app.add_handler(CommandHandler("spot_scan", cmd_spot_scan))
+    app.add_handler(CommandHandler("spot_status", cmd_spot_status))
+    app.add_handler(CommandHandler("scam_check", cmd_scam_check))
 
     # Fetch Binance USDT-M perpetual pairs dynamically at startup
     _refresh_dynamic_pairs()
 
     # Seed historical candle buffers via REST so signal engine has data on boot
     _seed_historical_candles(_dynamic_pairs)
+
+    # Initialize spot scanner pair list
+    if SPOT_SCAN_ENABLED:
+        spot_scanner.refresh_pairs()
 
     # Wire live news calendar — fetch immediately then refresh every 30 minutes
     fetch_and_reload(news_calendar)   # first fetch at startup (blocking, fast)
@@ -1809,6 +1946,15 @@ def build_application() -> Application:
         "interval",
         hours=6,
         id="pairs_refresh",
+        replace_existing=True,
+    )
+
+    # Spot scanner pairs refresh — re-fetch spot pairs every 6 hours
+    _scheduler.add_job(
+        spot_scanner.refresh_pairs,
+        "interval",
+        hours=6,
+        id="spot_pairs_refresh",
         replace_existing=True,
     )
 
@@ -1886,6 +2032,53 @@ def build_application() -> Application:
         "interval",
         hours=CH4_SCAN_INTERVAL_HOURS,
         id="spot_scan",
+        replace_existing=True,
+    )
+
+    # ── SpotScanner gem/scam detection (every SPOT_SCAN_INTERVAL_MINUTES) ───
+    def _run_spot_scanner_job() -> None:
+        if not SPOT_SCAN_ENABLED:
+            return
+        if not signal_router.is_channel_enabled(ChannelTier.SPOT):
+            return
+        try:
+            gems, scams = spot_scanner.scan_once()
+            for gem in gems:
+                msg_text = gem.format_message()
+
+                async def _send_gem(m: str = msg_text) -> None:
+                    await _broadcast_to_channel(m, signal_router.get_channel_id(ChannelTier.SPOT))
+
+                if _main_loop is not None and _main_loop.is_running():
+                    asyncio.run_coroutine_threadsafe(_send_gem(), _main_loop)
+                else:
+                    new_loop = asyncio.new_event_loop()
+                    try:
+                        new_loop.run_until_complete(_send_gem())
+                    finally:
+                        new_loop.close()
+            for scam in scams:
+                msg_text = scam.format_message()
+
+                async def _send_scam(m: str = msg_text) -> None:
+                    await _broadcast_to_channel(m, signal_router.get_channel_id(ChannelTier.INSIGHTS))
+
+                if _main_loop is not None and _main_loop.is_running():
+                    asyncio.run_coroutine_threadsafe(_send_scam(), _main_loop)
+                else:
+                    new_loop = asyncio.new_event_loop()
+                    try:
+                        new_loop.run_until_complete(_send_scam())
+                    finally:
+                        new_loop.close()
+        except Exception as exc:
+            logger.error("SpotScanner job error: %s", exc)
+
+    _scheduler.add_job(
+        _run_spot_scanner_job,
+        "interval",
+        minutes=SPOT_SCAN_INTERVAL_MINUTES,
+        id="spot_scanner_gems",
         replace_existing=True,
     )
 

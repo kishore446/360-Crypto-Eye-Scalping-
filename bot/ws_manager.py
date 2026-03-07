@@ -1,16 +1,19 @@
 """
 WebSocket Market Data Manager
 ==============================
-Connects to the Binance Futures combined-stream endpoint and maintains
+Connects to Binance combined-stream endpoints and maintains
 in-memory ring buffers of OHLCV candles and real-time prices.
 
 Key design points:
-- Subscribes to ``@kline_5m``, ``@kline_4h``, ``@kline_1d``, and
-  ``@miniTicker`` for all active USDT-M futures pairs.
+- Supports both Futures (fstream.binance.com) and Spot (stream.binance.com) markets
+  via the ``market_type`` parameter ("futures" | "spot").
+- Subscribes to ``@kline_5m``, ``@kline_15m``, ``@kline_4h``, ``@kline_1d``, and
+  ``@miniTicker`` for futures pairs; ``@kline_1h``, ``@kline_4h``, ``@kline_1d`` and
+  ``@miniTicker`` for spot pairs.
 - Splits pairs across multiple WS connections (≤200 streams per connection,
   ≈50 symbols per connection because each symbol uses 4 streams).
 - Fires an async ``on_candle_close(base_symbol, timeframe)`` callback on
-  every **closed** 5m kline event.
+  every **closed** 5m kline event (futures) or 1h kline event (spot).
 - Auto-reconnects with exponential back-off + jitter (1 s base, 60 s cap).
 - Tracks ``last_message_at`` timestamp and ``is_connected`` flag for health
   monitoring; consumers can call ``is_healthy()`` to determine whether the
@@ -33,7 +36,10 @@ from websockets.exceptions import ConnectionClosed
 
 logger = logging.getLogger(__name__)
 
-_WS_BASE_URL = "wss://fstream.binance.com/stream"
+_WS_FUTURES_URL = "wss://fstream.binance.com/stream"
+_WS_SPOT_URL = "wss://stream.binance.com:9443/stream"
+# Keep legacy alias for backward compatibility
+_WS_BASE_URL = _WS_FUTURES_URL
 _MAX_STREAMS_PER_CONN = 200        # Binance hard limit
 _STREAMS_PER_SYMBOL = 5            # kline_5m + kline_15m + kline_4h + kline_1d + miniTicker
 _MAX_SYMBOLS_PER_CONN = _MAX_STREAMS_PER_CONN // _STREAMS_PER_SYMBOL  # 50
@@ -47,6 +53,7 @@ _BUF_5M = 50
 _BUF_4H = 30
 _BUF_1D = 30
 _BUF_15M = 50
+_BUF_1H = 50  # for spot market 1h candles
 
 # Minimum candle counts required for signal engine
 _MIN_5M = 3
@@ -87,7 +94,8 @@ class CandleBuffer:
 class MarketDataStore:
     """Central in-memory store for all symbols' candles and live prices."""
 
-    def __init__(self) -> None:
+    def __init__(self, market_type: str = "futures") -> None:
+        self.market_type = market_type
         # {symbol: {timeframe: CandleBuffer}}
         self._candles: dict[str, dict[str, CandleBuffer]] = {}
         # {symbol: float}
@@ -96,12 +104,19 @@ class MarketDataStore:
 
     def _ensure_buffers(self, symbol: str) -> None:
         if symbol not in self._candles:
-            self._candles[symbol] = {
-                "5m": CandleBuffer(_BUF_5M),
-                "4h": CandleBuffer(_BUF_4H),
-                "1d": CandleBuffer(_BUF_1D),
-                "15m": CandleBuffer(_BUF_15M),
-            }
+            if self.market_type == "spot":
+                self._candles[symbol] = {
+                    "1h": CandleBuffer(_BUF_1H),
+                    "4h": CandleBuffer(_BUF_4H),
+                    "1d": CandleBuffer(_BUF_1D),
+                }
+            else:
+                self._candles[symbol] = {
+                    "5m": CandleBuffer(_BUF_5M),
+                    "4h": CandleBuffer(_BUF_4H),
+                    "1d": CandleBuffer(_BUF_1D),
+                    "15m": CandleBuffer(_BUF_15M),
+                }
 
     def update_candle(self, symbol: str, timeframe: str, ohlcv: list[float]) -> None:
         """Append (or overwrite) the latest OHLCV row for *symbol*/*timeframe*.
@@ -148,6 +163,12 @@ class MarketDataStore:
             sym = self._candles.get(symbol)
             if sym is None:
                 return False
+            if self.market_type == "spot":
+                return (
+                    len(sym.get("1h", CandleBuffer(0))) >= 3
+                    and len(sym.get("4h", CandleBuffer(0))) >= _MIN_4H
+                    and len(sym.get("1d", CandleBuffer(0))) >= _MIN_1D
+                )
             base_ok = (
                 len(sym.get("5m", CandleBuffer(0))) >= _MIN_5M
                 and len(sym.get("4h", CandleBuffer(0))) >= _MIN_4H
@@ -159,16 +180,22 @@ class MarketDataStore:
             return base_ok and fifteen_m_ok
 
 
-def _build_stream_names(symbols: list[str]) -> list[str]:
+def _build_stream_names(symbols: list[str], market_type: str = "futures") -> list[str]:
     """Return the list of Binance stream name strings for all *symbols*."""
     streams: list[str] = []
     for sym in symbols:
         lower = sym.lower() + "usdt"
-        streams.append(f"{lower}@kline_5m")
-        streams.append(f"{lower}@kline_15m")
-        streams.append(f"{lower}@kline_4h")
-        streams.append(f"{lower}@kline_1d")
-        streams.append(f"{lower}@miniTicker")
+        if market_type == "spot":
+            streams.append(f"{lower}@kline_1h")
+            streams.append(f"{lower}@kline_4h")
+            streams.append(f"{lower}@kline_1d")
+            streams.append(f"{lower}@miniTicker")
+        else:
+            streams.append(f"{lower}@kline_5m")
+            streams.append(f"{lower}@kline_15m")
+            streams.append(f"{lower}@kline_4h")
+            streams.append(f"{lower}@kline_1d")
+            streams.append(f"{lower}@miniTicker")
     return streams
 
 
@@ -208,10 +235,12 @@ def _parse_mini_ticker(data: dict) -> tuple[str, float]:
 
 
 class WebSocketManager:
-    """Manages multiple Binance Futures combined-stream WebSocket connections."""
+    """Manages multiple Binance combined-stream WebSocket connections."""
 
-    def __init__(self, store: MarketDataStore) -> None:
+    def __init__(self, store: MarketDataStore, market_type: str = "futures") -> None:
         self._store = store
+        self._market_type = market_type
+        self._ws_url = _WS_SPOT_URL if market_type == "spot" else _WS_FUTURES_URL
         self._on_candle_close: Optional[OnCandleClose] = None
         self._symbols: list[str] = []
         self._tasks: list[asyncio.Task] = []
@@ -238,11 +267,12 @@ class WebSocketManager:
         self._on_candle_close = on_candle_close
         self._running = True
 
-        all_streams = _build_stream_names(self._symbols)
+        all_streams = _build_stream_names(self._symbols, self._market_type)
         chunks = _chunk_streams(all_streams, _MAX_STREAMS_PER_CONN)
 
         logger.info(
-            "WebSocketManager: starting %d connection(s) for %d symbols (%d streams total).",
+            "WebSocketManager(%s): starting %d connection(s) for %d symbols (%d streams total).",
+            self._market_type,
             len(chunks),
             len(self._symbols),
             len(all_streams),
@@ -251,7 +281,7 @@ class WebSocketManager:
         for idx, chunk in enumerate(chunks):
             task = asyncio.create_task(
                 self._connection_loop(idx, chunk),
-                name=f"ws_conn_{idx}",
+                name=f"ws_{self._market_type}_conn_{idx}",
             )
             self._tasks.append(task)
 
@@ -270,9 +300,9 @@ class WebSocketManager:
         """Persistent loop for a single WebSocket connection with back-off reconnects."""
         attempt = 0
         while self._running:
-            url = f"{_WS_BASE_URL}?streams={'/'.join(streams)}"
+            url = f"{self._ws_url}?streams={'/'.join(streams)}"
             try:
-                logger.info("WS[%d] connecting (%d streams)…", conn_idx, len(streams))
+                logger.info("WS[%d][%s] connecting (%d streams)…", conn_idx, self._market_type, len(streams))
                 async with websockets.connect(
                     url,
                     ping_interval=20,
@@ -281,17 +311,17 @@ class WebSocketManager:
                 ) as ws:
                     attempt = 0  # reset back-off on successful connection
                     self.is_connected = True
-                    logger.info("WS[%d] connected.", conn_idx)
+                    logger.info("WS[%d][%s] connected.", conn_idx, self._market_type)
                     await self._receive_loop(conn_idx, ws)
             except asyncio.CancelledError:
-                logger.info("WS[%d] cancelled.", conn_idx)
+                logger.info("WS[%d][%s] cancelled.", conn_idx, self._market_type)
                 self.is_connected = False
                 return
             except ConnectionClosed as exc:
-                logger.warning("WS[%d] connection closed: %s", conn_idx, exc)
+                logger.warning("WS[%d][%s] connection closed: %s", conn_idx, self._market_type, exc)
                 self.is_connected = False
             except Exception as exc:
-                logger.error("WS[%d] unexpected error: %s", conn_idx, exc)
+                logger.error("WS[%d][%s] unexpected error: %s", conn_idx, self._market_type, exc)
                 self.is_connected = False
 
             if not self._running:
@@ -302,8 +332,9 @@ class WebSocketManager:
             cap = min(_BACKOFF_BASE * (2 ** (attempt - 1)), _BACKOFF_MAX)
             delay = random.uniform(0, cap)
             logger.info(
-                "WS[%d] reconnecting in %.1fs (attempt %d)…",
+                "WS[%d][%s] reconnecting in %.1fs (attempt %d)…",
                 conn_idx,
+                self._market_type,
                 delay,
                 attempt,
             )
@@ -330,8 +361,9 @@ class WebSocketManager:
             base, timeframe, ohlcv, closed = _parse_kline(data)
             # Always update the buffer with the latest bar
             self._store.update_candle(base, timeframe, ohlcv)
-            # Fire callback only on candle close and only for 5m
-            if closed and timeframe == "5m" and self._on_candle_close is not None:
+            # Futures: fire callback on 5m close; Spot: fire callback on 1h close
+            trigger_tf = "1h" if self._market_type == "spot" else "5m"
+            if closed and timeframe == trigger_tf and self._on_candle_close is not None:
                 try:
                     await self._on_candle_close(base, timeframe)
                 except Exception as exc:

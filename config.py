@@ -110,9 +110,30 @@ try:
         webhook_rate_limit_max: int = 30     # max requests per window
 
         # ── Auto-Scanner ─────────────────────────────────────────────────────
-        auto_scan_pairs: str = "BTC,ETH,SOL,XRP,DOGE,ADA,AVAX,LINK,DOT,MATIC"
+        # Leave empty to scan ALL Binance Futures pairs (recommended).
+        # Set to a comma-separated list (e.g. "BTC,ETH,SOL") to use as a whitelist.
+        auto_scan_pairs: str = ""
         auto_scan_interval_seconds: int = 60
         auto_scan_enabled_on_boot: bool = True
+
+        # ── Futures Scanner Tuning ────────────────────────────────────────────
+        # Optional: filter pairs below this 24h USD volume (0 = no filter).
+        futures_min_24h_volume_usdt: int = 0
+        futures_scan_batch_size: int = 20
+        futures_scan_batch_delay: float = 0.5
+
+        # ── Spot Scanner ──────────────────────────────────────────────────────
+        spot_scan_enabled: bool = True
+        spot_scan_interval_minutes: int = 60
+        spot_min_24h_volume_usdt: int = 100000  # $100k minimum
+        spot_gem_volume_spike_ratio: float = 3.0  # 3x volume = dormant awakening
+        spot_gem_breakout_lookback_days: int = 30  # 30-day high for breakout
+        spot_gem_accumulation_range_pct: float = 0.10  # 10% tight range
+        spot_new_listing_lookback_days: int = 90  # new listing window
+        spot_scam_pump_threshold_pct: float = 500.0  # >500% = pump alert
+        spot_scam_crash_threshold_pct: float = 50.0  # >50% crash after pump
+        spot_scan_batch_size: int = 30
+        spot_scan_batch_delay: float = 0.5
 
         # ── Whale Alert API (optional) ────────────────────────────────────────
         whale_alert_api_key: str = ""
@@ -158,6 +179,7 @@ try:
 
     # ── Module-level aliases (backward compatibility) ────────────────────────
     TELEGRAM_BOT_TOKEN: str = settings.telegram_bot_token
+    # DEPRECATED: use TELEGRAM_CHANNEL_ID_HARD instead. Will be removed in v3.0
     TELEGRAM_CHANNEL_ID: int = settings.telegram_channel_id
     ADMIN_CHAT_ID: int = settings.admin_chat_id
 
@@ -232,6 +254,22 @@ try:
     AUTO_SCAN_PAIRS: list[str] = [p.strip().upper() for p in _raw_pairs.split(",") if p.strip()]
     AUTO_SCAN_INTERVAL_SECONDS: int = settings.auto_scan_interval_seconds
     AUTO_SCAN_ENABLED_ON_BOOT: bool = settings.auto_scan_enabled_on_boot
+
+    FUTURES_MIN_24H_VOLUME_USDT: int = settings.futures_min_24h_volume_usdt
+    FUTURES_SCAN_BATCH_SIZE: int = settings.futures_scan_batch_size
+    FUTURES_SCAN_BATCH_DELAY: float = settings.futures_scan_batch_delay
+
+    SPOT_SCAN_ENABLED: bool = settings.spot_scan_enabled
+    SPOT_SCAN_INTERVAL_MINUTES: int = settings.spot_scan_interval_minutes
+    SPOT_MIN_24H_VOLUME_USDT: int = settings.spot_min_24h_volume_usdt
+    SPOT_GEM_VOLUME_SPIKE_RATIO: float = settings.spot_gem_volume_spike_ratio
+    SPOT_GEM_BREAKOUT_LOOKBACK_DAYS: int = settings.spot_gem_breakout_lookback_days
+    SPOT_GEM_ACCUMULATION_RANGE_PCT: float = settings.spot_gem_accumulation_range_pct
+    SPOT_NEW_LISTING_LOOKBACK_DAYS: int = settings.spot_new_listing_lookback_days
+    SPOT_SCAM_PUMP_THRESHOLD_PCT: float = settings.spot_scam_pump_threshold_pct
+    SPOT_SCAM_CRASH_THRESHOLD_PCT: float = settings.spot_scam_crash_threshold_pct
+    SPOT_SCAN_BATCH_SIZE: int = settings.spot_scan_batch_size
+    SPOT_SCAN_BATCH_DELAY: float = settings.spot_scan_batch_delay
 
     WHALE_ALERT_API_KEY: str = settings.whale_alert_api_key
     COINGLASS_API_KEY: str = settings.coinglass_api_key
@@ -317,10 +355,24 @@ except ImportError:
     ALLOWED_WEBHOOK_IPS: list[str] = []
     WEBHOOK_RATE_LIMIT_WINDOW: int = int(os.environ.get("WEBHOOK_RATE_LIMIT_WINDOW", "60"))
     WEBHOOK_RATE_LIMIT_MAX: int = int(os.environ.get("WEBHOOK_RATE_LIMIT_MAX", "30"))
-    _raw_pairs = os.environ.get("AUTO_SCAN_PAIRS", "BTC,ETH,SOL,XRP,DOGE,ADA,AVAX,LINK,DOT,MATIC")
+    _raw_pairs = os.environ.get("AUTO_SCAN_PAIRS", "")
     AUTO_SCAN_PAIRS: list[str] = [p.strip().upper() for p in _raw_pairs.split(",") if p.strip()]
     AUTO_SCAN_INTERVAL_SECONDS: int = int(os.environ.get("AUTO_SCAN_INTERVAL_SECONDS", "60"))
     AUTO_SCAN_ENABLED_ON_BOOT: bool = os.environ.get("AUTO_SCAN_ENABLED_ON_BOOT", "true").lower() in ("true", "1", "yes")
+    FUTURES_MIN_24H_VOLUME_USDT: int = int(os.environ.get("FUTURES_MIN_24H_VOLUME_USDT", "0"))
+    FUTURES_SCAN_BATCH_SIZE: int = int(os.environ.get("FUTURES_SCAN_BATCH_SIZE", "20"))
+    FUTURES_SCAN_BATCH_DELAY: float = float(os.environ.get("FUTURES_SCAN_BATCH_DELAY", "0.5"))
+    SPOT_SCAN_ENABLED: bool = os.environ.get("SPOT_SCAN_ENABLED", "true").lower() in ("true", "1", "yes")
+    SPOT_SCAN_INTERVAL_MINUTES: int = int(os.environ.get("SPOT_SCAN_INTERVAL_MINUTES", "60"))
+    SPOT_MIN_24H_VOLUME_USDT: int = int(os.environ.get("SPOT_MIN_24H_VOLUME_USDT", "100000"))
+    SPOT_GEM_VOLUME_SPIKE_RATIO: float = float(os.environ.get("SPOT_GEM_VOLUME_SPIKE_RATIO", "3.0"))
+    SPOT_GEM_BREAKOUT_LOOKBACK_DAYS: int = int(os.environ.get("SPOT_GEM_BREAKOUT_LOOKBACK_DAYS", "30"))
+    SPOT_GEM_ACCUMULATION_RANGE_PCT: float = float(os.environ.get("SPOT_GEM_ACCUMULATION_RANGE_PCT", "0.10"))
+    SPOT_NEW_LISTING_LOOKBACK_DAYS: int = int(os.environ.get("SPOT_NEW_LISTING_LOOKBACK_DAYS", "90"))
+    SPOT_SCAM_PUMP_THRESHOLD_PCT: float = float(os.environ.get("SPOT_SCAM_PUMP_THRESHOLD_PCT", "500.0"))
+    SPOT_SCAM_CRASH_THRESHOLD_PCT: float = float(os.environ.get("SPOT_SCAM_CRASH_THRESHOLD_PCT", "50.0"))
+    SPOT_SCAN_BATCH_SIZE: int = int(os.environ.get("SPOT_SCAN_BATCH_SIZE", "30"))
+    SPOT_SCAN_BATCH_DELAY: float = float(os.environ.get("SPOT_SCAN_BATCH_DELAY", "0.5"))
     WHALE_ALERT_API_KEY: str = os.environ.get("WHALE_ALERT_API_KEY", "")
     COINGLASS_API_KEY: str = os.environ.get("COINGLASS_API_KEY", "")
     MIN_SIGNAL_GAP_SECONDS: int = int(os.environ.get("MIN_SIGNAL_GAP_SECONDS", "300"))
