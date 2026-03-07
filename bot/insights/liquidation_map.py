@@ -11,7 +11,6 @@ live liquidation history.  Falls back to a volume-proxy approach otherwise.
 from __future__ import annotations
 
 import logging
-import time
 from typing import TYPE_CHECKING, Optional
 
 import requests

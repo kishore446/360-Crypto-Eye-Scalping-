@@ -445,11 +445,11 @@ def detect_order_block(
 
     Returns True if a qualifying order block exists within the last 10 candles.
     """
-    if len(candles) < 4:
+    if len(candles) < 3:
         return False
     window = candles[-10:]
     if side == Side.LONG:
-        for i in range(len(window) - 3, 0, -1):
+        for i in range(len(window) - 3, -1, -1):
             if window[i].close < window[i].open:  # bearish OB candidate
                 c1, c2 = window[i + 1], window[i + 2]
                 if c1.close > c1.open and c2.close > c2.open:  # 2 bullish impulse candles
@@ -459,7 +459,7 @@ def detect_order_block(
                             continue
                     return True
     else:
-        for i in range(len(window) - 3, 0, -1):
+        for i in range(len(window) - 3, -1, -1):
             if window[i].close > window[i].open:  # bullish OB candidate
                 c1, c2 = window[i + 1], window[i + 2]
                 if c1.close < c1.open and c2.close < c2.open:  # 2 bearish impulse candles
