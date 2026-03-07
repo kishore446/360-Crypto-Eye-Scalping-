@@ -33,8 +33,12 @@ class ChannelTier(str, Enum):
     INSIGHTS = "insights"
 
 
-# Tiers that can suppress lower-priority channels via dedup
-_STRICT_TIERS = (ChannelTier.HARD,)
+# Tiers that can suppress lower-priority channels via dedup.
+# CH1 (HARD) and CH2 (MEDIUM) both suppress lower tiers.
+_STRICT_TIERS = (ChannelTier.HARD, ChannelTier.MEDIUM)
+# Tiers that can be suppressed by a stricter tier, and also have a
+# same-channel cooldown applied (prevents the same channel from
+# broadcasting the same symbol repeatedly within the dedup window).
 _SUPPRESSIBLE_TIERS = (ChannelTier.MEDIUM, ChannelTier.EASY)
 
 
@@ -71,8 +75,13 @@ class SignalRouter:
 
     def should_suppress_duplicate(self, symbol: str, tier: ChannelTier) -> bool:
         """
-        Return True if *symbol* already fired on a stricter channel within the
-        deduplication window and *tier* is a suppressible tier.
+        Return True if *symbol* should be suppressed for *tier*.
+
+        Suppression applies when *tier* is a suppressible tier and either:
+          1. The **same** channel already broadcast this symbol within the
+             dedup window (same-channel cooldown — prevents repeated fires).
+          2. A **stricter** channel already broadcast this symbol within the
+             dedup window (cross-tier suppression).
 
         CH4 (SPOT) and CH5 (INSIGHTS) are never suppressed.
         """
@@ -81,6 +90,13 @@ class SignalRouter:
 
         now = time.monotonic()
         symbol_signals = self._recent_signals.get(symbol, {})
+
+        # Same-channel cooldown — don't re-fire on the same channel within the window
+        own_sent_at = symbol_signals.get(tier)
+        if own_sent_at is not None and (now - own_sent_at) < self._dedup_window_seconds:
+            return True
+
+        # Cross-tier suppression — suppress if a stricter tier fired recently
         for strict_tier in _STRICT_TIERS:
             sent_at = symbol_signals.get(strict_tier)
             if sent_at is not None and (now - sent_at) < self._dedup_window_seconds:

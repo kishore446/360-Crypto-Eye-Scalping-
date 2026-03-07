@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import time
 import types
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -247,7 +247,7 @@ class TestOnCandleCloseGates:
         with patch("bot.channels.hard_scalp.run", return_value=fake_result):
             self._run(_bot.on_candle_close("BTC", "5m"))
 
-        self._risk.add_signal.assert_called_once_with(fake_result)
+        self._risk.add_signal.assert_called_once_with(fake_result, origin_channel=ANY)
 
     def test_one_signal_per_candle_close(self):
         """on_candle_close stops after the first successful CH1 signal (break after first hit)."""
@@ -402,4 +402,4 @@ class TestFallbackScanJob:
             with patch("bot.bot._broadcast_to_channel", new_callable=AsyncMock):
                 _bot._run_fallback_scan_job()
 
-        self._risk.add_signal.assert_called_once_with(fake_result)
+        self._risk.add_signal.assert_called_once_with(fake_result, origin_channel=ANY)
