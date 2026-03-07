@@ -57,6 +57,6 @@ class TestGenerateSignalChart:
     def test_handles_exception_gracefully(self):
         # Should never raise
         try:
-            result = generate_signal_chart(_make_candles(20), _make_signal())
+            generate_signal_chart(_make_candles(20), _make_signal())
         except Exception:
             pytest.fail("generate_signal_chart should not raise exceptions")

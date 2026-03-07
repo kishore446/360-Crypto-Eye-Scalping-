@@ -117,7 +117,6 @@ setInterval(() => { loadStats(); loadSignals(); }, 30000);
             trades = dash._results if hasattr(dash, '_results') else []
             total = len(trades)
             wins = sum(1 for t in trades if getattr(t, 'outcome', '') == 'WIN')
-            losses = sum(1 for t in trades if getattr(t, 'outcome', '') == 'LOSS')
             win_rate = (wins / total * 100) if total > 0 else None
             gross_win = sum(t.pnl_pct for t in trades if getattr(t, 'pnl_pct', 0) > 0)
             gross_loss = abs(sum(t.pnl_pct for t in trades if getattr(t, 'pnl_pct', 0) < 0))

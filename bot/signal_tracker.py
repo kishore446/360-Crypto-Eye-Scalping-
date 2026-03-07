@@ -155,7 +155,7 @@ class SignalTracker:
         when ATR is unavailable.
         """
         try:
-            from bot.signal_engine import Side, calculate_atr
+            from bot.signal_engine import Side
         except ImportError:
             return None
 
@@ -179,11 +179,6 @@ class SignalTracker:
         trail_extreme = state.get("trailing_extreme_price")
         trail_sl = state.get("trailing_stop_loss")
         if trail_sl is None:
-            return None
-
-        try:
-            from bot.signal_engine import calculate_atr
-        except ImportError:
             return None
 
         atr = getattr(signal, 'atr', None)

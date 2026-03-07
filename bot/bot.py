@@ -1840,7 +1840,6 @@ def build_application() -> Application:
         btc_price = market_data.get_price("BTC")
         if btc_price is None:
             return
-        btc_1d_raw = market_data.get_candles("BTC", "1d")
         btc_4h_raw = market_data.get_candles("BTC", "4h")
         if len(btc_4h_raw) < 10:
             return
