@@ -151,6 +151,65 @@ class AutoCloseMonitor:
             close_result = self._check_tp_sl_hit(signal, current_price)
             if close_result is not None:
                 await self._process_close(signal, close_result)
+                continue
+
+            # ── Invalidation check (after TP/SL; non-closing alert) ───────────
+            await self._check_invalidation(signal, current_price)
+
+    # ── invalidation check ────────────────────────────────────────────────────
+
+    async def _check_invalidation(self, signal: "ActiveSignal", current_price: float) -> None:
+        """Check for signal invalidation and broadcast an alert if detected."""
+        try:
+            from config import INVALIDATION_CHECK_ENABLED
+            if not INVALIDATION_CHECK_ENABLED:
+                return
+        except Exception:
+            pass
+
+        try:
+            from bot.invalidation_detector import InvalidationDetector, format_invalidation_alert
+            from bot.signal_engine import CandleData
+        except Exception:
+            return
+
+        candles_5m_raw = self._market_data.get_candles(signal.result.symbol, "5m")
+        candles_4h_raw = self._market_data.get_candles(signal.result.symbol, "4h")
+
+        def _to_candles(rows: list) -> "list[CandleData]":
+            return [
+                CandleData(open=r[1], high=r[2], low=r[3], close=r[4], volume=r[5])
+                for r in rows
+            ]
+
+        candles_5m = _to_candles(candles_5m_raw)
+        candles_4h = _to_candles(candles_4h_raw)
+
+        # Retrieve current regime from BotState (best-effort)
+        try:
+            from bot.state import BotState
+            market_regime = BotState().market_regime
+        except Exception:
+            market_regime = "UNKNOWN"
+
+        detector = InvalidationDetector()
+        reason = detector.check_invalidation(signal, current_price, candles_5m, candles_4h, market_regime)
+        if reason is None:
+            return
+
+        alert = format_invalidation_alert(signal, reason, current_price)
+        from bot.signal_router import ChannelTier
+        channel_id = signal.origin_channel or self._router.get_channel_id(ChannelTier.INSIGHTS)
+        if not channel_id:
+            return
+        try:
+            from telegram import Bot
+
+            from config import TELEGRAM_BOT_TOKEN
+            bot = Bot(token=TELEGRAM_BOT_TOKEN)
+            await bot.send_message(chat_id=channel_id, text=alert)
+        except Exception as exc:
+            logger.warning("Invalidation alert send failed for %s: %s", signal.result.symbol, exc)
 
     # ── detection helpers ─────────────────────────────────────────────────────
 

@@ -6,5 +6,6 @@ ccxt==4.5.40
 apscheduler==3.10.4
 pydantic==2.10.6
 pydantic-settings==2.7.1
-websockets==14.2
+matplotlib>=3.7.0
 mplfinance>=0.12.10b0
+websockets==14.2

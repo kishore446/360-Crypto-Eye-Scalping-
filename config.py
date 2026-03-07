@@ -130,6 +130,23 @@ try:
         # ── OI Divergence Detection ───────────────────────────────────────────
         oi_divergence_enabled: bool = True
 
+        # ── Chart Generator ───────────────────────────────────────────────────
+        chart_enabled: bool = True
+
+        # ── Daily Briefing ────────────────────────────────────────────────────
+        briefing_enabled: bool = True
+        briefing_hour_utc: int = 8
+
+        # ── Invalidation Detector ─────────────────────────────────────────────
+        invalidation_check_enabled: bool = True
+
+        # ── Correlation Guard ─────────────────────────────────────────────────
+        correlation_alert_enabled: bool = True
+        correlation_max_same_group: int = 3
+
+        # ── DB Maintenance ────────────────────────────────────────────────────
+        db_archive_days: int = 90
+
         @field_validator("telegram_bot_token")
         @classmethod
         def token_not_placeholder(cls, v: str) -> str:
@@ -223,6 +240,14 @@ try:
     ADMIN_ALERT_WIN_RATE_THRESHOLD: int = settings.admin_alert_win_rate_threshold
     OI_DIVERGENCE_ENABLED: bool = settings.oi_divergence_enabled
 
+    CHART_ENABLED: bool = settings.chart_enabled
+    BRIEFING_ENABLED: bool = settings.briefing_enabled
+    BRIEFING_HOUR_UTC: int = settings.briefing_hour_utc
+    INVALIDATION_CHECK_ENABLED: bool = settings.invalidation_check_enabled
+    CORRELATION_ALERT_ENABLED: bool = settings.correlation_alert_enabled
+    CORRELATION_MAX_SAME_GROUP: int = settings.correlation_max_same_group
+    DB_ARCHIVE_DAYS: int = settings.db_archive_days
+
     TIMEFRAMES: dict[str, int] = {
         "1D": 1440,
         "4H": 240,
@@ -302,5 +327,12 @@ except ImportError:
     ADMIN_ALERT_ENABLED: bool = os.environ.get("ADMIN_ALERT_ENABLED", "true").lower() in ("true", "1", "yes")
     ADMIN_ALERT_WIN_RATE_THRESHOLD: int = int(os.environ.get("ADMIN_ALERT_WIN_RATE_THRESHOLD", "40"))
     OI_DIVERGENCE_ENABLED: bool = os.environ.get("OI_DIVERGENCE_ENABLED", "true").lower() in ("true", "1", "yes")
+    CHART_ENABLED: bool = os.environ.get("CHART_ENABLED", "true").lower() in ("true", "1", "yes")
+    BRIEFING_ENABLED: bool = os.environ.get("BRIEFING_ENABLED", "true").lower() in ("true", "1", "yes")
+    BRIEFING_HOUR_UTC: int = int(os.environ.get("BRIEFING_HOUR_UTC", "8"))
+    INVALIDATION_CHECK_ENABLED: bool = os.environ.get("INVALIDATION_CHECK_ENABLED", "true").lower() in ("true", "1", "yes")
+    CORRELATION_ALERT_ENABLED: bool = os.environ.get("CORRELATION_ALERT_ENABLED", "true").lower() in ("true", "1", "yes")
+    CORRELATION_MAX_SAME_GROUP: int = int(os.environ.get("CORRELATION_MAX_SAME_GROUP", "3"))
+    DB_ARCHIVE_DAYS: int = int(os.environ.get("DB_ARCHIVE_DAYS", "90"))
     TIMEFRAMES: dict[str, int] = {"1D": 1440, "4H": 240, "15m": 15, "5m": 5}
 
