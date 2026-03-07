@@ -160,6 +160,40 @@ class RiskManager:
 
     # ── public API ────────────────────────────────────────────────────────────
 
+    def dynamic_risk_fraction(self, confidence: str, cooldown_manager: "object") -> float:
+        """
+        Return the dynamic risk fraction based on signal confidence and cooldown state.
+
+        Risk table
+        ----------
+        Confidence  Normal Risk   Cooldown Risk (×0.5)
+        HIGH        1.5% (0.015)  0.75% (0.0075)
+        MEDIUM      1.0% (0.01)   0.50% (0.005)
+        LOW         0.5% (0.005)  SUPPRESSED (0.0)
+
+        Parameters
+        ----------
+        confidence:
+            Confidence level string — "High", "MEDIUM", "LOW" (case-insensitive).
+        cooldown_manager:
+            A ``CooldownManager`` instance exposing ``is_cooldown_active()``.
+
+        Returns
+        -------
+        float
+            Risk fraction (0.0 means the signal is suppressed).
+        """
+        in_cooldown = cooldown_manager.is_cooldown_active() if cooldown_manager is not None else False
+        conf_upper = confidence.upper()
+        if conf_upper == "HIGH":
+            return 0.0075 if in_cooldown else 0.015
+        if conf_upper == "MEDIUM":
+            return 0.005 if in_cooldown else 0.01
+        # LOW confidence
+        if in_cooldown:
+            return 0.0  # suppressed
+        return 0.005
+
     def can_open_signal(self, side: Side) -> bool:
         """
         Return True only when the "3-Pair" cap allows a new signal on *side*.

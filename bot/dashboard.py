@@ -41,6 +41,8 @@ class TradeResult:
     outcome: str        # "WIN" | "LOSS" | "BE" | "OPEN"
     pnl_pct: float      # % PnL relative to entry
     timeframe: str      # "5m" | "15m" | "1h" — identifies which TF triggered entry
+    channel_tier: str = "AGGREGATE"  # "CH1_HARD" | "CH2_MEDIUM" | "CH3_EASY" | "CH4_SPOT" | "AGGREGATE"
+    session: str = "UNKNOWN"         # "LONDON" | "NYC" | "ASIA" | "OVERLAP" | "UNKNOWN"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -275,3 +277,102 @@ class Dashboard:
             f"Open PnL (floating)  : {self.current_open_pnl():+.2f}%",
         ]
         return "\n".join(lines)
+
+    # ── per-channel & per-session statistics ──────────────────────────────────
+
+    def _channel_stats_for(self, trades: list[TradeResult]) -> dict:
+        """Compute aggregate stats dict for a list of closed trades."""
+        wins = [r for r in trades if r.outcome == "WIN"]
+        losses = [r for r in trades if r.outcome == "LOSS"]
+        total = len(trades)
+        win_rate = round(len(wins) / total * 100, 2) if total else 0.0
+        avg_pnl = round(sum(r.pnl_pct for r in trades) / total, 4) if total else 0.0
+        pnl_values = [r.pnl_pct for r in trades]
+        best_trade = round(max(pnl_values), 4) if pnl_values else 0.0
+        worst_trade = round(min(pnl_values), 4) if pnl_values else 0.0
+        # Sharpe for this subset
+        sharpe = 0.0
+        if len(trades) >= 3:
+            mean_r = avg_pnl
+            variance = sum((r.pnl_pct - mean_r) ** 2 for r in trades) / (len(trades) - 1)
+            std_r = math.sqrt(variance)
+            if std_r > 0:
+                sharpe = round(mean_r / std_r, 4)
+        return {
+            "total_signals": total,
+            "wins": len(wins),
+            "losses": len(losses),
+            "win_rate": win_rate,
+            "avg_pnl": avg_pnl,
+            "best_trade": best_trade,
+            "worst_trade": worst_trade,
+            "sharpe": sharpe,
+        }
+
+    def per_channel_stats(self) -> dict[str, dict]:
+        """
+        Return per-channel performance statistics.
+
+        Returns a dict keyed by channel tier containing win_rate, total_signals,
+        wins, losses, avg_pnl, best_trade, worst_trade, and sharpe.
+        """
+        closed = [r for r in self._results if r.outcome in ("WIN", "LOSS", "BE")]
+        tiers = ["CH1_HARD", "CH2_MEDIUM", "CH3_EASY", "CH4_SPOT", "AGGREGATE"]
+        result: dict[str, dict] = {}
+        for tier in tiers:
+            subset = [r for r in closed if r.channel_tier == tier]
+            result[tier] = self._channel_stats_for(subset)
+        return result
+
+    def per_session_stats(self) -> dict[str, dict]:
+        """
+        Return per-session performance statistics.
+
+        Returns a dict keyed by session (LONDON, NYC, ASIA, OVERLAP, UNKNOWN)
+        containing win_rate, total_signals, wins, losses, avg_pnl, best_trade,
+        worst_trade, and sharpe.
+        """
+        closed = [r for r in self._results if r.outcome in ("WIN", "LOSS", "BE")]
+        sessions = ["LONDON", "NYC", "ASIA", "OVERLAP", "UNKNOWN"]
+        result: dict[str, dict] = {}
+        for session in sessions:
+            subset = [r for r in closed if r.session == session]
+            result[session] = self._channel_stats_for(subset)
+        return result
+
+    def format_per_channel_report(self, days: int = 30) -> str:
+        """
+        Generate a Telegram-formatted per-channel performance report.
+
+        Parameters
+        ----------
+        days:
+            Rolling window in days. Defaults to 30.
+        """
+        cutoff = time.time() - days * 86400
+        closed = [
+            r for r in self._results
+            if r.outcome in ("WIN", "LOSS", "BE") and r.opened_at >= cutoff
+        ]
+
+        channel_configs = [
+            ("CH1_HARD", "🔴 CH1 Hard Scalp"),
+            ("CH2_MEDIUM", "🟡 CH2 Medium"),
+            ("CH3_EASY", "🔵 CH3 Easy Breakout"),
+            ("CH4_SPOT", "💰 CH4 Spot"),
+        ]
+
+        lines = [f"📊 PERFORMANCE BY CHANNEL ({days}d)", ""]
+        for tier_key, label in channel_configs:
+            subset = [r for r in closed if r.channel_tier == tier_key]
+            stats = self._channel_stats_for(subset)
+            lines.append(f"{label}:")
+            lines.append(
+                f"  Win Rate: {stats['win_rate']:.1f}% ({stats['total_signals']} signals)"
+            )
+            lines.append(
+                f"  Avg PnL: {stats['avg_pnl']:+.2f}% | Sharpe: {stats['sharpe']:.2f}"
+            )
+            lines.append("")
+
+        return "\n".join(lines).rstrip()

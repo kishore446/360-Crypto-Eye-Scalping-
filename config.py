@@ -54,7 +54,7 @@ try:
         tp3_rr: float = 4.0
 
         # ── Safety Protocols ─────────────────────────────────────────────────
-        max_same_side_signals: int = 5
+        max_same_side_signals: int = 3
         stale_signal_hours: int = 4
         be_trigger_fraction: float = 0.50
 
@@ -63,7 +63,11 @@ try:
         coinmarketcal_api_key: str = ""
 
         # ── Session Filter ────────────────────────────────────────────────────
-        session_filter_enabled: bool = False
+        session_filter_enabled: bool = True
+        session_filter_ch1_enabled: bool = True   # Hard scalp — session gated
+        session_filter_ch2_enabled: bool = True   # Medium scalp — session gated
+        session_filter_ch3_enabled: bool = False  # Easy breakout — 24/7
+        session_filter_ch4_enabled: bool = False  # Spot — 24/7
 
         # ── Funding Rate Gate ─────────────────────────────────────────────────
         funding_rate_gate_enabled: bool = True
@@ -84,7 +88,7 @@ try:
         daily_performance_hour: int = 23  # UTC hour for daily recap
 
         # ── Confluence Scoring ────────────────────────────────────────────────
-        min_confluence_score: int = 0  # 0 = disabled
+        min_confluence_score: int = 40  # 40 = filter out low-quality signals
         min_displacement_pct: float = 0.15  # Gate ④ displacement filter (§2.2)
 
         # ── News Fail-Safe ────────────────────────────────────────────────────
@@ -106,7 +110,7 @@ try:
         webhook_rate_limit_max: int = 30     # max requests per window
 
         # ── Auto-Scanner ─────────────────────────────────────────────────────
-        auto_scan_pairs: str = ""
+        auto_scan_pairs: str = "BTC,ETH,SOL,XRP,DOGE,ADA,AVAX,LINK,DOT,MATIC"
         auto_scan_interval_seconds: int = 60
         auto_scan_enabled_on_boot: bool = True
 
@@ -156,6 +160,10 @@ try:
     COINMARKETCAL_API_KEY: str = settings.coinmarketcal_api_key
 
     SESSION_FILTER_ENABLED: bool = settings.session_filter_enabled
+    SESSION_FILTER_CH1_ENABLED: bool = settings.session_filter_ch1_enabled
+    SESSION_FILTER_CH2_ENABLED: bool = settings.session_filter_ch2_enabled
+    SESSION_FILTER_CH3_ENABLED: bool = settings.session_filter_ch3_enabled
+    SESSION_FILTER_CH4_ENABLED: bool = settings.session_filter_ch4_enabled
 
     FUNDING_RATE_GATE_ENABLED: bool = settings.funding_rate_gate_enabled
     FUNDING_EXTREME_NEGATIVE: float = settings.funding_extreme_negative
@@ -225,12 +233,16 @@ except ImportError:
     TP1_RR: float = 1.5
     TP2_RR: float = 2.5
     TP3_RR: float = 4.0
-    MAX_SAME_SIDE_SIGNALS: int = 5
+    MAX_SAME_SIDE_SIGNALS: int = 3
     STALE_SIGNAL_HOURS: int = int(os.environ.get("STALE_SIGNAL_HOURS", "4"))
     BE_TRIGGER_FRACTION: float = 0.50
     NEWS_SKIP_WINDOW_MINUTES: int = 60
     COINMARKETCAL_API_KEY: str = os.environ.get("COINMARKETCAL_API_KEY", "")
-    SESSION_FILTER_ENABLED: bool = os.environ.get("SESSION_FILTER_ENABLED", "false").lower() in ("true", "1", "yes")
+    SESSION_FILTER_ENABLED: bool = os.environ.get("SESSION_FILTER_ENABLED", "true").lower() in ("true", "1", "yes")
+    SESSION_FILTER_CH1_ENABLED: bool = os.environ.get("SESSION_FILTER_CH1_ENABLED", "true").lower() in ("true", "1", "yes")
+    SESSION_FILTER_CH2_ENABLED: bool = os.environ.get("SESSION_FILTER_CH2_ENABLED", "true").lower() in ("true", "1", "yes")
+    SESSION_FILTER_CH3_ENABLED: bool = os.environ.get("SESSION_FILTER_CH3_ENABLED", "false").lower() in ("true", "1", "yes")
+    SESSION_FILTER_CH4_ENABLED: bool = os.environ.get("SESSION_FILTER_CH4_ENABLED", "false").lower() in ("true", "1", "yes")
 
     FUNDING_RATE_GATE_ENABLED: bool = os.environ.get("FUNDING_RATE_GATE_ENABLED", "true").lower() in ("true", "1", "yes")
     FUNDING_EXTREME_NEGATIVE: float = float(os.environ.get("FUNDING_EXTREME_NEGATIVE", "-0.0001"))
@@ -245,7 +257,7 @@ except ImportError:
 
     FEAR_GREED_INTERVAL_HOURS: int = int(os.environ.get("FEAR_GREED_INTERVAL_HOURS", "6"))
     DAILY_PERFORMANCE_HOUR: int = int(os.environ.get("DAILY_PERFORMANCE_HOUR", "23"))
-    MIN_CONFLUENCE_SCORE: int = int(os.environ.get("MIN_CONFLUENCE_SCORE", "0"))
+    MIN_CONFLUENCE_SCORE: int = int(os.environ.get("MIN_CONFLUENCE_SCORE", "40"))
     MIN_DISPLACEMENT_PCT: float = float(os.environ.get("MIN_DISPLACEMENT_PCT", "0.15"))
     NEWS_FAIL_SAFE_WINDOW_MINUTES: int = int(os.environ.get("NEWS_FAIL_SAFE_WINDOW_MINUTES", "60"))
     DASHBOARD_LOG_FILE: str = os.environ.get("DASHBOARD_LOG_FILE", "data/dashboard.json")
@@ -257,7 +269,7 @@ except ImportError:
     ALLOWED_WEBHOOK_IPS: list[str] = []
     WEBHOOK_RATE_LIMIT_WINDOW: int = int(os.environ.get("WEBHOOK_RATE_LIMIT_WINDOW", "60"))
     WEBHOOK_RATE_LIMIT_MAX: int = int(os.environ.get("WEBHOOK_RATE_LIMIT_MAX", "30"))
-    _raw_pairs = os.environ.get("AUTO_SCAN_PAIRS", "")
+    _raw_pairs = os.environ.get("AUTO_SCAN_PAIRS", "BTC,ETH,SOL,XRP,DOGE,ADA,AVAX,LINK,DOT,MATIC")
     AUTO_SCAN_PAIRS: list[str] = [p.strip().upper() for p in _raw_pairs.split(",") if p.strip()]
     AUTO_SCAN_INTERVAL_SECONDS: int = int(os.environ.get("AUTO_SCAN_INTERVAL_SECONDS", "60"))
     AUTO_SCAN_ENABLED_ON_BOOT: bool = os.environ.get("AUTO_SCAN_ENABLED_ON_BOOT", "true").lower() in ("true", "1", "yes")
