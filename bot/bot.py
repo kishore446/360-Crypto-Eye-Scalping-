@@ -809,7 +809,7 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
             try:
                 async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
                     await bot.send_message(
-                        chat_id=TELEGRAM_CHANNEL_ID,
+                        chat_id=sig.origin_channel or TELEGRAM_CHANNEL_ID,
                         text=msg,
                         parse_mode="Markdown",
                     )
@@ -1026,6 +1026,7 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                 ch2_result = None
 
             if ch2_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.MEDIUM):
+                risk_manager.add_signal(ch2_result, origin_channel=signal_router.get_channel_id(ChannelTier.MEDIUM), created_regime=regime)
                 signal_router.record_signal(base_symbol, ChannelTier.MEDIUM)
                 logger.info("CH2 signal: %s %s", base_symbol, side.value)
                 _now = time.time()
@@ -1059,6 +1060,7 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                 ch3_result = None
 
             if ch3_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.EASY):
+                risk_manager.add_signal(ch3_result, origin_channel=signal_router.get_channel_id(ChannelTier.EASY), created_regime=regime)
                 signal_router.record_signal(base_symbol, ChannelTier.EASY)
                 logger.info("CH3 breakout: %s %s", base_symbol, ch3_result.side.value)
                 try:
