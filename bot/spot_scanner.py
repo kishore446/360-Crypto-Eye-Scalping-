@@ -263,19 +263,7 @@ class SpotScanner:
 
             # Inter-batch pause to respect rate limits
             if i + self._batch_size < total:
-                import asyncio as _asyncio
-                try:
-                    loop = _asyncio.get_event_loop()
-                    if loop.is_running():
-                        # We're in a sync context called from a scheduler thread
-                        import time as _time
-                        _time.sleep(self._batch_delay)
-                    else:
-                        import time as _time
-                        _time.sleep(self._batch_delay)
-                except Exception:
-                    import time as _time
-                    _time.sleep(self._batch_delay)
+                time.sleep(self._batch_delay)
 
         self._last_scan_time = time.time()
         logger.info(
@@ -396,17 +384,21 @@ class SpotScanner:
                 )
 
         # ── ACCUMULATION detection ─────────────────────────────────────────
+        # A coin is "near its 90d low" if within 1.5x the accumulation range config.
+        _near_low_threshold = self._accumulation_range_pct * 1.5
+        # Volume trend is "rising" if 2nd half of 14d is 10% above 1st half.
+        _volume_trend_multiplier = 1.1
         lookback_90 = min(90, len(closes) - 1)
         if lookback_90 >= 10:
             low_90d = min(closes[-lookback_90:])
             high_90d = max(closes[-lookback_90:])
             range_pct = (high_90d - low_90d) / low_90d if low_90d > 0 else 1.0
-            near_low = (current_price - low_90d) / low_90d < 0.15 if low_90d > 0 else False
+            near_low = (current_price - low_90d) / low_90d < _near_low_threshold if low_90d > 0 else False
             # Check rising volume trend over last 14 days
             if len(volumes) >= 14:
                 first_half_vol = sum(volumes[-14:-7]) / 7
                 second_half_vol = sum(volumes[-7:]) / 7
-                rising_vol = second_half_vol > first_half_vol * 1.1
+                rising_vol = second_half_vol > first_half_vol * _volume_trend_multiplier
 
                 if (
                     range_pct <= self._accumulation_range_pct * 3

@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 _WS_FUTURES_URL = "wss://fstream.binance.com/stream"
 _WS_SPOT_URL = "wss://stream.binance.com:9443/stream"
-# Keep legacy alias for backward compatibility
+# Keep legacy alias for backward compatibility. Will be removed in v3.0.
 _WS_BASE_URL = _WS_FUTURES_URL
 _MAX_STREAMS_PER_CONN = 200        # Binance hard limit
 _STREAMS_PER_SYMBOL = 5            # kline_5m + kline_15m + kline_4h + kline_1d + miniTicker

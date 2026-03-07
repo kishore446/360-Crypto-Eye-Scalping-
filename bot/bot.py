@@ -1204,7 +1204,7 @@ def _run_fallback_scan_job() -> None:
                         except Exception as exc:
                             logger.error("Fallback CH1 broadcast error for %s: %s", base_symbol, exc)
                         break  # one signal per symbol per scan pass
-                time.sleep(0.1)  # brief per-symbol pause within a batch
+                time.sleep(0.1)  # brief per-symbol pause (distinct from inter-batch FUTURES_SCAN_BATCH_DELAY)
             except Exception as exc:
                 logger.error("Fallback scan error for %s: %s", base_symbol, exc)
         # Inter-batch sleep to respect Binance API rate limits
@@ -1857,8 +1857,12 @@ def build_application() -> Application:
             try:
                 async def _noop_spot_candle(base_symbol: str, timeframe: str) -> None:
                     pass  # spot candles are processed by spot_scanner.scan_once()
+                # Limit initial WS subscription to SPOT_SCAN_BATCH_SIZE * 2 pairs
+                # to avoid subscribing to hundreds of streams at startup.
+                from config import SPOT_SCAN_BATCH_SIZE as _SPOT_BATCH
+                _initial_limit = _SPOT_BATCH * 2
                 await spot_ws.start(
-                    [p["symbol"] for p in spot_scanner._pairs[:100]],  # limit for initial boot
+                    [p["symbol"] for p in spot_scanner._pairs[:_initial_limit]],
                     _noop_spot_candle,
                 )
                 logger.info("Spot WebSocket manager started.")

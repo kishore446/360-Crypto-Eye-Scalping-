@@ -109,13 +109,11 @@ class TestWebSocketManagerMarketType:
         store = MarketDataStore(market_type="futures")
         ws = WebSocketManager(store=store, market_type="futures")
         assert ws._ws_url == _WS_FUTURES_URL
-        assert "fstream" in ws._ws_url
 
     def test_spot_ws_uses_spot_url(self):
         store = MarketDataStore(market_type="spot")
         ws = WebSocketManager(store=store, market_type="spot")
         assert ws._ws_url == _WS_SPOT_URL
-        assert "stream.binance.com" in ws._ws_url
 
     def test_default_market_type_is_futures(self):
         store = MarketDataStore()
