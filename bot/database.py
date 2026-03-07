@@ -85,6 +85,12 @@ def init_db() -> None:
                 pnl_pct REAL NOT NULL,
                 timeframe TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS subscriber_preferences (
+                user_id    INTEGER PRIMARY KEY,
+                mode       TEXT    NOT NULL DEFAULT 'all',
+                updated_at REAL    NOT NULL
+            );
         """)
     logger.info("Database initialised at %s", _DB_PATH)
 

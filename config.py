@@ -130,6 +130,13 @@ try:
         # ── OI Divergence Detection ───────────────────────────────────────────
         oi_divergence_enabled: bool = True
 
+        # ── Cross-Exchange Referral IDs (optional) ────────────────────────────
+        binance_ref_id: str = ""
+        bybit_ref_id: str = ""
+        okx_ref_id: str = ""
+        bitget_ref_id: str = ""
+        hyperliquid_ref_id: str = ""
+
         @field_validator("telegram_bot_token")
         @classmethod
         def token_not_placeholder(cls, v: str) -> str:
@@ -223,6 +230,12 @@ try:
     ADMIN_ALERT_WIN_RATE_THRESHOLD: int = settings.admin_alert_win_rate_threshold
     OI_DIVERGENCE_ENABLED: bool = settings.oi_divergence_enabled
 
+    BINANCE_REF_ID: str = settings.binance_ref_id
+    BYBIT_REF_ID: str = settings.bybit_ref_id
+    OKX_REF_ID: str = settings.okx_ref_id
+    BITGET_REF_ID: str = settings.bitget_ref_id
+    HYPERLIQUID_REF_ID: str = settings.hyperliquid_ref_id
+
     TIMEFRAMES: dict[str, int] = {
         "1D": 1440,
         "4H": 240,
@@ -302,5 +315,10 @@ except ImportError:
     ADMIN_ALERT_ENABLED: bool = os.environ.get("ADMIN_ALERT_ENABLED", "true").lower() in ("true", "1", "yes")
     ADMIN_ALERT_WIN_RATE_THRESHOLD: int = int(os.environ.get("ADMIN_ALERT_WIN_RATE_THRESHOLD", "40"))
     OI_DIVERGENCE_ENABLED: bool = os.environ.get("OI_DIVERGENCE_ENABLED", "true").lower() in ("true", "1", "yes")
+    BINANCE_REF_ID: str = os.environ.get("BINANCE_REF_ID", "")
+    BYBIT_REF_ID: str = os.environ.get("BYBIT_REF_ID", "")
+    OKX_REF_ID: str = os.environ.get("OKX_REF_ID", "")
+    BITGET_REF_ID: str = os.environ.get("BITGET_REF_ID", "")
+    HYPERLIQUID_REF_ID: str = os.environ.get("HYPERLIQUID_REF_ID", "")
     TIMEFRAMES: dict[str, int] = {"1D": 1440, "4H": 240, "15m": 15, "5m": 5}
 

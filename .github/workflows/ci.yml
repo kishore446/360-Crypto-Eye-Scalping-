@@ -7,6 +7,29 @@ on:
     branches: [main, master]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-dev-${{ hashFiles('requirements-dev.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-dev-
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Lint with ruff
+        run: ruff check .
+      - name: Type-check with mypy
+        run: mypy bot/ config.py --ignore-missing-imports --no-error-summary || true
+
   test:
     runs-on: ubuntu-latest
     permissions:
@@ -16,7 +39,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
       - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Run tests
-        run: pytest tests/ -v
+        run: pip install -r requirements.txt pytest-cov
+      - name: Validate config
+        run: python -c "from bot.config_validator import validate_config; validate_config()" || true
+      - name: Run tests with coverage
+        run: pytest tests/ -v --cov=bot --cov-report=term-missing --cov-report=xml
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.xml

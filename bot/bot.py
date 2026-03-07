@@ -46,19 +46,30 @@ from bot.backtester import Backtester, HistoricalDataFetcher
 from bot.auto_close_monitor import AutoCloseMonitor
 from bot.dashboard import Dashboard, TradeResult
 from bot.exchange import ResilientExchange, _resilient_exchange
+from bot.exchange_links import build_ref_ids_from_config, get_exchange_links_text
 from bot.loss_streak_cooldown import CooldownManager
 from bot.news_fetcher import fetch_and_reload
 from bot.news_filter import NewsCalendar
+from bot.performance_watermark import get_watermark_line
 from bot.risk_manager import RiskManager, calculate_position_size
 from bot.signal_engine import (
     CandleData,
     Confidence,
     Side,
+    SignalResult,
     run_confluence_check,
 )
 from bot.signal_router import ChannelTier, SignalRouter
 from bot.signal_tracker import SignalTracker
 from bot.state import BotState
+from bot.subscriber_prefs import (
+    VALID_MODES,
+    describe_mode,
+    format_daily_digest,
+    get_preference,
+    get_users_for_mode,
+    set_preference,
+)
 from bot.ws_manager import MarketDataStore, WebSocketManager
 from config import (
     ADMIN_CHAT_ID,
@@ -78,6 +89,9 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Cached referral IDs — loaded once at module initialisation
+_ref_ids: dict[str, str] = build_ref_ids_from_config()
 
 # ── Shared state (singleton per process) ─────────────────────────────────────
 
@@ -129,6 +143,42 @@ _boot_time: float = time.time()
 
 def _is_admin(update: Update) -> bool:
     return update.effective_user is not None and update.effective_user.id == ADMIN_CHAT_ID
+
+
+def _build_signal_message(
+    result: SignalResult,
+    tier: ChannelTier,
+) -> str:
+    """
+    Build the full enriched signal message with optional watermark, gate stats,
+    and exchange deep-links.
+
+    Parameters
+    ----------
+    result:
+        The :class:`~bot.signal_engine.SignalResult` to format.
+    tier:
+        Channel tier used to select the correct rolling win-rate watermark.
+
+    Returns
+    -------
+    str
+        Telegram-ready message string.
+    """
+    # Tier → dashboard channel_tier key mapping
+    _tier_to_channel_key: dict[str, str] = {
+        ChannelTier.HARD.value: "CH1_HARD",
+        ChannelTier.MEDIUM.value: "CH2_MEDIUM",
+        ChannelTier.EASY.value: "CH3_EASY",
+        ChannelTier.SPOT.value: "CH4_SPOT",
+    }
+    channel_key = _tier_to_channel_key.get(tier.value, "AGGREGATE")
+    watermark = get_watermark_line(dashboard, channel_key)
+    exchange_links = get_exchange_links_text(result.symbol, _ref_ids) if any(_ref_ids.values()) else ""
+    return result.format_message(
+        watermark_line=watermark,
+        exchange_links_line=exchange_links,
+    )
 
 
 async def _reply(update: Update, text: str, parse_mode: str = "Markdown") -> None:
@@ -237,7 +287,7 @@ async def cmd_signal_gen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     target_channel = signal_router.get_channel_id(tier)
     risk_manager.add_signal(result, origin_channel=target_channel)
-    message = result.format_message()
+    message = _build_signal_message(result, tier)
     signal_router.record_signal(symbol, tier)
 
     if target_channel:
@@ -948,10 +998,10 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
             if _now - _last_broadcast >= MIN_SIGNAL_GAP_SECONDS:
                 _last_signal_broadcast_time[_tier_key] = _now
                 try:
-                    await _broadcast_to_channel(ch1_result.format_message(), signal_router.get_channel_id(ChannelTier.HARD))
+                    await _broadcast_to_channel(_build_signal_message(ch1_result, ChannelTier.HARD), signal_router.get_channel_id(ChannelTier.HARD))
                     # Fallback: also send to legacy TELEGRAM_CHANNEL_ID if different
                     if TELEGRAM_CHANNEL_ID and TELEGRAM_CHANNEL_ID != signal_router.get_channel_id(ChannelTier.HARD):
-                        await _broadcast_to_channel(ch1_result.format_message(), TELEGRAM_CHANNEL_ID)
+                        await _broadcast_to_channel(_build_signal_message(ch1_result, ChannelTier.HARD), TELEGRAM_CHANNEL_ID)
                 except Exception as exc:
                     logger.error("CH1 broadcast error for %s: %s", base_symbol, exc)
             else:
@@ -997,7 +1047,7 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                 if _now - _last_broadcast >= MIN_SIGNAL_GAP_SECONDS:
                     _last_signal_broadcast_time[_tier_key] = _now
                     try:
-                        await _broadcast_to_channel(ch2_result.format_message(), signal_router.get_channel_id(ChannelTier.MEDIUM))
+                        await _broadcast_to_channel(_build_signal_message(ch2_result, ChannelTier.MEDIUM), signal_router.get_channel_id(ChannelTier.MEDIUM))
                     except Exception as exc:
                         logger.error("CH2 broadcast error for %s: %s", base_symbol, exc)
                 else:
@@ -1025,7 +1075,7 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                 signal_router.record_signal(base_symbol, ChannelTier.EASY)
                 logger.info("CH3 breakout: %s %s", base_symbol, ch3_result.side.value)
                 try:
-                    await _broadcast_to_channel(ch3_result.format_message(), signal_router.get_channel_id(ChannelTier.EASY))
+                    await _broadcast_to_channel(_build_signal_message(ch3_result, ChannelTier.EASY), signal_router.get_channel_id(ChannelTier.EASY))
                 except Exception as exc:
                     logger.error("CH3 broadcast error for %s: %s", base_symbol, exc)
 
@@ -1145,7 +1195,7 @@ def _run_fallback_scan_job() -> None:
                     signal_router.record_signal(base_symbol, ChannelTier.HARD)
                     logger.info("Fallback CH1 signal: %s %s", base_symbol, side.value)
 
-                    async def _send_ch1(msg: str = ch1_result.format_message()) -> None:
+                    async def _send_ch1(msg: str = _build_signal_message(ch1_result, ChannelTier.HARD)) -> None:
                         await _broadcast_to_channel(msg, signal_router.get_channel_id(ChannelTier.HARD))
                         if TELEGRAM_CHANNEL_ID and TELEGRAM_CHANNEL_ID != signal_router.get_channel_id(ChannelTier.HARD):
                             await _broadcast_to_channel(msg, TELEGRAM_CHANNEL_ID)
@@ -1335,7 +1385,7 @@ def process_webhook(payload: dict) -> Optional[tuple[str, ChannelTier]]:
 
     risk_manager.add_signal(result, origin_channel=signal_router.get_channel_id(tier))
     signal_router.record_signal(symbol, tier)  # Track for dedup
-    return result.format_message(), tier
+    return _build_signal_message(result, tier), tier
 
 
 # ── Binance live data helpers ─────────────────────────────────────────────────
@@ -1664,6 +1714,59 @@ async def cmd_backtest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _reply(update, report)
 
 
+async def cmd_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /alerts [all|high|digest]
+
+    Let subscribers choose their notification style:
+      • ``all``    — receive every signal (default).
+      • ``high``   — receive HIGH-confidence signals only.
+      • ``digest`` — receive one daily summary at 09:00 UTC.
+
+    With no argument, reports the current preference.
+    """
+    if update.effective_user is None:
+        return
+
+    user_id = update.effective_user.id
+    args = context.args or []
+
+    if not args:
+        current_mode = get_preference(user_id)
+        await _reply(
+            update,
+            f"🔔 Your current alert mode: *{describe_mode(current_mode)}*\n\n"
+            "Change with:\n"
+            "  `/alerts all` — all signals\n"
+            "  `/alerts high` — HIGH confidence only\n"
+            "  `/alerts digest` — daily digest at 09:00 UTC",
+        )
+        return
+
+    raw_arg = args[0].lower()
+    # Map short aliases
+    mode_map = {"all": "all", "high": "high_only", "digest": "digest"}
+    mode = mode_map.get(raw_arg)
+    if mode is None:
+        await _reply(
+            update,
+            "⚠️ Invalid mode. Use `/alerts all`, `/alerts high`, or `/alerts digest`.",
+        )
+        return
+
+    try:
+        set_preference(user_id, mode)
+    except Exception as exc:
+        logger.error("Failed to save subscriber preference for %d: %s", user_id, exc)
+        await _reply(update, "⚠️ Could not save preference. Please try again.")
+        return
+
+    await _reply(
+        update,
+        f"✅ Alert mode set to *{describe_mode(mode)}*.",
+    )
+
+
 # ── Application bootstrap ─────────────────────────────────────────────────────
 
 def build_application() -> Application:
@@ -1711,6 +1814,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("health", cmd_health))
     app.add_handler(CommandHandler("regime", cmd_regime))
     app.add_handler(CommandHandler("channels", cmd_channels))
+    app.add_handler(CommandHandler("alerts", cmd_alerts))
 
     # Fetch Binance USDT-M perpetual pairs dynamically at startup
     _refresh_dynamic_pairs()
@@ -1809,7 +1913,7 @@ def build_application() -> Application:
                 )
                 if spot_result is not None:
                     logger.info("CH4 spot signal: %s", base_symbol)
-                    msg_text = spot_result.format_message()
+                    msg_text = _build_signal_message(spot_result, ChannelTier.SPOT)
 
                     async def _send_spot(m: str = msg_text) -> None:
                         await _broadcast_to_channel(m, signal_router.get_channel_id(ChannelTier.SPOT))
@@ -1902,12 +2006,58 @@ def build_application() -> Application:
         if _main_loop is not None and _main_loop.is_running():
             asyncio.run_coroutine_threadsafe(_send(), _main_loop)
 
+    # ── Subscriber digest — daily at 09:00 UTC ───────────────────────────────
+    def _send_subscriber_digests() -> None:
+        """Send the daily digest to all subscribers who chose digest mode."""
+        digest_users = get_users_for_mode("digest")
+        if not digest_users:
+            return
+
+        # Collect today's signals from the risk manager for the digest
+        today_signals = [
+            {
+                "symbol": sig.result.symbol,
+                "side": sig.result.side.value,
+                "confidence": sig.result.confidence.value,
+                "tp1": sig.result.tp1,
+                "stop_loss": sig.result.stop_loss,
+                "outcome": "OPEN",
+                "pnl_pct": 0.0,
+            }
+            for sig in risk_manager.active_signals
+        ]
+        msg_text = format_daily_digest(today_signals)
+
+        async def _send_digests() -> None:
+            async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
+                for uid in digest_users:
+                    try:
+                        await bot.send_message(
+                            chat_id=uid,
+                            text=msg_text,
+                            parse_mode="Markdown",
+                        )
+                    except Exception as exc:
+                        logger.warning("Digest send failed for user %d: %s", uid, exc)
+
+        if _main_loop is not None and _main_loop.is_running():
+            asyncio.run_coroutine_threadsafe(_send_digests(), _main_loop)
+
     _scheduler.add_job(
         _run_regime_detector,
         "cron",
         hour=9,
         minute=0,
         id="regime_detector",
+        replace_existing=True,
+    )
+
+    _scheduler.add_job(
+        _send_subscriber_digests,
+        "cron",
+        hour=9,
+        minute=0,
+        id="subscriber_digest",
         replace_existing=True,
     )
 
