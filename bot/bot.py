@@ -53,6 +53,7 @@ from bot.signal_engine import (
     CandleData,
     Confidence,
     Side,
+    SignalResult,
     run_confluence_check,
 )
 from bot.signal_router import ChannelTier, SignalRouter
@@ -2035,6 +2036,32 @@ def build_application() -> Application:
                 )
                 if spot_result is not None:
                     logger.info("CH4 spot signal: %s", base_symbol)
+                    # Wrap SpotSignalResult into SignalResult for risk tracking
+                    signal_result = SignalResult(
+                        symbol=base_symbol,
+                        side=Side.LONG,
+                        confidence=Confidence.MEDIUM,
+                        entry_low=spot_result.entry_low,
+                        entry_high=spot_result.entry_high,
+                        tp1=spot_result.tp1,
+                        tp2=spot_result.tp2,
+                        tp3=spot_result.tp3,
+                        stop_loss=spot_result.stop_loss,
+                        structure_note="",
+                        context_note="",
+                        leverage_min=1,
+                        leverage_max=1,
+                    )
+                    try:
+                        risk_manager.add_signal(
+                            signal_result,
+                            origin_channel=signal_router.get_channel_id(ChannelTier.SPOT),
+                            created_regime=_bot_state.market_regime,
+                        )
+                        signal_router.record_signal(base_symbol, ChannelTier.SPOT)
+                    except RuntimeError as _cap_exc:
+                        logger.warning("CH4 3-pair cap reached for %s: %s", base_symbol, _cap_exc)
+                        continue
                     msg_text = spot_result.format_message()
 
                     async def _send_spot(m: str = msg_text) -> None:
@@ -2082,6 +2109,8 @@ def build_application() -> Application:
         try:
             gems, scams = spot_scanner.scan_once()
             for gem in gems:
+                # TODO: SpotGemResult is incompatible with SignalResult (missing side/confidence);
+                # track gem signals in risk_manager once SpotGemResult is aligned with SignalResult.
                 msg_text = gem.format_message()
 
                 async def _send_gem(m: str = msg_text) -> None:

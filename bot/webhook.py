@@ -30,7 +30,8 @@ from typing import Any
 
 from flask import Flask, Response, jsonify, request
 
-from bot.bot import process_webhook, risk_manager, signal_router
+from bot.bot import dashboard, process_webhook, risk_manager, signal_router
+from bot.dashboard_web import register_dashboard_routes
 from config import (
     ALLOWED_WEBHOOK_IPS,
     TELEGRAM_BOT_TOKEN,
@@ -213,6 +214,13 @@ def create_app() -> Flask:
         resp = jsonify({"status": "signal_broadcast"})
         resp.headers["X-Request-ID"] = request_id
         return resp, 200
+
+    # Register the performance dashboard routes
+    register_dashboard_routes(
+        app,
+        get_dashboard_fn=lambda: dashboard,
+        get_risk_manager_fn=lambda: risk_manager,
+    )
 
     return app
 
