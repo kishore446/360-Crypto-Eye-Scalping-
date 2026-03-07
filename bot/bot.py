@@ -43,8 +43,10 @@ from telegram.ext import (
 )
 
 from bot.backtester import Backtester, HistoricalDataFetcher
+from bot.auto_close_monitor import AutoCloseMonitor
 from bot.dashboard import Dashboard, TradeResult
 from bot.exchange import ResilientExchange, _resilient_exchange
+from bot.loss_streak_cooldown import CooldownManager
 from bot.news_fetcher import fetch_and_reload
 from bot.news_filter import NewsCalendar
 from bot.risk_manager import RiskManager, calculate_position_size
@@ -81,6 +83,7 @@ risk_manager = RiskManager()
 news_calendar = NewsCalendar()
 dashboard = Dashboard()
 signal_tracker = SignalTracker()
+cooldown_manager = CooldownManager()
 
 # Multi-channel signal router
 signal_router = SignalRouter(
@@ -100,6 +103,15 @@ _bot_state = BotState()
 # WebSocket market data store and manager
 market_data = MarketDataStore()
 ws_manager = WebSocketManager(store=market_data)
+
+# Auto-close monitor — watches TP/SL hits for all active signals
+auto_close_monitor = AutoCloseMonitor(
+    signal_tracker=risk_manager,
+    dashboard=dashboard,
+    cooldown_manager=cooldown_manager,
+    market_data_store=market_data,
+    signal_router=signal_router,
+)
 
 # Reference to the main asyncio event loop (set in build_application)
 _main_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -1133,6 +1145,20 @@ async def cmd_close_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await _reply(update, f"✅ Signal `{symbol}` closed as {outcome} with {pnl:+.2f}% PnL.")
 
 
+async def cmd_channel_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /channel_stats
+
+    Admin-only: Show per-channel win rate and performance statistics (30-day window).
+    """
+    if not _is_admin(update):
+        await _reply(update, "⛔ Admin only.")
+        return
+
+    report = dashboard.format_per_channel_report(days=30)
+    await _reply(update, report)
+
+
 # ── Webhook processor (called by webhook.py) ──────────────────────────────────
 
 def process_webhook(payload: dict) -> Optional[tuple[str, ChannelTier]]:
@@ -1187,6 +1213,17 @@ def process_webhook(payload: dict) -> Optional[tuple[str, ChannelTier]]:
     )
 
     if result is None:
+        return None
+
+    # Dynamic risk sizing based on confidence + cooldown state
+    risk_fraction = risk_manager.dynamic_risk_fraction(
+        confidence=result.confidence.value,
+        cooldown_manager=cooldown_manager,
+    )
+    if risk_fraction == 0.0:
+        logger.info(
+            "Signal suppressed for %s: LOW confidence during cooldown.", symbol
+        )
         return None
 
     risk_manager.add_signal(result)
@@ -1543,12 +1580,14 @@ def build_application() -> Application:
         global _main_loop
         _main_loop = asyncio.get_event_loop()
         await ws_manager.start(_dynamic_pairs, on_candle_close)
+        await auto_close_monitor.start()
         logger.info(
             "WebSocket manager started for %d pairs (primary scanning path).",
             len(_dynamic_pairs),
         )
 
     async def _post_shutdown(application: Application) -> None:
+        await auto_close_monitor.stop()
         await ws_manager.stop()
         logger.info("WebSocket manager stopped.")
 
@@ -1566,6 +1605,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("news_caution", cmd_news_caution))
     app.add_handler(CommandHandler("risk_calc", cmd_risk_calc))
     app.add_handler(CommandHandler("close_signal", cmd_close_signal))
+    app.add_handler(CommandHandler("channel_stats", cmd_channel_stats))
     app.add_handler(CommandHandler("pairs", cmd_pairs))
     app.add_handler(CommandHandler("backtest", cmd_backtest))
     app.add_handler(CommandHandler("status", cmd_status))
