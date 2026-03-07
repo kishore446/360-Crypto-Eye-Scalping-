@@ -207,12 +207,19 @@ def archive_old_signals(days: int = 90) -> int:
     Returns
     -------
     int
-        Number of signals archived.
+        Number of signals archived in this call (newly inserted rows only).
     """
     cutoff = time.time() - days * 86400
     archived_count = 0
     with _get_conn() as conn:
-        # Copy qualifying rows to archive
+        # Count eligible rows before insertion to get accurate newly-archived count
+        count_row = conn.execute(
+            """SELECT COUNT(*) FROM signals
+               WHERE closed = 1 AND closed_at IS NOT NULL AND closed_at < ?""",
+            (cutoff,),
+        ).fetchone()
+        archived_count = count_row[0] if count_row else 0
+        # Copy qualifying rows to archive (ignore duplicates from prior runs)
         conn.execute(
             """
             INSERT OR IGNORE INTO signals_archived
@@ -221,11 +228,6 @@ def archive_old_signals(days: int = 90) -> int:
             """,
             (cutoff,),
         )
-        # Count how many were moved
-        row = conn.execute(
-            "SELECT COUNT(*) FROM signals_archived WHERE closed_at < ?", (cutoff,)
-        ).fetchone()
-        archived_count = row[0] if row else 0
         # Delete originals
         conn.execute(
             "DELETE FROM signals WHERE closed = 1 AND closed_at IS NOT NULL AND closed_at < ?",

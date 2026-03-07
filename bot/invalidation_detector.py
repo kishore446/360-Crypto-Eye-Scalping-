@@ -21,7 +21,12 @@ __all__ = ["InvalidationDetector"]
 
 
 def _compute_atr(candles: list["CandleData"], period: int = 14) -> float:
-    """Compute a simple ATR (True Range average) over the last *period* candles."""
+    """
+    Compute a simple ATR (True Range average) over the last *period* candles.
+
+    Requires at least 2 candles to produce a non-zero result; returns 0.0
+    when fewer than 2 candles are provided.
+    """
     if len(candles) < 2:
         return 0.0
     trs: list[float] = []

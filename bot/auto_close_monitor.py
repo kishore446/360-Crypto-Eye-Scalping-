@@ -176,14 +176,14 @@ class AutoCloseMonitor:
         candles_5m_raw = self._market_data.get_candles(symbol, "5m")
         candles_4h_raw = self._market_data.get_candles(symbol, "4h")
 
-        def _to_candle(row: list) -> "CandleData":
+        def _to_candle(candle_row: list) -> "CandleData":
             return CandleData(
-                timestamp=row[0],
-                open=row[1],
-                high=row[2],
-                low=row[3],
-                close=row[4],
-                volume=row[5] if len(row) > 5 else 0.0,
+                timestamp=candle_row[0],
+                open=candle_row[1],
+                high=candle_row[2],
+                low=candle_row[3],
+                close=candle_row[4],
+                volume=candle_row[5] if len(candle_row) > 5 else 0.0,
             )
 
         candles_5m = [_to_candle(r) for r in candles_5m_raw]
