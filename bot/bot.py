@@ -52,6 +52,7 @@ from bot.news_filter import NewsCalendar
 from bot.risk_manager import RiskManager, calculate_position_size
 from bot.signal_engine import (
     CandleData,
+    Confidence,
     Side,
     run_confluence_check,
 )
@@ -226,9 +227,24 @@ async def cmd_signal_gen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _reply(update, f"❌ No valid setup found for #{symbol}/USDT {side.value}. Confluence checks failed.")
         return
 
-    risk_manager.add_signal(result)
+    # Route to the correct channel based on confidence level
+    if result.confidence == Confidence.HIGH:
+        tier = ChannelTier.HARD
+    elif result.confidence == Confidence.MEDIUM:
+        tier = ChannelTier.MEDIUM
+    else:
+        tier = ChannelTier.EASY
+
+    target_channel = signal_router.get_channel_id(tier)
+    risk_manager.add_signal(result, origin_channel=target_channel)
     message = result.format_message()
-    await _broadcast(context, message)
+    signal_router.record_signal(symbol, tier)
+
+    if target_channel:
+        await _broadcast_to_channel(message, target_channel)
+    # Fallback to legacy channel if different
+    if TELEGRAM_CHANNEL_ID and TELEGRAM_CHANNEL_ID != target_channel:
+        await _broadcast(context, message)
     await _reply(update, f"✅ Signal broadcast for #{symbol}/USDT {side.value}.")
     logger.info("Signal generated: %s %s", symbol, side.value)
 
@@ -616,12 +632,14 @@ def _run_trailing_sl_job(context_or_bot=None) -> None:
       • SHORT → trail SL to the maximum high of the last 3 × 5m candles
                 (Lower High); only moves SL *downward*.
 
-    Broadcasts a Telegram message for each SL update.
+    Broadcasts a Telegram message for each SL update to the channel
+    that originated the signal (``sig.origin_channel``), falling back
+    to ``TELEGRAM_CHANNEL_ID`` for signals without an origin channel.
     """
     if not _bot_state.trail_active:
         return
 
-    updates: list[str] = []
+    updates: list[tuple[str, int]] = []  # (message_text, target_channel_id)
     for sig in list(risk_manager.active_signals):
         symbol_base = sig.result.symbol  # e.g. "BTC"
         ccxt_symbol = f"{symbol_base}/USDT:USDT"
@@ -640,6 +658,7 @@ def _run_trailing_sl_job(context_or_bot=None) -> None:
 
         last_3 = raw_5m_rows[-3:]
         current_sl = sig.result.stop_loss
+        target_channel = sig.origin_channel if sig.origin_channel else TELEGRAM_CHANNEL_ID
 
         if sig.result.side == Side.LONG:
             # Per the spec: "Higher Low" = min low of the last 3 candles.
@@ -647,22 +666,24 @@ def _run_trailing_sl_job(context_or_bot=None) -> None:
             new_sl = min(row[3] for row in last_3)
             if new_sl > current_sl:
                 sig.result.stop_loss = new_sl
-                updates.append(
+                updates.append((
                     f"📈 #{sig.result.symbol}/USDT LONG: "
                     f"Trailing SL raised {current_sl:.4f} → {new_sl:.4f} "
-                    f"(Higher Low trail)"
-                )
+                    f"(Higher Low trail)",
+                    target_channel,
+                ))
         else:
             # Per the spec: "Lower High" = max high of the last 3 candles.
             # SL only moves down (never up) for SHORT.
             new_sl = max(row[2] for row in last_3)
             if new_sl < current_sl:
                 sig.result.stop_loss = new_sl
-                updates.append(
+                updates.append((
                     f"📉 #{sig.result.symbol}/USDT SHORT: "
                     f"Trailing SL lowered {current_sl:.4f} → {new_sl:.4f} "
-                    f"(Lower High trail)"
-                )
+                    f"(Lower High trail)",
+                    target_channel,
+                ))
 
     if not updates:
         return
@@ -676,10 +697,10 @@ def _run_trailing_sl_job(context_or_bot=None) -> None:
     # Broadcast from background thread — use run_coroutine_threadsafe when main loop is available
     async def _send() -> None:
         async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
-            for text in updates:
+            for text, chat_id in updates:
                 try:
                     await bot.send_message(
-                        chat_id=TELEGRAM_CHANNEL_ID,
+                        chat_id=chat_id,
                         text=text,
                         parse_mode="Markdown",
                     )
@@ -705,14 +726,15 @@ def _run_stale_signal_job() -> None:
     for sig in list(risk_manager.active_signals):
         if sig.is_stale():
             symbol = sig.result.symbol
+            target_channel = sig.origin_channel if sig.origin_channel else TELEGRAM_CHANNEL_ID
             risk_manager.close_signal(symbol, reason="stale")
             signal_tracker.clear_signal(sig.result.signal_id)
             logger.info("Auto-closed stale signal: %s", symbol)
 
-            async def _send(sym: str = symbol) -> None:
+            async def _send(sym: str = symbol, chat_id: int = target_channel) -> None:
                 async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
                     await bot.send_message(
-                        chat_id=TELEGRAM_CHANNEL_ID,
+                        chat_id=chat_id,
                         text=(
                             f"⏰ #{sym}/USDT signal auto-closed — *STALE* "
                             f"(exceeded {STALE_SIGNAL_HOURS}h limit)."
@@ -917,7 +939,7 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
             ch1_result = None
 
         if ch1_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.HARD):
-            risk_manager.add_signal(ch1_result)
+            risk_manager.add_signal(ch1_result, origin_channel=signal_router.get_channel_id(ChannelTier.HARD))
             signal_router.record_signal(base_symbol, ChannelTier.HARD)
             logger.info("CH1 signal: %s %s", base_symbol, side.value)
             _now = time.time()
@@ -1119,7 +1141,7 @@ def _run_fallback_scan_job() -> None:
                     ch1_result = None
 
                 if ch1_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.HARD):
-                    risk_manager.add_signal(ch1_result)
+                    risk_manager.add_signal(ch1_result, origin_channel=signal_router.get_channel_id(ChannelTier.HARD))
                     signal_router.record_signal(base_symbol, ChannelTier.HARD)
                     logger.info("Fallback CH1 signal: %s %s", base_symbol, side.value)
 
@@ -1303,8 +1325,6 @@ def process_webhook(payload: dict) -> Optional[tuple[str, ChannelTier]]:
         )
         return None
 
-    risk_manager.add_signal(result)
-
     # Determine the target channel tier from signal confidence
     if result.confidence == Confidence.HIGH:
         tier = ChannelTier.HARD
@@ -1313,6 +1333,8 @@ def process_webhook(payload: dict) -> Optional[tuple[str, ChannelTier]]:
     else:
         tier = ChannelTier.EASY
 
+    risk_manager.add_signal(result, origin_channel=signal_router.get_channel_id(tier))
+    signal_router.record_signal(symbol, tier)  # Track for dedup
     return result.format_message(), tier
 
 

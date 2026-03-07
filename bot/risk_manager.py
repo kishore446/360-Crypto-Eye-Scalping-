@@ -44,6 +44,7 @@ class ActiveSignal:
     be_triggered: bool = False
     closed: bool = False
     close_reason: Optional[str] = None
+    origin_channel: int = 0  # Telegram channel ID where this signal was broadcast
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -143,6 +144,7 @@ class RiskManager:
                         be_triggered=d["be_triggered"],
                         closed=d["closed"],
                         close_reason=d.get("close_reason"),
+                        origin_channel=d.get("origin_channel", 0),
                     )
                 )
             self._signals = signals
@@ -206,9 +208,18 @@ class RiskManager:
             )
         return count < MAX_SAME_SIDE_SIGNALS
 
-    def add_signal(self, result: SignalResult) -> ActiveSignal:
+    def add_signal(self, result: SignalResult, origin_channel: int = 0) -> ActiveSignal:
         """
         Register a new active signal.
+
+        Parameters
+        ----------
+        result:
+            The generated signal result.
+        origin_channel:
+            Telegram channel ID where this signal will be broadcast.
+            Used by lifecycle jobs (trailing SL, stale-close) to send
+            updates to the correct channel.
 
         Raises
         ------
@@ -220,7 +231,7 @@ class RiskManager:
                 f"3-Pair Cap reached: already {MAX_SAME_SIDE_SIGNALS} active "
                 f"{result.side.value} signals."
             )
-        active = ActiveSignal(result=result)
+        active = ActiveSignal(result=result, origin_channel=origin_channel)
         with self._lock:
             self._signals.append(active)
             self._save()

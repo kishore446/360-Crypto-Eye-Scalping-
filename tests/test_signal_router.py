@@ -96,11 +96,35 @@ class TestSignalRouterDeduplication:
         time.sleep(0.01)
         assert router.should_suppress_duplicate("BTC", ChannelTier.MEDIUM) is False
 
-    def test_medium_signal_does_not_suppress_easy(self):
-        """Only HARD tier signals trigger suppression."""
+    def test_medium_signal_suppresses_easy(self):
+        """MEDIUM tier now triggers suppression of EASY (CH2 suppresses CH3)."""
         router = _make_router()
         router.record_signal("BTC", ChannelTier.MEDIUM)
-        assert router.should_suppress_duplicate("BTC", ChannelTier.EASY) is False
+        assert router.should_suppress_duplicate("BTC", ChannelTier.EASY) is True
+
+    def test_easy_suppressed_after_medium_signal(self):
+        """EASY is suppressed when MEDIUM has fired for the same symbol."""
+        router = _make_router(dedup_minutes=15)
+        router.record_signal("BTC", ChannelTier.MEDIUM)
+        assert router.should_suppress_duplicate("BTC", ChannelTier.EASY) is True
+
+    def test_medium_suppressed_by_same_channel_cooldown(self):
+        """MEDIUM channel should not re-fire the same symbol within the dedup window."""
+        router = _make_router(dedup_minutes=15)
+        router.record_signal("BTC", ChannelTier.MEDIUM)
+        assert router.should_suppress_duplicate("BTC", ChannelTier.MEDIUM) is True
+
+    def test_easy_suppressed_by_same_channel_cooldown(self):
+        """EASY channel should not re-fire the same symbol within the dedup window."""
+        router = _make_router(dedup_minutes=15)
+        router.record_signal("BTC", ChannelTier.EASY)
+        assert router.should_suppress_duplicate("BTC", ChannelTier.EASY) is True
+
+    def test_hard_not_suppressed_by_same_channel_cooldown(self):
+        """HARD (strict) tier is never suppressed, even if it fired recently."""
+        router = _make_router()
+        router.record_signal("BTC", ChannelTier.HARD)
+        assert router.should_suppress_duplicate("BTC", ChannelTier.HARD) is False
 
     def test_prune_removes_expired_records(self):
         """After expiry, the internal tracking dict should be cleaned up."""

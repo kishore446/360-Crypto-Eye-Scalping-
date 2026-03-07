@@ -76,6 +76,14 @@ class TestActiveSignal:
         assert sig.closed is True
         assert sig.close_reason == "tp1"
 
+    def test_origin_channel_default(self):
+        sig = ActiveSignal(result=_make_signal())
+        assert sig.origin_channel == 0
+
+    def test_origin_channel_set(self):
+        sig = ActiveSignal(result=_make_signal(), origin_channel=-100111)
+        assert sig.origin_channel == -100111
+
 
 # ── RiskManager tests ─────────────────────────────────────────────────────────
 
@@ -88,6 +96,16 @@ class TestRiskManager:
         active = self.rm.add_signal(sig)
         assert len(self.rm.active_signals) == 1
         assert active.result.symbol == "BTC"
+
+    def test_add_signal_with_origin_channel(self):
+        sig = _make_signal()
+        active = self.rm.add_signal(sig, origin_channel=-100111)
+        assert active.origin_channel == -100111
+
+    def test_add_signal_default_origin_channel(self):
+        sig = _make_signal()
+        active = self.rm.add_signal(sig)
+        assert active.origin_channel == 0
 
     def test_three_pair_cap(self):
         for i in range(MAX_SAME_SIDE_SIGNALS):
