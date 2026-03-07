@@ -1,5 +1,6 @@
 """Thread-safe singleton for bot-wide mutable state."""
 from __future__ import annotations
+
 import threading
 
 try:

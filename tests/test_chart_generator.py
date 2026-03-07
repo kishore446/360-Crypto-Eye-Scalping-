@@ -1,10 +1,13 @@
 """Tests for bot/chart_generator.py"""
 from __future__ import annotations
+
 import sys
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import MagicMock, patch
-from bot.signal_engine import CandleData, Side, Confidence, SignalResult
+
 from bot.chart_generator import generate_signal_chart
+from bot.signal_engine import CandleData, Confidence, Side, SignalResult
 
 
 def _make_candles(n: int = 20) -> list[CandleData]:

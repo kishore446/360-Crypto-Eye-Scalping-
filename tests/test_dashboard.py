@@ -11,7 +11,6 @@ import pytest
 from bot.dashboard import Dashboard, TradeResult
 from bot.news_filter import NewsCalendar, NewsEvent
 
-
 # ── Dashboard fixtures ────────────────────────────────────────────────────────
 
 def _make_trade(

@@ -1,9 +1,10 @@
 """Tests for bot/btc_correlation.py"""
 from __future__ import annotations
-import pytest
+
 from unittest.mock import patch
-from bot.signal_engine import CandleData, Side
+
 from bot.btc_correlation import btc_correlation_check
+from bot.signal_engine import CandleData, Side
 
 
 def _bullish_candles(n: int = 20) -> list[CandleData]:

@@ -18,7 +18,6 @@ from typing import Optional
 
 from bot.signal_engine import (
     CandleData,
-    Side,
     calculate_rsi,
 )
 

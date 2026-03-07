@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import time
 from enum import Enum
-from typing import Optional
 
 try:
     from config import DEDUP_WINDOW_MINUTES as _DEDUP_WINDOW_MINUTES

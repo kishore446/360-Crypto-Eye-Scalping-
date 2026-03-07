@@ -4,8 +4,8 @@ Public Performance Dashboard
 Flask-based web dashboard showing signal performance metrics.
 """
 from __future__ import annotations
+
 import logging
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +14,8 @@ def register_dashboard_routes(app, get_dashboard_fn, get_risk_manager_fn=None) -
     """
     Register dashboard routes on the given Flask app.
     """
-    from flask import jsonify, render_template_string, request as flask_request
+    from flask import jsonify, render_template_string
+    from flask import request as flask_request
 
     DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">

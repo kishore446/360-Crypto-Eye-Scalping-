@@ -1,7 +1,8 @@
 """Structured JSON logging configuration for 360 Crypto Eye Scalping."""
 from __future__ import annotations
-import logging
+
 import json
+import logging
 import secrets
 import time
 from typing import Any

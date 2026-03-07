@@ -1,6 +1,8 @@
 """Tests for bot/vwap.py"""
 from __future__ import annotations
+
 import pytest
+
 from bot.signal_engine import CandleData
 from bot.vwap import calculate_vwap, is_near_vwap
 

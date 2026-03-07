@@ -1,9 +1,10 @@
 """Tests for bot/structure_detector.py"""
 from __future__ import annotations
+
 import pytest
+
 from bot.signal_engine import CandleData, Side
 from bot.structure_detector import (
-    SwingPoint,
     DealingRange,
     detect_swing_points,
     find_dealing_range,

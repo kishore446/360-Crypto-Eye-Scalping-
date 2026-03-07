@@ -1,9 +1,16 @@
 """Tests for bot/session_filter.py"""
 from __future__ import annotations
+
 import datetime
-import pytest
 from unittest.mock import patch
-from bot.session_filter import get_current_session, get_session_confidence_modifier, is_active_session
+
+import pytest
+
+from bot.session_filter import (
+    get_current_session,
+    get_session_confidence_modifier,
+    is_active_session,
+)
 
 
 def _utc(hour: int, minute: int = 0) -> datetime.datetime:

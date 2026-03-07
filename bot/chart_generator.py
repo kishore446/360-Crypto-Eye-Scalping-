@@ -4,6 +4,7 @@ Chart Generator
 Generates annotated candlestick charts using mplfinance for signal broadcast.
 """
 from __future__ import annotations
+
 import io
 import logging
 from typing import Optional
@@ -21,9 +22,9 @@ def generate_signal_chart(
     Returns None if mplfinance is not available or on any error.
     """
     try:
+        import matplotlib
         import mplfinance as mpf
         import pandas as pd
-        import matplotlib
         matplotlib.use("Agg")
     except ImportError:
         logger.warning("mplfinance or matplotlib not installed — chart generation disabled.")

@@ -23,10 +23,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 from bot.signal_engine import Side
-from config import STALE_SIGNAL_HOURS
 
 if TYPE_CHECKING:
-    from bot.dashboard import Dashboard, TradeResult
+    from bot.dashboard import Dashboard
     from bot.loss_streak_cooldown import CooldownManager
     from bot.risk_manager import ActiveSignal, RiskManager
     from bot.signal_router import SignalRouter
@@ -295,6 +294,7 @@ class AutoCloseMonitor:
             return
         try:
             from telegram import Bot
+
             from config import TELEGRAM_BOT_TOKEN
             bot = Bot(token=TELEGRAM_BOT_TOKEN)
             await bot.send_message(chat_id=channel_id, text=message, parse_mode="Markdown")

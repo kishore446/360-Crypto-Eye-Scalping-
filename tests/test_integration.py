@@ -2,16 +2,19 @@
 Integration test: end-to-end pipeline from candle data through signal generation.
 """
 from __future__ import annotations
-import pytest
-from unittest.mock import MagicMock, patch
+
+import datetime
+from unittest.mock import patch
+
+from bot.btc_correlation import btc_correlation_check
+from bot.confluence_score import build_confluence_factors, compute_confluence_score
+from bot.session_filter import is_active_session
 from bot.signal_engine import (
-    CandleData, Side, SignalResult, Confidence,
+    CandleData,
+    Side,
+    SignalResult,
     run_confluence_check,
 )
-from bot.btc_correlation import btc_correlation_check
-from bot.session_filter import is_active_session
-from bot.confluence_score import build_confluence_factors, compute_confluence_score
-import datetime
 
 
 def _bullish_daily(n: int = 20, base: float = 100.0) -> list[CandleData]:

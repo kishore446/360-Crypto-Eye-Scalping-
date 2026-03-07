@@ -6,6 +6,7 @@ When SESSION_FILTER_ENABLED is False, all hours are treated as active
 to support 24/7 crypto scanning.
 """
 from __future__ import annotations
+
 import datetime
 import logging
 

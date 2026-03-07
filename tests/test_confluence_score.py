@@ -1,13 +1,13 @@
 """Tests for bot/confluence_score.py"""
 from __future__ import annotations
-import pytest
-from bot.signal_engine import CandleData, Side
+
 from bot.confluence_score import (
-    ConfluenceFactors,
     WEIGHTS,
-    compute_confluence_score,
+    ConfluenceFactors,
     build_confluence_factors,
+    compute_confluence_score,
 )
+from bot.signal_engine import CandleData, Side
 
 
 class TestComputeConfluenceScore:

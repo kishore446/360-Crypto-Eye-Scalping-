@@ -4,7 +4,6 @@ Tests for bot/backtester.py
 
 from __future__ import annotations
 
-import math
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
@@ -13,11 +12,7 @@ import pytest
 from bot.backtester import (
     DEFAULT_BE_TRIGGER_FRACTION,
     DEFAULT_INITIAL_CAPITAL,
-    DEFAULT_RISK_PER_TRADE,
     DEFAULT_STALE_HOURS,
-    DEFAULT_TP1_RR,
-    DEFAULT_TP2_RR,
-    DEFAULT_TP3_RR,
     Backtester,
     BacktestResult,
     HistoricalDataFetcher,
@@ -26,13 +21,11 @@ from bot.backtester import (
     _bar_to_dt,
     _build_result,
     _calc_pnl,
-    _close_trade,
     _htf_window_tail,
     _max_consecutive,
     _OpenTrade,
 )
 from bot.signal_engine import CandleData, Side
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -133,8 +126,9 @@ class TestBarToDt:
         assert _bar_to_dt(0) == _EPOCH
 
     def test_bar_one_is_5m_after_epoch(self) -> None:
-        from bot.backtester import _EPOCH
         from datetime import timedelta
+
+        from bot.backtester import _EPOCH
         assert _bar_to_dt(1) == _EPOCH + timedelta(seconds=300)
 
     def test_large_bar_index_does_not_overflow(self) -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from bot.exchange_formatter import MultiExchangeFormatter, _extract_base
-from bot.signal_engine import CandleData, Confidence, Side, SignalResult
+from bot.signal_engine import Confidence, Side, SignalResult
 
 
 def _make_signal(symbol: str = "BTC", side: Side = Side.LONG) -> SignalResult:

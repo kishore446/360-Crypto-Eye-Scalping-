@@ -3,8 +3,6 @@ Tests for bot/narrative.py — signal narrative generator.
 """
 from __future__ import annotations
 
-import pytest
-
 from bot.narrative import generate_signal_narrative
 
 
