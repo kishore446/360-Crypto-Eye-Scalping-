@@ -186,3 +186,16 @@ class ResilientExchange:
 
 # Module-level singleton — import this in bot.py
 _resilient_exchange = ResilientExchange()
+
+# Spot exchange singleton — uses regular Binance (not binanceusdm)
+_spot_resilient_exchange = ResilientExchange(exchange_id="binance")
+
+
+def fetch_spot_ohlcv(symbol: str, timeframe: str, limit: int = 50) -> list:
+    """Fetch OHLCV candles for a Binance Spot pair (e.g. 'BTC/USDT')."""
+    return _spot_resilient_exchange.fetch_ohlcv(symbol, timeframe, limit)
+
+
+def fetch_spot_ticker(symbol: str) -> dict:
+    """Fetch current 24h ticker data for a Binance Spot pair (e.g. 'BTC/USDT')."""
+    return _spot_resilient_exchange.fetch_ticker(symbol)

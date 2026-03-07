@@ -28,23 +28,18 @@ class TestConfigSyncBlueprintValues:
             f"Expected SESSION_FILTER_ENABLED=True (Blueprint v3), got {config.SESSION_FILTER_ENABLED}"
         )
 
-    def test_auto_scan_pairs_populated(self):
-        """Blueprint specifies pre-populated top 10 liquid pairs."""
+    def test_auto_scan_pairs_empty_by_default(self):
+        """New default: AUTO_SCAN_PAIRS is empty so the bot scans ALL Binance Futures pairs."""
         import config
-        assert len(config.AUTO_SCAN_PAIRS) > 0, (
-            "Expected AUTO_SCAN_PAIRS to be pre-populated with top liquid pairs"
+        assert len(config.AUTO_SCAN_PAIRS) == 0, (
+            f"Expected AUTO_SCAN_PAIRS to be empty (scan all), got {config.AUTO_SCAN_PAIRS}"
         )
-        # Verify the top pairs are present
-        for symbol in ("BTC", "ETH", "SOL"):
-            assert symbol in config.AUTO_SCAN_PAIRS, (
-                f"Expected {symbol} in AUTO_SCAN_PAIRS, got {config.AUTO_SCAN_PAIRS}"
-            )
 
-    def test_auto_scan_pairs_has_10_defaults(self):
-        """Blueprint specifies exactly 10 default pairs when no env var is set."""
+    def test_auto_scan_pairs_is_list(self):
+        """AUTO_SCAN_PAIRS should always be a list (even when empty)."""
         import config
-        assert len(config.AUTO_SCAN_PAIRS) >= 10, (
-            f"Expected at least 10 AUTO_SCAN_PAIRS, got {len(config.AUTO_SCAN_PAIRS)}"
+        assert isinstance(config.AUTO_SCAN_PAIRS, list), (
+            f"Expected AUTO_SCAN_PAIRS to be a list, got {type(config.AUTO_SCAN_PAIRS)}"
         )
 
 
