@@ -24,6 +24,26 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "Side",
+    "Confidence",
+    "CandleData",
+    "SignalResult",
+    "is_discount_zone",
+    "is_premium_zone",
+    "detect_liquidity_sweep",
+    "detect_market_structure_shift",
+    "detect_fair_value_gap",
+    "detect_order_block",
+    "assess_macro_bias",
+    "assess_macro_bias_relaxed",
+    "calculate_atr",
+    "calculate_rsi",
+    "calculate_targets",
+    "run_confluence_check",
+    "run_confluence_check_relaxed",
+]
+
 
 class Side(str, Enum):
     LONG = "LONG"
@@ -185,7 +205,7 @@ def detect_liquidity_sweep(
 def detect_market_structure_shift(
     candles: list[CandleData],
     side: Side,
-    min_displacement_pct: float = 0.0,
+    min_displacement_pct: float = 0.15,
 ) -> bool:
     """
     Detect a 5m Market Structure Shift (MSS) / Change of Character (ChoCh).
@@ -404,6 +424,8 @@ def run_confluence_check(
     tp3_rr: float = 4.0,
     check_fvg: bool = False,
     check_order_block: bool = False,
+    fifteen_min_candles: Optional[list[CandleData]] = None,
+    min_displacement_pct: Optional[float] = None,
 ) -> Optional[SignalResult]:
     """
     Run all four confluence gates and return a :class:`SignalResult` when
@@ -414,11 +436,26 @@ def run_confluence_check(
     ① Macro bias (1D + 4H) aligns with *side*.
     ② Price is in the correct discount / premium zone.
     ③ A liquidity sweep has occurred at *key_liquidity_level*.
-    ④ A 5m MSS / ChoCh with volume is confirmed.
+    ④ A 5m MSS / ChoCh with volume is confirmed (with 0.15% displacement filter).
     ⑤ No high-impact news event is imminent (*news_in_window* is False).
     ⑥ (Optional) Fair Value Gap present.
     ⑦ (Optional) Order Block present.
+
+    Parameters
+    ----------
+    fifteen_min_candles:
+        Optional 15m candles used for FVG / OB scoring per Blueprint §2.1.
+        Falls back to *five_min_candles* when not supplied.
+    min_displacement_pct:
+        Override the displacement filter for Gate ④.  When ``None``, the
+        value from ``config.MIN_DISPLACEMENT_PCT`` (default 0.15) is used.
     """
+    try:
+        from config import MIN_DISPLACEMENT_PCT as _cfg_displacement
+    except ImportError:
+        _cfg_displacement = 0.15
+    effective_displacement = min_displacement_pct if min_displacement_pct is not None else _cfg_displacement
+
     # Gate ⑤ — news blackout
     if news_in_window:
         logger.info("[GATE_FAIL] %s %s: gate=news reason=high_impact_imminent", symbol, side.value)
@@ -446,18 +483,21 @@ def run_confluence_check(
         logger.info("[GATE_FAIL] %s %s: gate=liquidity_sweep reason=no_sweep_detected", symbol, side.value)
         return None
 
-    # Gate ④ — 5m MSS / ChoCh
-    if not detect_market_structure_shift(five_min_candles, side):
+    # Gate ④ — 5m MSS / ChoCh (with displacement filter per Blueprint §2.2)
+    if not detect_market_structure_shift(five_min_candles, side, min_displacement_pct=effective_displacement):
         logger.info("[GATE_FAIL] %s %s: gate=mss reason=no_structure_shift", symbol, side.value)
         return None
 
+    # Candles to use for FVG / OB detection (prefer 15m per Blueprint §2.1)
+    scoring_candles = fifteen_min_candles if fifteen_min_candles else five_min_candles
+
     # Gate ⑥ — optional FVG check
-    if check_fvg and not detect_fair_value_gap(five_min_candles, side):
+    if check_fvg and not detect_fair_value_gap(scoring_candles, side):
         logger.info("[GATE_FAIL] %s %s: gate=fvg reason=no_fvg_detected", symbol, side.value)
         return None
 
     # Gate ⑦ — optional Order Block check
-    if check_order_block and not detect_order_block(five_min_candles, side):
+    if check_order_block and not detect_order_block(scoring_candles, side):
         logger.info("[GATE_FAIL] %s %s: gate=order_block reason=no_ob_detected", symbol, side.value)
         return None
 
@@ -479,8 +519,17 @@ def run_confluence_check(
     else:
         direction_match = False
 
-    fvg_present = detect_fair_value_gap(five_min_candles, side)
-    ob_present = detect_order_block(five_min_candles, side)
+    fvg_present = detect_fair_value_gap(scoring_candles, side)
+    ob_present = detect_order_block(scoring_candles, side)
+
+    # Weighted confluence score (gates that passed earn their points)
+    score = 0
+    score += 20 if macro_bias == side else 0   # Gate ①
+    score += 15                                 # Gate ② (zone — passed above)
+    score += 20                                 # Gate ③ (sweep — passed above)
+    score += 20                                 # Gate ④ (MSS — passed above)
+    score += 10 if fvg_present else 0           # Gate ⑥
+    score += 15 if ob_present else 0            # Gate ⑦
 
     if direction_match and fvg_present and ob_present:
         confidence = Confidence.HIGH
@@ -507,6 +556,7 @@ def run_confluence_check(
         leverage_min=leverage_min,
         leverage_max=leverage_max,
         signal_id=sig_id,
+        confluence_score=score,
     )
 
 
@@ -593,6 +643,8 @@ def run_confluence_check_relaxed(
     news_window_minutes: int = 30,
     sweep_window: int = 10,
     mss_window: int = 10,
+    fifteen_min_candles: Optional[list[CandleData]] = None,
+    min_displacement_pct: Optional[float] = None,
     **kwargs,
 ) -> Optional[SignalResult]:
     """
@@ -617,7 +669,19 @@ def run_confluence_check_relaxed(
     mss_window:
         Number of prior candles used when computing the swing high/low for
         the MSS check.
+    fifteen_min_candles:
+        Optional 15m candles used for FVG / OB scoring per Blueprint §2.1.
+        Falls back to *five_min_candles* when not supplied.
+    min_displacement_pct:
+        Override the displacement filter for Gate ④.  When ``None``, the
+        value from ``config.MIN_DISPLACEMENT_PCT`` (default 0.15) is used.
     """
+    try:
+        from config import MIN_DISPLACEMENT_PCT as _cfg_displacement
+    except ImportError:
+        _cfg_displacement = 0.15
+    effective_displacement = min_displacement_pct if min_displacement_pct is not None else _cfg_displacement
+
     # Gate ⑤ — relaxed news blackout (30-min window instead of 60)
     if news_in_window:
         logger.info(
@@ -665,14 +729,17 @@ def run_confluence_check_relaxed(
         )
         return None
 
-    # Gate ④ — MSS using wider window
+    # Gate ④ — MSS using wider window (with displacement filter per Blueprint §2.2)
     mss_candles = five_min_candles[-(mss_window + 1):] if len(five_min_candles) >= mss_window + 1 else five_min_candles
-    if not detect_market_structure_shift(mss_candles, side):
+    if not detect_market_structure_shift(mss_candles, side, min_displacement_pct=effective_displacement):
         logger.info(
             "[GATE_FAIL][RELAXED] %s %s: gate=mss reason=no_structure_shift",
             symbol, side.value,
         )
         return None
+
+    # Candles to use for FVG / OB scoring (prefer 15m per Blueprint §2.1)
+    scoring_candles = fifteen_min_candles if fifteen_min_candles else five_min_candles
 
     # All gates passed — build signal
     atr = calculate_atr(five_min_candles)
@@ -689,8 +756,17 @@ def run_confluence_check_relaxed(
     else:
         direction_match = False
 
-    fvg_present = detect_fair_value_gap(five_min_candles, side)
-    ob_present = detect_order_block(five_min_candles, side)
+    fvg_present = detect_fair_value_gap(scoring_candles, side)
+    ob_present = detect_order_block(scoring_candles, side)
+
+    # Weighted confluence score
+    score = 0
+    score += 20 if macro_bias == side else 0   # Gate ①
+    score += 15                                 # Gate ② (zone — passed above)
+    score += 20                                 # Gate ③ (sweep — passed above)
+    score += 20                                 # Gate ④ (MSS — passed above)
+    score += 10 if fvg_present else 0           # Gate ⑥
+    score += 15 if ob_present else 0            # Gate ⑦
 
     if direction_match and fvg_present and ob_present:
         confidence = Confidence.HIGH
@@ -717,4 +793,5 @@ def run_confluence_check_relaxed(
         leverage_min=leverage_min,
         leverage_max=leverage_max,
         signal_id=sig_id,
+        confluence_score=score,
     )

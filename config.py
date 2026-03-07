@@ -85,6 +85,7 @@ try:
 
         # ── Confluence Scoring ────────────────────────────────────────────────
         min_confluence_score: int = 0  # 0 = disabled
+        min_displacement_pct: float = 0.15  # Gate ④ displacement filter (§2.2)
 
         # ── News Fail-Safe ────────────────────────────────────────────────────
         news_fail_safe_window_minutes: int = 60
@@ -170,6 +171,7 @@ try:
     FEAR_GREED_INTERVAL_HOURS: int = settings.fear_greed_interval_hours
     DAILY_PERFORMANCE_HOUR: int = settings.daily_performance_hour
     MIN_CONFLUENCE_SCORE: int = settings.min_confluence_score
+    MIN_DISPLACEMENT_PCT: float = settings.min_displacement_pct
     NEWS_FAIL_SAFE_WINDOW_MINUTES: int = settings.news_fail_safe_window_minutes
 
     DASHBOARD_LOG_FILE: str = settings.dashboard_log_file
@@ -244,6 +246,7 @@ except ImportError:
     FEAR_GREED_INTERVAL_HOURS: int = int(os.environ.get("FEAR_GREED_INTERVAL_HOURS", "6"))
     DAILY_PERFORMANCE_HOUR: int = int(os.environ.get("DAILY_PERFORMANCE_HOUR", "23"))
     MIN_CONFLUENCE_SCORE: int = int(os.environ.get("MIN_CONFLUENCE_SCORE", "0"))
+    MIN_DISPLACEMENT_PCT: float = float(os.environ.get("MIN_DISPLACEMENT_PCT", "0.15"))
     NEWS_FAIL_SAFE_WINDOW_MINUTES: int = int(os.environ.get("NEWS_FAIL_SAFE_WINDOW_MINUTES", "60"))
     DASHBOARD_LOG_FILE: str = os.environ.get("DASHBOARD_LOG_FILE", "data/dashboard.json")
     SIGNALS_FILE: str = os.environ.get("SIGNALS_FILE", "data/signals.json")

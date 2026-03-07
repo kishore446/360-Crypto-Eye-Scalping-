@@ -28,6 +28,12 @@ from config import (
     STALE_SIGNAL_HOURS,
 )
 
+__all__ = [
+    "ActiveSignal",
+    "RiskManager",
+    "calculate_position_size",
+]
+
 
 @dataclass
 class ActiveSignal:
@@ -158,11 +164,12 @@ class RiskManager:
         """
         Return True only when the "3-Pair" cap allows a new signal on *side*.
         """
-        count = sum(
-            1
-            for s in self._signals
-            if not s.closed and s.result.side == side
-        )
+        with self._lock:
+            count = sum(
+                1
+                for s in self._signals
+                if not s.closed and s.result.side == side
+            )
         return count < MAX_SAME_SIDE_SIGNALS
 
     def add_signal(self, result: SignalResult) -> ActiveSignal:
@@ -182,7 +189,7 @@ class RiskManager:
         active = ActiveSignal(result=result)
         with self._lock:
             self._signals.append(active)
-        self._save()
+            self._save()
         return active
 
     def update_prices(self, prices: dict[str, float]) -> list[str]:
@@ -194,6 +201,7 @@ class RiskManager:
         """
         messages: list[str] = []
         now = time.time()
+        mutated = False
 
         with self._lock:
             signals_snapshot = list(self._signals)
@@ -207,6 +215,7 @@ class RiskManager:
             # ── stale check ──────────────────────────────────────────────────
             if signal.is_stale(now):
                 signal.close("stale")
+                mutated = True
                 messages.append(
                     f"⚠️ #{sym}/USDT {signal.result.side.value} signal CLOSED "
                     f"(stale — no activity for >{STALE_SIGNAL_HOURS}h)."
@@ -219,10 +228,15 @@ class RiskManager:
             # ── BE trigger ───────────────────────────────────────────────────
             if signal.should_trigger_be(price):
                 signal.trigger_be()
+                mutated = True
                 messages.append(
                     f"🔒 #{sym}/USDT {signal.result.side.value}: "
                     f"Move SL to Entry {signal.entry_mid:.4f} (Risk-Free Mode ON)."
                 )
+
+        if mutated:
+            with self._lock:
+                self._save()
 
         return messages
 

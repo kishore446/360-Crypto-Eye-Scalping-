@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime
 import pytest
 from unittest.mock import patch
-from bot.session_filter import get_current_session, is_active_session
+from bot.session_filter import get_current_session, get_session_confidence_modifier, is_active_session
 
 
 def _utc(hour: int, minute: int = 0) -> datetime.datetime:
@@ -85,3 +85,48 @@ class TestIsActiveSessionFilterDisabled:
         with patch("bot.session_filter.SESSION_FILTER_ENABLED", False):
             for hour in range(24):
                 assert is_active_session(_utc(hour)) is True, f"Hour {hour} should be active"
+
+
+class TestGetSessionConfidenceModifier:
+    """Tests for get_session_confidence_modifier()."""
+
+    def test_overlap_returns_1_0_when_enabled(self):
+        with patch("bot.session_filter.SESSION_FILTER_ENABLED", True):
+            assert get_session_confidence_modifier(_utc(13)) == pytest.approx(1.0)
+
+    def test_london_returns_0_9_when_enabled(self):
+        with patch("bot.session_filter.SESSION_FILTER_ENABLED", True):
+            assert get_session_confidence_modifier(_utc(9)) == pytest.approx(0.9)
+
+    def test_new_york_returns_0_9_when_enabled(self):
+        with patch("bot.session_filter.SESSION_FILTER_ENABLED", True):
+            assert get_session_confidence_modifier(_utc(17)) == pytest.approx(0.9)
+
+    def test_asia_returns_0_7_when_enabled(self):
+        with patch("bot.session_filter.SESSION_FILTER_ENABLED", True):
+            assert get_session_confidence_modifier(_utc(3)) == pytest.approx(0.7)
+
+    def test_off_hours_returns_0_7_when_enabled(self):
+        with patch("bot.session_filter.SESSION_FILTER_ENABLED", True):
+            assert get_session_confidence_modifier(_utc(22)) == pytest.approx(0.7)
+
+    def test_always_returns_1_0_when_filter_disabled(self):
+        with patch("bot.session_filter.SESSION_FILTER_ENABLED", False):
+            for hour in range(24):
+                assert get_session_confidence_modifier(_utc(hour)) == pytest.approx(1.0), (
+                    f"Hour {hour} should return 1.0 when filter disabled"
+                )
+
+    def test_modifier_at_most_1_0(self):
+        """Modifier should never exceed 1.0 regardless of session."""
+        with patch("bot.session_filter.SESSION_FILTER_ENABLED", True):
+            for hour in range(24):
+                mod = get_session_confidence_modifier(_utc(hour))
+                assert mod <= 1.0, f"Hour {hour} returned modifier > 1.0: {mod}"
+
+    def test_modifier_at_least_0_0(self):
+        """Modifier should always be non-negative."""
+        with patch("bot.session_filter.SESSION_FILTER_ENABLED", True):
+            for hour in range(24):
+                mod = get_session_confidence_modifier(_utc(hour))
+                assert mod >= 0.0, f"Hour {hour} returned negative modifier: {mod}"
