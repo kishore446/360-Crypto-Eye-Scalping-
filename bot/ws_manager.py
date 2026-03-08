@@ -46,7 +46,7 @@ _MAX_SYMBOLS_PER_CONN = _MAX_STREAMS_PER_CONN // _STREAMS_PER_SYMBOL  # 50
 
 _BACKOFF_BASE = 1.0   # seconds
 _BACKOFF_MAX = 60.0   # seconds
-_STALE_THRESHOLD = 120.0  # seconds without any message → stream considered unhealthy
+_STALE_THRESHOLD = 60.0  # seconds without any message → stream considered unhealthy
 
 # Candle buffer sizes
 _BUF_5M = 50

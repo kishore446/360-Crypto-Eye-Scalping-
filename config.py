@@ -64,7 +64,7 @@ try:
         coinmarketcal_api_key: str = ""
 
         # ── Session Filter ────────────────────────────────────────────────────
-        session_filter_enabled: bool = True
+        session_filter_enabled: bool = False
         session_filter_ch1_enabled: bool = True   # Hard scalp — session gated
         session_filter_ch2_enabled: bool = True   # Medium scalp — session gated
         session_filter_ch3_enabled: bool = False  # Easy breakout — 24/7

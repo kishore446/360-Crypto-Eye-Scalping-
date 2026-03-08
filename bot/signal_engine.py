@@ -41,6 +41,7 @@ __all__ = [
     "calculate_rsi",
     "calculate_ema",
     "calculate_targets",
+    "calculate_vwap",
     "run_confluence_check",
     "run_confluence_check_relaxed",
 ]
@@ -152,6 +153,36 @@ def _average_volume(candles: list[CandleData]) -> float:
     return sum(c.volume for c in candles) / len(candles)
 
 
+def calculate_vwap(candles: list[CandleData]) -> float:
+    """
+    Compute Volume-Weighted Average Price (VWAP) from intraday candles.
+
+    Uses ``(high + low + close) / 3`` as the typical price for each candle.
+    Returns 0.0 when *candles* is empty or total volume is zero.
+
+    Parameters
+    ----------
+    candles:
+        OHLCV candles (most-recent last).
+
+    Returns
+    -------
+    float
+        VWAP price, or 0.0 when insufficient data.
+    """
+    if not candles:
+        return 0.0
+    total_pv = 0.0
+    total_volume = 0.0
+    for c in candles:
+        typical = (c.high + c.low + c.close) / 3.0
+        total_pv += typical * c.volume
+        total_volume += c.volume
+    if total_volume == 0.0:
+        return 0.0
+    return total_pv / total_volume
+
+
 def calculate_ema(candles: list[CandleData], period: int) -> float:
     """
     Calculate the Exponential Moving Average of closing prices.
@@ -209,7 +240,7 @@ def detect_liquidity_sweep(
         LONG → check for a bearish sweep below key_level (stop-hunt of longs).
         SHORT → check for a bullish sweep above key_level.
     """
-    for candle in candles[-7:]:  # inspect the last seven candles (~35 min)
+    for candle in candles[-15:]:  # inspect the last fifteen candles (~75 min)
         if side == Side.LONG:
             # Wick pierces below the level; body closes above it
             if candle.low < key_level and candle.close > key_level:
@@ -225,6 +256,7 @@ def detect_market_structure_shift(
     candles: list[CandleData],
     side: Side,
     min_displacement_pct: float = 0.15,
+    atr: float = 0.0,
 ) -> bool:
     """
     Detect a 5m Market Structure Shift (MSS) / Change of Character (ChoCh).
@@ -241,8 +273,13 @@ def detect_market_structure_shift(
     side:
         Direction of the anticipated trade.
     min_displacement_pct:
-        Optional minimum displacement from the swing level (as a percentage).
-        When > 0, the break must exceed this percentage move to qualify.
+        Minimum displacement from the swing level as a percentage.
+        When > 0 and *atr* is 0, the break must exceed this percentage move.
+        Ignored when *atr* > 0 (ATR-based threshold takes precedence).
+    atr:
+        When > 0, use an ATR-adaptive displacement threshold of ``0.3 * atr``
+        instead of the fixed percentage.  This avoids over-filtering altcoins
+        with tight price ranges relative to the fixed percentage.
     """
     if len(candles) < 3:
         return False
@@ -255,18 +292,24 @@ def detect_market_structure_shift(
         swing_high = max(c.high for c in prior_candles[-7:])  # last 7 candles ≈ 35 min
         if not (last.close > swing_high and last.volume > avg_vol):
             return False
-        if min_displacement_pct > 0 and swing_high > 0:
-            displacement = abs(last.close - swing_high) / swing_high
-            if displacement < min_displacement_pct / 100:
+        displacement = abs(last.close - swing_high)
+        if atr > 0:
+            if displacement < 0.3 * atr:
+                return False
+        elif min_displacement_pct > 0 and swing_high > 0:
+            if displacement / swing_high < min_displacement_pct / 100:
                 return False
         return True
     else:
         swing_low = min(c.low for c in prior_candles[-7:])  # last 7 candles ≈ 35 min
         if not (last.close < swing_low and last.volume > avg_vol):
             return False
-        if min_displacement_pct > 0 and swing_low > 0:
-            displacement = abs(last.close - swing_low) / swing_low
-            if displacement < min_displacement_pct / 100:
+        displacement = abs(last.close - swing_low)
+        if atr > 0:
+            if displacement < 0.3 * atr:
+                return False
+        elif min_displacement_pct > 0 and swing_low > 0:
+            if displacement / swing_low < min_displacement_pct / 100:
                 return False
         return True
 
@@ -316,6 +359,11 @@ def assess_macro_bias(
     if daily_bullish and four_h_bullish:
         return Side.LONG
     if daily_bearish and four_h_bearish:
+        return Side.SHORT
+    # Allow 1D clear bias when 4H is neutral (not actively conflicting)
+    if daily_bullish and not four_h_bearish:
+        return Side.LONG
+    if daily_bearish and not four_h_bullish:
         return Side.SHORT
     return None  # conflict → no trade
 
@@ -533,14 +581,60 @@ def run_confluence_check(
         _cfg_displacement = 0.15
     effective_displacement = min_displacement_pct if min_displacement_pct is not None else _cfg_displacement
 
+    # Evaluate all gates up front for structured logging and near-miss detection
+    gate_news = not news_in_window
+    macro_bias = assess_macro_bias(daily_candles, four_hour_candles)
+    gate_macro = macro_bias == side
+    if side == Side.LONG:
+        gate_zone = is_discount_zone(current_price, range_low, range_high)
+    else:
+        gate_zone = is_premium_zone(current_price, range_low, range_high)
+    gate_sweep = detect_liquidity_sweep(five_min_candles, key_liquidity_level, side)
+    gate_mss = detect_market_structure_shift(five_min_candles, side, min_displacement_pct=effective_displacement)
+
+    # Candles to use for FVG / OB detection (prefer 15m per Blueprint §2.1)
+    scoring_candles = fifteen_min_candles if fifteen_min_candles else five_min_candles
+    atr = calculate_atr(five_min_candles)
+
+    gate_fvg = detect_fair_value_gap(scoring_candles, side, current_price=current_price) if check_fvg else True
+    gate_ob = detect_order_block(scoring_candles, side, atr=atr) if check_order_block else True
+
+    required_gates = {
+        "news": gate_news,
+        "macro": gate_macro,
+        "zone": gate_zone,
+        "sweep": gate_sweep,
+        "mss": gate_mss,
+    }
+
+    passed_required = sum(1 for v in required_gates.values() if v)
+    total_required = len(required_gates)
+
+    # Structured summary log for every check — enables engine tuning
+    logger.info(
+        "Confluence check: %s %s — gates: news=%s macro=%s zone=%s sweep=%s mss=%s"
+        " fvg=%s ob=%s | passed=%d/%d",
+        symbol, side.value,
+        gate_news, gate_macro, gate_zone, gate_sweep, gate_mss,
+        gate_fvg, gate_ob,
+        passed_required, total_required,
+    )
+
+    # Near-miss warning: all required gates except one passed
+    failed_required = [name for name, v in required_gates.items() if not v]
+    if len(failed_required) == 1:
+        logger.warning(
+            "[NEAR_MISS] %s %s: only gate '%s' failed — consider relaxing for CH2/CH3",
+            symbol, side.value, failed_required[0],
+        )
+
     # Gate ⑤ — news blackout
-    if news_in_window:
+    if not gate_news:
         logger.info("[GATE_FAIL] %s %s: gate=news reason=high_impact_imminent", symbol, side.value)
         return None
 
     # Gate ① — macro bias
-    macro_bias = assess_macro_bias(daily_candles, four_hour_candles)
-    if macro_bias != side:
+    if not gate_macro:
         logger.info(
             "[GATE_FAIL] %s %s: gate=macro_bias reason=conflict bias=%s",
             symbol, side.value, macro_bias.value if macro_bias else "None",
@@ -548,34 +642,30 @@ def run_confluence_check(
         return None
 
     # Gate ② — discount / premium zone
-    if side == Side.LONG and not is_discount_zone(current_price, range_low, range_high):
-        logger.info("[GATE_FAIL] %s %s: gate=zone reason=price_not_in_discount", symbol, side.value)
-        return None
-    if side == Side.SHORT and not is_premium_zone(current_price, range_low, range_high):
-        logger.info("[GATE_FAIL] %s %s: gate=zone reason=price_not_in_premium", symbol, side.value)
+    if not gate_zone:
+        if side == Side.LONG:
+            logger.info("[GATE_FAIL] %s %s: gate=zone reason=price_not_in_discount", symbol, side.value)
+        else:
+            logger.info("[GATE_FAIL] %s %s: gate=zone reason=price_not_in_premium", symbol, side.value)
         return None
 
     # Gate ③ — liquidity sweep
-    if not detect_liquidity_sweep(five_min_candles, key_liquidity_level, side):
+    if not gate_sweep:
         logger.info("[GATE_FAIL] %s %s: gate=liquidity_sweep reason=no_sweep_detected", symbol, side.value)
         return None
 
     # Gate ④ — 5m MSS / ChoCh (with displacement filter per Blueprint §2.2)
-    if not detect_market_structure_shift(five_min_candles, side, min_displacement_pct=effective_displacement):
+    if not gate_mss:
         logger.info("[GATE_FAIL] %s %s: gate=mss reason=no_structure_shift", symbol, side.value)
         return None
 
-    # Candles to use for FVG / OB detection (prefer 15m per Blueprint §2.1)
-    scoring_candles = fifteen_min_candles if fifteen_min_candles else five_min_candles
-
     # Gate ⑥ — optional FVG check (pass current_price to verify gap is unfilled)
-    if check_fvg and not detect_fair_value_gap(scoring_candles, side, current_price=current_price):
+    if check_fvg and not gate_fvg:
         logger.info("[GATE_FAIL] %s %s: gate=fvg reason=no_fvg_detected", symbol, side.value)
         return None
 
     # Gate ⑦ — optional Order Block check (pass ATR for displacement verification)
-    atr = calculate_atr(five_min_candles)
-    if check_order_block and not detect_order_block(scoring_candles, side, atr=atr):
+    if check_order_block and not gate_ob:
         logger.info("[GATE_FAIL] %s %s: gate=order_block reason=no_ob_detected", symbol, side.value)
         return None
 

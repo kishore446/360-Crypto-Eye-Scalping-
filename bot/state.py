@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 try:
     from config import AUTO_SCAN_ENABLED_ON_BOOT as _AUTO_SCAN_ENABLED_ON_BOOT
@@ -24,6 +25,7 @@ class BotState:
                     inst._trail_active = False
                     inst._auto_scan_active = bool(_AUTO_SCAN_ENABLED_ON_BOOT)
                     inst._market_regime = "UNKNOWN"
+                    inst._last_signal_generated_at: float = 0.0
                     cls._instance = inst
         return cls._instance
 
@@ -70,3 +72,21 @@ class BotState:
             raise ValueError(f"market_regime must be one of {valid}, got {value!r}")
         with self._state_lock:
             self._market_regime = value
+
+    @property
+    def last_signal_generated_at(self) -> float:
+        """Unix timestamp of the most recently generated signal (0.0 if none yet)."""
+        with self._state_lock:
+            return self._last_signal_generated_at
+
+    def record_signal_generated(self) -> None:
+        """Update last_signal_generated_at to the current time."""
+        with self._state_lock:
+            self._last_signal_generated_at = time.time()
+
+    def seconds_since_last_signal(self) -> float:
+        """Return seconds elapsed since the last signal was generated (or inf if none)."""
+        with self._state_lock:
+            if self._last_signal_generated_at == 0.0:
+                return float("inf")
+            return time.time() - self._last_signal_generated_at
