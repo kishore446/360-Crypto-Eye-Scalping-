@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-import requests
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -47,13 +47,13 @@ def fetch_fear_greed_index() -> Optional[dict]:
     Returns None on any error.
     """
     try:
-        resp = requests.get(
-            _API_URL,
-            params={"limit": 7, "format": "json"},
-            timeout=_TIMEOUT,
-        )
-        resp.raise_for_status()
-        body = resp.json().get("data", [])
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            resp = client.get(
+                _API_URL,
+                params={"limit": 7, "format": "json"},
+            )
+            resp.raise_for_status()
+            body = resp.json().get("data", [])
         if not body:
             return None
 
@@ -70,7 +70,7 @@ def fetch_fear_greed_index() -> Optional[dict]:
             result["last_week"] = _parse(body[6])
         return result
 
-    except (requests.RequestException, KeyError, TypeError, ValueError) as exc:
+    except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
         logger.warning("Failed to fetch Fear & Greed index: %s", exc)
         return None
 

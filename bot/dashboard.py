@@ -376,3 +376,32 @@ class Dashboard:
             lines.append("")
 
         return "\n".join(lines).rstrip()
+
+    def check_drawdown_halt(self, threshold_pct: float = -15.0) -> bool:
+        """
+        Return True if cumulative PnL has fallen far enough below its peak to
+        trigger a drawdown halt.
+
+        When this returns True, the caller should suspend signal generation
+        until the drawdown recovers above the threshold.
+
+        Parameters
+        ----------
+        threshold_pct:
+            Drawdown percentage at which trading is halted.  Defaults to
+            ``-15.0`` (i.e. a 15 % decline from the equity-curve peak).
+
+        Returns
+        -------
+        bool
+            ``True`` when the current drawdown is at or below *threshold_pct*.
+        """
+        equity_curve = self.equity_curve()
+        if not equity_curve:
+            return False
+        peak = max(equity_curve)
+        current = equity_curve[-1]
+        if peak == 0.0:
+            return False
+        drawdown_pct = (current - peak) / abs(peak) * 100
+        return drawdown_pct <= threshold_pct

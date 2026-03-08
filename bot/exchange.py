@@ -78,12 +78,20 @@ class ResilientExchange:
     def _cache_key(self, symbol: str, timeframe: str) -> str:
         return f"{symbol}:{timeframe}"
 
+    def _evict_expired_cache(self) -> None:
+        """Remove all expired entries from the cache to prevent unbounded memory growth."""
+        now = time.time()
+        expired = [k for k, (exp, _) in self._cache.items() if now >= exp]
+        for k in expired:
+            del self._cache[k]
+
     def _get_cached(self, symbol: str, timeframe: str) -> Optional[Any]:
         key = self._cache_key(symbol, timeframe)
         if key in self._cache:
             expires_at, data = self._cache[key]
             if time.time() < expires_at:
                 return data
+        self._evict_expired_cache()
         return None
 
     def _set_cached(self, symbol: str, timeframe: str, data: Any) -> None:
@@ -100,6 +108,16 @@ class ResilientExchange:
         return _RETRY_BASE_SECONDS * (2 ** (attempt - 1)) + random.uniform(0, 1)
 
     def _fetch_with_retry(self, symbol: str, timeframe: str, limit: int = 50) -> list:
+        """
+        Fetch OHLCV candles with exponential-backoff retries.
+
+        .. note::
+            This method uses blocking ``time.sleep()`` for retry delays.  It
+            **must not** be called directly from an async event-loop coroutine.
+            Always invoke it from a thread-pool worker (e.g. via
+            ``asyncio.get_event_loop().run_in_executor(None, ...)``) when used
+            in an async context.
+        """
         self._check_circuit()
 
         for attempt in range(1, _RETRY_COUNT + 1):

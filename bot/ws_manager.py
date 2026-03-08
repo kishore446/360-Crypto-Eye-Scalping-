@@ -51,7 +51,7 @@ _STALE_THRESHOLD = 120.0  # seconds without any message → stream considered un
 # Candle buffer sizes
 _BUF_5M = 50
 _BUF_4H = 30
-_BUF_1D = 30
+_BUF_1D = 210  # 210 candles required for the 200-day SMA in the regime detector
 _BUF_15M = 50
 _BUF_1H = 50  # for spot market 1h candles
 

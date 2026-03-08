@@ -70,7 +70,7 @@ class TestFormatFearGreedMessage:
 
 
 class TestFetchFearGreedIndex:
-    """Network-layer tests using mocked requests."""
+    """Network-layer tests using mocked httpx."""
 
     def _mock_response(self, body: list) -> MagicMock:
         mock_resp = MagicMock()
@@ -78,9 +78,18 @@ class TestFetchFearGreedIndex:
         mock_resp.raise_for_status.return_value = None
         return mock_resp
 
+    def _patch_httpx(self, body: list):
+        """Context manager that patches httpx.Client to return a mock response."""
+        mock_resp = self._mock_response(body)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.get.return_value = mock_resp
+        return patch("bot.insights.fear_greed.httpx.Client", return_value=mock_client)
+
     def test_returns_current_score(self):
         body = [{"value": "72", "value_classification": "Greed"}]
-        with patch("bot.insights.fear_greed.requests.get", return_value=self._mock_response(body)):
+        with self._patch_httpx(body):
             result = fetch_fear_greed_index()
         assert result is not None
         assert result["current"]["value"] == 72
@@ -91,24 +100,24 @@ class TestFetchFearGreedIndex:
             {"value": "72", "value_classification": "Greed"},
             {"value": "68", "value_classification": "Greed"},
         ]
-        with patch("bot.insights.fear_greed.requests.get", return_value=self._mock_response(body)):
+        with self._patch_httpx(body):
             result = fetch_fear_greed_index()
         assert "yesterday" in result
         assert result["yesterday"]["value"] == 68
 
     def test_returns_last_week_when_7_entries(self):
         body = [{"value": str(i * 10), "value_classification": "Greed"} for i in range(1, 8)]
-        with patch("bot.insights.fear_greed.requests.get", return_value=self._mock_response(body)):
+        with self._patch_httpx(body):
             result = fetch_fear_greed_index()
         assert "last_week" in result
 
     def test_returns_none_on_request_error(self):
-        import requests as req_lib
-        with patch("bot.insights.fear_greed.requests.get", side_effect=req_lib.RequestException("err")):
+        import httpx as httpx_lib
+        with patch("bot.insights.fear_greed.httpx.Client", side_effect=httpx_lib.HTTPError("err")):
             result = fetch_fear_greed_index()
         assert result is None
 
     def test_returns_none_on_empty_body(self):
-        with patch("bot.insights.fear_greed.requests.get", return_value=self._mock_response([])):
+        with self._patch_httpx([]):
             result = fetch_fear_greed_index()
         assert result is None

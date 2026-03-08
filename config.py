@@ -5,6 +5,7 @@ Validated via Pydantic Settings. All secrets must be supplied via environment va
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 try:
     from pydantic import field_validator
@@ -172,6 +173,13 @@ try:
         def token_not_placeholder(cls, v: str) -> str:
             if v in ("YOUR_TOKEN_HERE", "PLACEHOLDER"):
                 raise ValueError("TELEGRAM_BOT_TOKEN must not be a placeholder value.")
+            return v
+
+        @field_validator("webhook_secret")
+        @classmethod
+        def webhook_secret_min_length(cls, v: str) -> str:
+            if v and len(v) < 32:
+                raise ValueError("WEBHOOK_SECRET must be at least 32 characters.")
             return v
 
     settings = Settings()
@@ -385,4 +393,8 @@ except ImportError:
     CORRELATION_MAX_SAME_GROUP: int = int(os.environ.get("CORRELATION_MAX_SAME_GROUP", "3"))
     DB_ARCHIVE_DAYS: int = int(os.environ.get("DB_ARCHIVE_DAYS", "90"))
     TIMEFRAMES: dict[str, int] = {"1D": 1440, "4H": 240, "15m": 15, "5m": 5}
+
+# Ensure the data directory exists so that dashboard.json, signals.json,
+# and 360eye.db can be created on first run without raising FileNotFoundError.
+Path("data").mkdir(exist_ok=True)
 

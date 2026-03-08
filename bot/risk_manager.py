@@ -137,6 +137,8 @@ class RiskManager:
                     context_note=r["context_note"],
                     leverage_min=r["leverage_min"],
                     leverage_max=r["leverage_max"],
+                    signal_id=r.get("signal_id", ""),
+                    confluence_score=r.get("confluence_score", 0),
                 )
                 signals.append(
                     ActiveSignal(
@@ -253,38 +255,35 @@ class RiskManager:
         mutated = False
 
         with self._lock:
-            signals_snapshot = list(self._signals)
+            for signal in self._signals:
+                if signal.closed:
+                    continue
+                sym = signal.result.symbol
+                price = prices.get(sym)
 
-        for signal in signals_snapshot:
-            if signal.closed:
-                continue
-            sym = signal.result.symbol
-            price = prices.get(sym)
+                # ── stale check ──────────────────────────────────────────────────
+                if signal.is_stale(now):
+                    signal.close("stale")
+                    mutated = True
+                    messages.append(
+                        f"⚠️ #{sym}/USDT {signal.result.side.value} signal CLOSED "
+                        f"(stale — no activity for >{STALE_SIGNAL_HOURS}h)."
+                    )
+                    continue
 
-            # ── stale check ──────────────────────────────────────────────────
-            if signal.is_stale(now):
-                signal.close("stale")
-                mutated = True
-                messages.append(
-                    f"⚠️ #{sym}/USDT {signal.result.side.value} signal CLOSED "
-                    f"(stale — no activity for >{STALE_SIGNAL_HOURS}h)."
-                )
-                continue
+                if price is None:
+                    continue
 
-            if price is None:
-                continue
+                # ── BE trigger ───────────────────────────────────────────────────
+                if signal.should_trigger_be(price):
+                    signal.trigger_be()
+                    mutated = True
+                    messages.append(
+                        f"🔒 #{sym}/USDT {signal.result.side.value}: "
+                        f"Move SL to Entry {signal.entry_mid:.4f} (Risk-Free Mode ON)."
+                    )
 
-            # ── BE trigger ───────────────────────────────────────────────────
-            if signal.should_trigger_be(price):
-                signal.trigger_be()
-                mutated = True
-                messages.append(
-                    f"🔒 #{sym}/USDT {signal.result.side.value}: "
-                    f"Move SL to Entry {signal.entry_mid:.4f} (Risk-Free Mode ON)."
-                )
-
-        if mutated:
-            with self._lock:
+            if mutated:
                 self._save()
 
         return messages

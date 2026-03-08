@@ -8,7 +8,7 @@ Produces a weekly BTC analysis post covering:
 """
 from __future__ import annotations
 
-from bot.signal_engine import CandleData, _calculate_ema
+from bot.signal_engine import CandleData, calculate_ema
 
 
 def format_weekly_briefing(
@@ -48,7 +48,7 @@ def format_weekly_briefing(
     # Bias from EMA-9 vs SMA-20 on daily
     if len(daily_candles) >= 20:
         sma20 = sum(c.close for c in daily_candles[-20:]) / 20
-        ema9 = _calculate_ema(daily_candles, period=9)
+        ema9 = calculate_ema(daily_candles, period=9)
         if current_price > sma20 and current_price > ema9:
             bias = "BULLISH"
             scenario = (
