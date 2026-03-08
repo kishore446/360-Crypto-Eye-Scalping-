@@ -37,7 +37,7 @@ class CooldownManager:
     """
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._consecutive_losses: int = 0
         self._cooldown_active: bool = False
         self._cooldown_signals_remaining: int = 0
@@ -109,8 +109,12 @@ class CooldownManager:
 
     def get_risk_modifier(self) -> float:
         """Return position size multiplier (0.5 during cooldown, 1.0 normal)."""
-        return 0.5 if self.is_cooldown_active() else 1.0
+        with self._lock:
+            self._check_time_reset()
+            return 0.5 if self._cooldown_active else 1.0
 
     def should_suppress_low_confidence(self) -> bool:
         """Return True if LOW confidence signals should be suppressed during cooldown."""
-        return self.is_cooldown_active()
+        with self._lock:
+            self._check_time_reset()
+            return self._cooldown_active

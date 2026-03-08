@@ -60,8 +60,10 @@ class TestGeneratePostmortem:
         gates = ["zone", "sweep", "mss"]
         trade = _make_trade()
         msg = generate_postmortem(trade, gates, regime="BULL", session="LONDON")
-        # Should contain gate circle symbols
-        assert "②" in msg or "③" in msg or "④" in msg
+        # zone=②, sweep=③, mss=④
+        assert "②" in msg
+        assert "③" in msg
+        assert "④" in msg
 
     def test_gates_count_displayed(self):
         gates = ["zone", "sweep", "mss", "confluence_score", "funding_rate", "open_interest"]
