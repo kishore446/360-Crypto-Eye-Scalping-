@@ -121,6 +121,30 @@ class Dashboard:
         wins = sum(1 for r in closed if r.outcome == "WIN")
         return round(wins / len(closed) * 100, 2)
 
+    def protected_win_rate(self, timeframe: Optional[str] = None) -> float:
+        """
+        Return the *protected* win-rate counting BE (breakeven) outcomes as wins.
+
+        Rationale: When TP1 is hit and 50% is closed, position is moved to
+        breakeven.  The trader protected capital and took partial profit, so BE
+        is counted as a "protected win" rather than a loss.
+
+        Parameters
+        ----------
+        timeframe:
+            Filter by timeframe bucket ("5m", "15m", "1h").
+            When None all closed trades are included.
+        """
+        closed = [
+            r for r in self._results
+            if r.outcome in ("WIN", "LOSS", "BE")
+            and (timeframe is None or r.timeframe == timeframe)
+        ]
+        if not closed:
+            return 0.0
+        protected_wins = sum(1 for r in closed if r.outcome in ("WIN", "BE"))
+        return round(protected_wins / len(closed) * 100, 2)
+
     def profit_factor(self) -> float:
         """
         Return the Profit Factor = Gross Profit / Gross Loss.
@@ -133,9 +157,57 @@ class Dashboard:
             return 0.0
         return round(gross_profit / gross_loss, 4)
 
+    def avg_risk_reward(self) -> float:
+        """
+        Return the average realised R:R across all closed trades.
+
+        R is calculated as ``|pnl_pct| / |entry_to_sl_pct|`` for each trade,
+        where ``entry_to_sl_pct = abs(entry_price - stop_loss) / entry_price * 100``.
+
+        Returns 0.0 when there are no qualifying closed trades.
+        """
+        rr_values: list[float] = []
+        for r in self._results:
+            if r.outcome not in ("WIN", "LOSS", "BE"):
+                continue
+            if r.entry_price <= 0 or r.stop_loss <= 0:
+                continue
+            sl_dist_pct = abs(r.entry_price - r.stop_loss) / r.entry_price * 100
+            if sl_dist_pct == 0:
+                continue
+            rr = abs(r.pnl_pct) / sl_dist_pct
+            rr_values.append(rr)
+        if not rr_values:
+            return 0.0
+        return round(sum(rr_values) / len(rr_values), 4)
+
     def current_open_pnl(self) -> float:
         """Return the aggregate floating PnL % across all OPEN signals."""
         return round(sum(r.pnl_pct for r in self._results if r.outcome == "OPEN"), 4)
+
+    def win_rate_rolling(self, days: int = 7) -> float:
+        """
+        Return the win-rate for closed trades within the last *days* days.
+
+        Parameters
+        ----------
+        days:
+            Rolling lookback window in days (e.g. 7 for weekly, 30 for monthly).
+
+        Returns
+        -------
+        float
+            Win-rate as a percentage (0–100), or 0.0 when no trades in window.
+        """
+        cutoff = time.time() - days * 86400
+        closed = [
+            r for r in self._results
+            if r.outcome in ("WIN", "LOSS", "BE") and r.opened_at >= cutoff
+        ]
+        if not closed:
+            return 0.0
+        wins = sum(1 for r in closed if r.outcome == "WIN")
+        return round(wins / len(closed) * 100, 2)
 
     def total_trades(self) -> int:
         return len([r for r in self._results if r.outcome != "OPEN"])
@@ -264,10 +336,12 @@ class Dashboard:
             "📊 360 EYE SCALP — LIVE DASHBOARD",
             "─────────────────────────────────",
             f"Total Closed Trades : {self.total_trades()}",
-            f"Win Rate (All)       : {self.win_rate():.2f}%",
+            f"Win Rate (strict)    : {self.win_rate():.2f}%",
+            f"Win Rate (protected) : {self.protected_win_rate():.2f}%  (BE counted as win)",
             f"  → 5m entries       : {self.win_rate('5m'):.2f}%",
             f"  → 15m entries      : {self.win_rate('15m'):.2f}%",
             f"  → 1h entries       : {self.win_rate('1h'):.2f}%",
+            f"Avg R:R Realised     : {self.avg_risk_reward():.2f}R",
             f"Profit Factor        : {self.profit_factor():.2f}",
             f"Sharpe Ratio         : {sharpe:.4f}",
             f"Max Drawdown         : {drawdown:.2f}%",

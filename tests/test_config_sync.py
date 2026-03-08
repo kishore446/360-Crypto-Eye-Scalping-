@@ -22,10 +22,10 @@ class TestConfigSyncBlueprintValues:
         )
 
     def test_session_filter_enabled_by_default(self):
-        """Blueprint v3 enables session filter by default for CH1/CH2."""
+        """README documents SESSION_FILTER_ENABLED default as false (24/7 scanning)."""
         import config
-        assert config.SESSION_FILTER_ENABLED is True, (
-            f"Expected SESSION_FILTER_ENABLED=True (Blueprint v3), got {config.SESSION_FILTER_ENABLED}"
+        assert config.SESSION_FILTER_ENABLED is False, (
+            f"Expected SESSION_FILTER_ENABLED=False (README default, 24/7 scanning), got {config.SESSION_FILTER_ENABLED}"
         )
 
     def test_auto_scan_pairs_empty_by_default(self):

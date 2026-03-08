@@ -121,3 +121,38 @@ class TestBotStateThreadSafety:
             t.join()
 
         assert all(isinstance(v, bool) for v in results)
+
+
+class TestBotStateDeadManSwitch:
+    """Tests for BotState last_signal_generated_at and related helpers."""
+
+    def setup_method(self):
+        _reset_singleton()
+
+    def teardown_method(self):
+        _reset_singleton()
+
+    def test_initial_last_signal_generated_at_is_zero(self):
+        state = BotState()
+        assert state.last_signal_generated_at == 0.0
+
+    def test_seconds_since_last_signal_is_inf_when_never_generated(self):
+        state = BotState()
+        assert state.seconds_since_last_signal() == float("inf")
+
+    def test_record_signal_generated_updates_timestamp(self):
+        import time
+        state = BotState()
+        before = time.time()
+        state.record_signal_generated()
+        after = time.time()
+        assert before <= state.last_signal_generated_at <= after
+
+    def test_seconds_since_last_signal_is_positive_after_recording(self):
+        import time
+        state = BotState()
+        state.record_signal_generated()
+        time.sleep(0.01)
+        elapsed = state.seconds_since_last_signal()
+        assert elapsed >= 0
+        assert elapsed < 5  # should be near-instantaneous
