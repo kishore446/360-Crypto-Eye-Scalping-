@@ -454,8 +454,22 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     auto_scan_label = "ACTIVE ✅" if _bot_state.auto_scan_active else "INACTIVE ❌"
     ws_mode = " (WebSocket mode)" if ws_manager.is_healthy() else " (fallback polling)"
-    trail_label = "ACTIVE ✅" if _bot_state.trail_active else "INACTIVE ❌"
     news_label = "ACTIVE ✅" if _bot_state.news_freeze else "INACTIVE ❌"
+
+    # ── Trailing SL label (Bug 4) ─────────────────────────────────────────────
+    trail_label = "ACTIVE ✅" if _bot_state.trail_active else "INACTIVE ❌"
+    signals_with_trail = 0
+    for sig in risk_manager.active_signals:
+        sig_state = signal_tracker._state.get(
+            getattr(sig.result, "signal_id", ""), {}
+        )
+        if sig_state.get("trailing_stop_loss") is not None:
+            signals_with_trail += 1
+    if signals_with_trail > 0:
+        trail_label += (
+            f" ({signals_with_trail} signal"
+            f"{'s' if signals_with_trail != 1 else ''} trailing)"
+        )
 
     ws_conn = "Connected ✅" if ws_manager.is_connected else "Disconnected ❌"
     if ws_manager.last_message_at > 0.0:
@@ -466,6 +480,54 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     hours, rem = divmod(uptime_secs, 3600)
     minutes, _ = divmod(rem, 60)
 
+    # ── Per-channel active signal breakdown (Bug 2) ───────────────────────────
+    active_sigs = risk_manager.active_signals
+    total_active = len(active_sigs)
+    channel_counts: dict[str, int] = {"Hard": 0, "Medium": 0, "Easy": 0, "Spot": 0, "Other": 0}
+    for sig in active_sigs:
+        ch = sig.origin_channel
+        if ch and ch == signal_router.get_channel_id(ChannelTier.HARD):
+            channel_counts["Hard"] += 1
+        elif ch and ch == signal_router.get_channel_id(ChannelTier.MEDIUM):
+            channel_counts["Medium"] += 1
+        elif ch and ch == signal_router.get_channel_id(ChannelTier.EASY):
+            channel_counts["Easy"] += 1
+        elif ch and ch == signal_router.get_channel_id(ChannelTier.SPOT):
+            channel_counts["Spot"] += 1
+        else:
+            channel_counts["Other"] += 1
+    active_breakdown = (
+        f"  🔴 Hard: {channel_counts['Hard']} | "
+        f"🟡 Medium: {channel_counts['Medium']} | "
+        f"🔵 Easy: {channel_counts['Easy']} | "
+        f"💎 Spot: {channel_counts['Spot']}"
+    )
+
+    # ── Performance stats (Bug 3) ─────────────────────────────────────────────
+    total_closed = dashboard.total_trades()
+    perf_section = ""
+    if total_closed > 0:
+        win_rate_all = dashboard.win_rate()
+        pf = dashboard.profit_factor()
+        perf_section = (
+            f"\n📊 *Performance:*\n"
+            f"  Total Closed: {total_closed}\n"
+            f"  Win Rate: {win_rate_all:.1f}%\n"
+            f"  Profit Factor: {pf:.2f}\n"
+        )
+        ch_stats = dashboard.per_channel_stats()
+        for tier_key, label in [
+            ("CH1_HARD", "Hard"),
+            ("CH2_MEDIUM", "Medium"),
+            ("CH3_EASY", "Easy"),
+            ("CH4_SPOT", "Spot"),
+        ]:
+            s = ch_stats.get(tier_key, {})
+            if s.get("total_signals", 0) > 0:
+                perf_section += (
+                    f"  {label}: {s['win_rate']:.1f}% ({s['total_signals']} signals)\n"
+                )
+
     msg = (
         "📊 *360 Crypto Eye — Status Dashboard*\n\n"
         f"🔍 Auto-Scanner: {auto_scan_label}{ws_mode}\n"
@@ -473,9 +535,11 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"⚠️ News Caution: {news_label}\n"
         f"📡 WebSocket: {ws_conn}\n"
         f"📋 Scan Pairs: {len(_dynamic_pairs)} loaded\n"
-        f"📌 Active Signals: {len(risk_manager.active_signals)} open\n"
+        f"📌 Active Signals: {total_active} open\n"
+        f"{active_breakdown}\n"
         f"🌍 Market Regime: {_bot_state.market_regime}\n"
-        f"🕐 Uptime: {hours}h {minutes}m\n\n"
+        f"🕐 Uptime: {hours}h {minutes}m\n"
+        f"{perf_section}\n"
         f"📢 Channel IDs:\n"
         f"  CH1 Hard:    {signal_router.get_channel_id(ChannelTier.HARD) or 'not set'}\n"
         f"  CH2 Medium:  {signal_router.get_channel_id(ChannelTier.MEDIUM) or 'not set'}\n"
@@ -878,6 +942,9 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                     )
                 )
                 logger.info("Auto-triggered BE on TP1 hit: %s", base_symbol)
+                if not _bot_state.trail_active:
+                    _bot_state.trail_active = True
+                    logger.info("Auto-enabled trailing SL after TP1 hit: %s", base_symbol)
 
     if active_for_symbol:
         # Symbol already has an active signal — skip new signal generation.
