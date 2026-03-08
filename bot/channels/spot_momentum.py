@@ -20,6 +20,7 @@ from bot.signal_engine import (
     CandleData,
     calculate_rsi,
 )
+from bot.price_fmt import fmt_price
 
 try:
     from config import CH4_ACCUMULATION_THRESHOLD as _ACCUM_THRESHOLD
@@ -42,16 +43,16 @@ class SpotSignalResult:
 
     def format_message(self) -> str:
         """Return the CH4 🎯 SPOT SETUP Telegram message."""
-        entry_range = f"{self.entry_low:.4f} – {self.entry_high:.4f}"
+        entry_range = f"{fmt_price(self.entry_low)} – {fmt_price(self.entry_high)}"
         return (
             f"🎯 SPOT SETUP — #{self.symbol}/USDT\n"
             f"Signal Type: SPOT ONLY — No Leverage\n\n"
             f"📊 Entry Zone: {entry_range}\n\n"
             f"🎯 Targets:\n"
-            f"- TP 1: {self.tp1:.4f} (+15%)\n"
-            f"- TP 2: {self.tp2:.4f} (+30%)\n"
-            f"- TP 3: {self.tp3:.4f} (+50%)\n\n"
-            f"🛑 Stop Loss: {self.stop_loss:.4f} (below accumulation low)\n\n"
+            f"- TP 1: {fmt_price(self.tp1)} (+15%)\n"
+            f"- TP 2: {fmt_price(self.tp2)} (+30%)\n"
+            f"- TP 3: {fmt_price(self.tp3)} (+50%)\n\n"
+            f"🛑 Stop Loss: {fmt_price(self.stop_loss)} (below accumulation low)\n\n"
             f"⏳ Holding Time: Days to weeks\n"
             f"⚠️ SPOT ONLY — No Leverage"
         )

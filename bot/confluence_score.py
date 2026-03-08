@@ -12,6 +12,7 @@ from bot.signal_engine import (
     CandleData,
     Side,
     assess_macro_bias,
+    assess_macro_bias_relaxed,
     detect_fair_value_gap,
     detect_liquidity_sweep,
     detect_market_structure_shift,
@@ -79,11 +80,21 @@ def build_confluence_factors(
     daily_candles: list[CandleData],
     four_hour_candles: list[CandleData],
     session_active: bool = True,
+    relaxed: bool = False,
 ) -> ConfluenceFactors:
     """
     Evaluate all confluence factors and return a ConfluenceFactors instance.
+
+    Parameters
+    ----------
+    relaxed:
+        When ``True``, evaluate macro bias using only 4H candles (suitable for
+        CH2/CH3 signals that do not require full 1D+4H alignment).
     """
-    macro_bias = assess_macro_bias(daily_candles, four_hour_candles)
+    if relaxed:
+        macro_bias = assess_macro_bias_relaxed(four_hour_candles)
+    else:
+        macro_bias = assess_macro_bias(daily_candles, four_hour_candles)
     macro_aligned = macro_bias == side
 
     if side == Side.LONG:

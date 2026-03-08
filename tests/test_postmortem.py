@@ -37,8 +37,7 @@ def _make_trade(
 class TestGeneratePostmortem:
     def test_basic_win_output(self):
         trade = _make_trade(outcome="WIN", pnl_pct=3.2)
-        gates = ["discount_zone", "liquidity_sweep", "market_structure_shift",
-                 "confluence_score", "funding_rate", "open_interest"]
+        gates = ["zone", "sweep", "mss", "confluence_score", "funding_rate", "open_interest"]
         msg = generate_postmortem(trade, gates, regime="BULL", session="London+NYC Overlap")
         assert "POST-MORTEM" in msg
         assert "BTC" in msg
@@ -54,19 +53,18 @@ class TestGeneratePostmortem:
 
     def test_break_even_output(self):
         trade = _make_trade(outcome="BE", pnl_pct=0.0)
-        msg = generate_postmortem(trade, ["discount_zone"], regime="RANGING", session="LONDON")
+        msg = generate_postmortem(trade, ["zone"], regime="RANGING", session="LONDON")
         assert "BREAK-EVEN" in msg
 
     def test_gates_fired_symbols(self):
-        gates = ["discount_zone", "liquidity_sweep", "market_structure_shift"]
+        gates = ["zone", "sweep", "mss"]
         trade = _make_trade()
         msg = generate_postmortem(trade, gates, regime="BULL", session="LONDON")
         # Should contain gate circle symbols
-        assert "①" in msg or "②" in msg
+        assert "②" in msg or "③" in msg or "④" in msg
 
     def test_gates_count_displayed(self):
-        gates = ["discount_zone", "liquidity_sweep", "market_structure_shift",
-                 "confluence_score", "funding_rate", "open_interest"]
+        gates = ["zone", "sweep", "mss", "confluence_score", "funding_rate", "open_interest"]
         trade = _make_trade()
         msg = generate_postmortem(trade, gates, regime="BULL", session="LONDON")
         assert "6/7" in msg
@@ -101,12 +99,12 @@ class TestGeneratePostmortem:
     def test_confluence_score_estimated_from_gates(self):
         """When no confluence_score attribute, it should be estimated from gates."""
         trade = _make_trade()
-        gates = ["discount_zone", "liquidity_sweep", "market_structure_shift",
+        gates = ["zone", "sweep", "mss",
                  "confluence_score", "funding_rate", "open_interest", "session_filter"]
         msg = generate_postmortem(trade, gates, regime="BULL", session="LONDON")
         assert "100/100" in msg or "/100" in msg
 
     def test_short_signal(self):
         trade = _make_trade(side="SHORT", outcome="WIN", pnl_pct=2.0)
-        msg = generate_postmortem(trade, ["discount_zone"], regime="BEAR", session="NYC")
+        msg = generate_postmortem(trade, ["zone"], regime="BEAR", session="NYC")
         assert "SHORT" in msg

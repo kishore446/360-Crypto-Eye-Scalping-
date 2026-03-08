@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from bot.price_fmt import fmt_price
+
 if TYPE_CHECKING:
     from bot.signal_engine import SignalResult
 
@@ -65,11 +67,11 @@ class MultiExchangeFormatter:
             f"  Binance: `{binance_pair}`\n"
             f"  Bybit:   `{bybit_pair}`\n"
             f"  OKX:     `{okx_pair}`\n\n"
-            f"📍 *Entry Zone:* {signal.entry_low:,.4f} – {signal.entry_high:,.4f}\n"
-            f"🎯 *TP1:* {signal.tp1:,.4f}\n"
-            f"🎯 *TP2:* {signal.tp2:,.4f}\n"
-            f"🎯 *TP3:* {signal.tp3:,.4f}\n"
-            f"🛑 *SL:*  {signal.stop_loss:,.4f}\n\n"
+            f"📍 *Entry Zone:* {fmt_price(signal.entry_low)} – {fmt_price(signal.entry_high)}\n"
+            f"🎯 *TP1:* {fmt_price(signal.tp1)}\n"
+            f"🎯 *TP2:* {fmt_price(signal.tp2)}\n"
+            f"🎯 *TP3:* {fmt_price(signal.tp3)}\n"
+            f"🛑 *SL:*  {fmt_price(signal.stop_loss)}\n\n"
             f"📐 Leverage: {signal.leverage_min}x–{signal.leverage_max}x\n"
             f"🔍 {signal.structure_note}\n"
             f"📝 {signal.context_note}"
@@ -84,11 +86,11 @@ class MultiExchangeFormatter:
         )
         return (
             f"{direction_emoji} *{exchange}: {pair} {signal.side.value}* {confidence_stars}\n\n"
-            f"📍 *Entry Zone:* {signal.entry_low:,.4f} – {signal.entry_high:,.4f}\n"
-            f"🎯 *TP1:* {signal.tp1:,.4f}\n"
-            f"🎯 *TP2:* {signal.tp2:,.4f}\n"
-            f"🎯 *TP3:* {signal.tp3:,.4f}\n"
-            f"🛑 *SL:*  {signal.stop_loss:,.4f}\n\n"
+            f"📍 *Entry Zone:* {fmt_price(signal.entry_low)} – {fmt_price(signal.entry_high)}\n"
+            f"🎯 *TP1:* {fmt_price(signal.tp1)}\n"
+            f"🎯 *TP2:* {fmt_price(signal.tp2)}\n"
+            f"🎯 *TP3:* {fmt_price(signal.tp3)}\n"
+            f"🛑 *SL:*  {fmt_price(signal.stop_loss)}\n\n"
             f"📐 Leverage: {signal.leverage_min}x–{signal.leverage_max}x\n"
             f"🔍 {signal.structure_note}\n"
             f"📝 {signal.context_note}"
