@@ -209,6 +209,25 @@ class TestMacroBias:
         four_h = _bearish_4h_candles()
         assert assess_macro_bias(daily, four_h) is None
 
+    def test_bullish_bias_when_4h_neutral(self):
+        """1D bullish + 4H flat (neutral) should return LONG bias."""
+        daily = _bullish_daily_candles()
+        # Flat 4H candles: last two at same close price → neither bullish nor bearish
+        flat_4h = [
+            CandleData(open=100.0, high=101.0, low=99.0, close=100.0, volume=500.0),
+            CandleData(open=100.0, high=101.0, low=99.0, close=100.0, volume=500.0),
+        ]
+        assert assess_macro_bias(daily, flat_4h) == Side.LONG
+
+    def test_bearish_bias_when_4h_neutral(self):
+        """1D bearish + 4H flat (neutral) should return SHORT bias."""
+        daily = _bearish_daily_candles()
+        flat_4h = [
+            CandleData(open=100.0, high=101.0, low=99.0, close=100.0, volume=500.0),
+            CandleData(open=100.0, high=101.0, low=99.0, close=100.0, volume=500.0),
+        ]
+        assert assess_macro_bias(daily, flat_4h) == Side.SHORT
+
     def test_no_bias_insufficient_daily_data(self):
         daily = _bullish_daily_candles(n=5)
         four_h = _bullish_4h_candles()
@@ -719,3 +738,60 @@ class TestDisplacementConfigDefault:
         sig = signature(detect_market_structure_shift)
         default = sig.parameters["min_displacement_pct"].default
         assert default == pytest.approx(0.15)
+
+
+# ── calculate_vwap export ─────────────────────────────────────────────────────
+
+class TestCalculateVwapInSignalEngine:
+    """calculate_vwap must be importable from signal_engine (Issue 6)."""
+
+    def test_calculate_vwap_is_exported(self):
+        from bot.signal_engine import calculate_vwap
+        assert callable(calculate_vwap)
+
+    def test_calculate_vwap_single_candle(self):
+        from bot.signal_engine import calculate_vwap
+        c = CandleData(open=100.0, high=102.0, low=98.0, close=100.0, volume=10.0)
+        expected = (102.0 + 98.0 + 100.0) / 3.0
+        assert calculate_vwap([c]) == pytest.approx(expected)
+
+    def test_calculate_vwap_empty_returns_zero(self):
+        from bot.signal_engine import calculate_vwap
+        assert calculate_vwap([]) == 0.0
+
+
+# ── ATR-based displacement ────────────────────────────────────────────────────
+
+class TestAtrBasedDisplacement:
+    """detect_market_structure_shift uses ATR-based threshold when atr > 0."""
+
+    def _make_candles_with_displacement(self, displacement: float) -> list[CandleData]:
+        """Return candles where the last close breaks above swing high by *displacement*."""
+        avg_vol = 100.0
+        swing_high = 100.0
+        candles = [
+            CandleData(open=99.0, high=swing_high, low=98.0, close=99.5, volume=avg_vol * 0.9),
+            CandleData(open=99.5, high=100.1, low=98.5, close=99.8, volume=avg_vol * 0.8),
+            # Last candle breaks above swing_high by *displacement* with above-average volume
+            CandleData(open=99.8, high=swing_high + displacement + 0.1,
+                       low=99.5, close=swing_high + displacement, volume=avg_vol * 2.0),
+        ]
+        return candles
+
+    def test_atr_displacement_passes_when_large_enough(self):
+        atr = 0.5
+        # displacement = 0.4 > 0.3 * 0.5 = 0.15 → should pass
+        candles = self._make_candles_with_displacement(0.4)
+        assert detect_market_structure_shift(candles, Side.LONG, atr=atr) is True
+
+    def test_atr_displacement_blocked_when_too_small(self):
+        atr = 1.0
+        # displacement = 0.1 < 0.3 * 1.0 = 0.3 → should be blocked
+        candles = self._make_candles_with_displacement(0.1)
+        assert detect_market_structure_shift(candles, Side.LONG, atr=atr) is False
+
+    def test_atr_zero_falls_back_to_pct_filter(self):
+        # atr=0 → uses min_displacement_pct (default 0.15)
+        # Large displacement relative to price: 0.5/100 = 0.5% > 0.15% → passes
+        candles = self._make_candles_with_displacement(0.5)
+        assert detect_market_structure_shift(candles, Side.LONG, atr=0.0) is True

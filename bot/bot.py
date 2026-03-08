@@ -851,6 +851,8 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
     Checks open signal lifecycle events (TP/SL hits) for *base_symbol* first,
     then runs the full confluence engine if no signal is currently active.
     """
+    _candle_close_ts = time.time()  # record when the candle-close event fires
+
     if not _bot_state.auto_scan_active:
         return
 
@@ -1057,6 +1059,25 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                     # Fallback: also send to legacy TELEGRAM_CHANNEL_ID if different
                     if TELEGRAM_CHANNEL_ID and TELEGRAM_CHANNEL_ID != signal_router.get_channel_id(ChannelTier.HARD):
                         await _broadcast_to_channel(ch1_result.format_message(), TELEGRAM_CHANNEL_ID)
+                    _signal_broadcast_ts = time.time()
+                    _delivery_latency_ms = int((_signal_broadcast_ts - _candle_close_ts) * 1000)
+                    logger.info(
+                        "signal_delivery_latency_ms=%d symbol=%s tier=CH1",
+                        _delivery_latency_ms, base_symbol,
+                    )
+                    if _delivery_latency_ms > 10_000 and ADMIN_CHAT_ID:
+                        try:
+                            _lat_msg = (
+                                f"⚠️ Signal delivery latency {_delivery_latency_ms}ms "
+                                f"for {base_symbol} (CH1) — exceeds 10s threshold."
+                            )
+                            async def _send_latency_alert() -> None:
+                                async with Bot(token=TELEGRAM_BOT_TOKEN) as _b:
+                                    await _b.send_message(chat_id=ADMIN_CHAT_ID, text=_lat_msg)
+                            await _send_latency_alert()
+                        except Exception as _lat_exc:
+                            logger.warning("Latency alert DM failed: %s", _lat_exc)
+                    _bot_state.record_signal_generated()
                 except Exception as exc:
                     logger.error("CH1 broadcast error for %s: %s", base_symbol, exc)
             else:
@@ -1104,6 +1125,13 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                     _last_signal_broadcast_time[_tier_key] = _now
                     try:
                         await _broadcast_to_channel(ch2_result.format_message(), signal_router.get_channel_id(ChannelTier.MEDIUM))
+                        _signal_broadcast_ts = time.time()
+                        _delivery_latency_ms = int((_signal_broadcast_ts - _candle_close_ts) * 1000)
+                        logger.info(
+                            "signal_delivery_latency_ms=%d symbol=%s tier=CH2",
+                            _delivery_latency_ms, base_symbol,
+                        )
+                        _bot_state.record_signal_generated()
                     except Exception as exc:
                         logger.error("CH2 broadcast error for %s: %s", base_symbol, exc)
                 else:
@@ -1169,6 +1197,13 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                     _last_signal_broadcast_time[_tier_key] = _now
                     try:
                         await _broadcast_to_channel(ch3_result.format_message(), signal_router.get_channel_id(ChannelTier.EASY))
+                        _signal_broadcast_ts = time.time()
+                        _delivery_latency_ms = int((_signal_broadcast_ts - _candle_close_ts) * 1000)
+                        logger.info(
+                            "signal_delivery_latency_ms=%d symbol=%s tier=CH3",
+                            _delivery_latency_ms, base_symbol,
+                        )
+                        _bot_state.record_signal_generated()
                     except Exception as exc:
                         logger.error("CH3 broadcast error for %s: %s", base_symbol, exc)
                 else:
@@ -2441,6 +2476,73 @@ def build_application() -> Application:
         hour=4,
         minute=0,
         id="db_maintenance",
+        replace_existing=True,
+    )
+
+    # ── Dead-Man Switch — hourly check for signal silence ───────────────────
+    _DEAD_MAN_SILENCE_HOURS = 24
+
+    def _run_dead_man_check() -> None:
+        """Alert admin if no signal has been generated in the past 24h."""
+        if not _bot_state.auto_scan_active:
+            return
+        silence_seconds = _bot_state.seconds_since_last_signal()
+        if silence_seconds > _DEAD_MAN_SILENCE_HOURS * 3600:
+            silence_hours = silence_seconds / 3600
+            alert_msg = (
+                f"🚨 DEAD-MAN SWITCH TRIGGERED\n"
+                f"No signal generated in the past {silence_hours:.1f}h "
+                f"(threshold: {_DEAD_MAN_SILENCE_HOURS}h).\n"
+                f"Check WS connection, scanner state, and logs."
+            )
+            logger.warning(
+                "Dead-man switch: no signal generated in %.1fh (threshold %dh).",
+                silence_hours, _DEAD_MAN_SILENCE_HOURS,
+            )
+            if ADMIN_CHAT_ID and _main_loop is not None and _main_loop.is_running():
+                _dm_text = alert_msg
+
+                async def _send_dead_man() -> None:
+                    async with Bot(token=TELEGRAM_BOT_TOKEN) as _b:
+                        await _b.send_message(chat_id=ADMIN_CHAT_ID, text=_dm_text)
+                asyncio.run_coroutine_threadsafe(_send_dead_man(), _main_loop)
+
+    _scheduler.add_job(
+        _run_dead_man_check,
+        "interval",
+        hours=1,
+        id="dead_man_switch",
+        replace_existing=True,
+    )
+
+    # ── Weekly Performance Report — every Sunday at 20:00 UTC ───────────────
+    def _run_weekly_report() -> None:
+        from bot.weekly_report import generate_weekly_report
+        try:
+            report_text = generate_weekly_report(dashboard, days=7)
+        except Exception as exc:
+            logger.error("Weekly report generation failed: %s", exc)
+            return
+        insights_id = signal_router.get_channel_id(ChannelTier.INSIGHTS)
+        target_id = insights_id or TELEGRAM_CHANNEL_ID_HARD or TELEGRAM_CHANNEL_ID
+        if target_id == 0:
+            logger.debug("Weekly report: no target channel configured.")
+            return
+        if _main_loop is not None and _main_loop.is_running():
+            _report_text = report_text
+            _target_ch = target_id
+
+            async def _send_report() -> None:
+                await _broadcast_to_channel(_report_text, _target_ch)
+            asyncio.run_coroutine_threadsafe(_send_report(), _main_loop)
+
+    _scheduler.add_job(
+        _run_weekly_report,
+        "cron",
+        day_of_week="sun",
+        hour=20,
+        minute=0,
+        id="weekly_performance_report",
         replace_existing=True,
     )
 

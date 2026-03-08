@@ -76,8 +76,8 @@ def generate_weekly_report(dashboard: "Dashboard", days: int = 7) -> str:
     pnl_values = [r.pnl_pct for r in closed]
     best_pnl = round(max(pnl_values), 2) if pnl_values else 0.0
     worst_pnl = round(min(pnl_values), 2) if pnl_values else 0.0
-    best_trade = next((r for r in closed if r.pnl_pct == max(pnl_values)), None) if pnl_values else None
-    worst_trade = next((r for r in closed if r.pnl_pct == min(pnl_values)), None) if pnl_values else None
+    best_trade = next((r for r in closed if r.pnl_pct == best_pnl), None) if pnl_values else None
+    worst_trade = next((r for r in closed if r.pnl_pct == worst_pnl), None) if pnl_values else None
 
     best_symbol = f"{best_trade.symbol} ({best_trade.side})" if best_trade else "—"
     worst_symbol = f"{worst_trade.symbol} ({worst_trade.side})" if worst_trade else "—"

@@ -158,6 +158,122 @@ class TestDashboard:
         assert sharpe_actual < biased_sharpe
 
 
+class TestProtectedWinRate:
+    """Tests for Dashboard.protected_win_rate() — counts BE as a win."""
+
+    @pytest.fixture(autouse=True)
+    def _db(self, tmp_path):
+        self.db = Dashboard(log_file=str(tmp_path / "db.json"))
+
+    def test_empty_returns_zero(self):
+        assert self.db.protected_win_rate() == 0.0
+
+    def test_be_counted_as_win(self):
+        self.db.record_result(_make_trade(outcome="WIN", pnl_pct=2.0))
+        self.db.record_result(_make_trade(outcome="BE", pnl_pct=0.0))
+        self.db.record_result(_make_trade(outcome="LOSS", pnl_pct=-1.0))
+        # 2 out of 3 (WIN + BE) = 66.67%
+        assert self.db.protected_win_rate() == pytest.approx(66.67, rel=1e-2)
+
+    def test_strict_win_rate_excludes_be(self):
+        self.db.record_result(_make_trade(outcome="WIN", pnl_pct=2.0))
+        self.db.record_result(_make_trade(outcome="BE", pnl_pct=0.0))
+        self.db.record_result(_make_trade(outcome="LOSS", pnl_pct=-1.0))
+        # strict: only 1 WIN out of 3 = 33.33%
+        assert self.db.win_rate() == pytest.approx(33.33, rel=1e-2)
+
+    def test_protected_win_rate_higher_or_equal_to_strict(self):
+        self.db.record_result(_make_trade(outcome="WIN", pnl_pct=2.0))
+        self.db.record_result(_make_trade(outcome="BE", pnl_pct=0.0))
+        assert self.db.protected_win_rate() >= self.db.win_rate()
+
+    def test_all_wins_same_as_strict(self):
+        self.db.record_result(_make_trade(outcome="WIN", pnl_pct=1.0))
+        self.db.record_result(_make_trade(outcome="WIN", pnl_pct=2.0))
+        assert self.db.protected_win_rate() == self.db.win_rate()
+
+
+class TestAvgRiskReward:
+    """Tests for Dashboard.avg_risk_reward()."""
+
+    @pytest.fixture(autouse=True)
+    def _db(self, tmp_path):
+        self.db = Dashboard(log_file=str(tmp_path / "db.json"))
+
+    def test_empty_returns_zero(self):
+        assert self.db.avg_risk_reward() == 0.0
+
+    def test_calculates_rr(self):
+        # entry=100, sl=98 → sl_dist=2%, pnl=4% → R = 4/2 = 2.0
+        r = TradeResult(
+            symbol="BTC", side="LONG", entry_price=100.0, exit_price=104.0,
+            stop_loss=98.0, tp1=104.0, tp2=106.0, tp3=108.0,
+            opened_at=time.time() - 3600, closed_at=time.time(),
+            outcome="WIN", pnl_pct=4.0, timeframe="5m",
+        )
+        self.db.record_result(r)
+        assert self.db.avg_risk_reward() == pytest.approx(2.0, rel=1e-3)
+
+    def test_open_trades_excluded(self):
+        r = TradeResult(
+            symbol="BTC", side="LONG", entry_price=100.0, exit_price=None,
+            stop_loss=98.0, tp1=104.0, tp2=106.0, tp3=108.0,
+            opened_at=time.time(), closed_at=None,
+            outcome="OPEN", pnl_pct=0.0, timeframe="5m",
+        )
+        self.db.record_result(r)
+        assert self.db.avg_risk_reward() == 0.0
+
+    def test_zero_sl_distance_excluded(self):
+        r = TradeResult(
+            symbol="BTC", side="LONG", entry_price=100.0, exit_price=102.0,
+            stop_loss=100.0,  # same as entry → sl_dist = 0
+            tp1=102.0, tp2=104.0, tp3=106.0,
+            opened_at=time.time() - 3600, closed_at=time.time(),
+            outcome="WIN", pnl_pct=2.0, timeframe="5m",
+        )
+        self.db.record_result(r)
+        assert self.db.avg_risk_reward() == 0.0
+
+
+class TestWinRateRolling:
+    """Tests for Dashboard.win_rate_rolling()."""
+
+    @pytest.fixture(autouse=True)
+    def _db(self, tmp_path):
+        self.db = Dashboard(log_file=str(tmp_path / "db.json"))
+
+    def test_empty_returns_zero(self):
+        assert self.db.win_rate_rolling(days=7) == 0.0
+
+    def test_recent_trade_included(self):
+        self.db.record_result(_make_trade(outcome="WIN", pnl_pct=2.0))
+        assert self.db.win_rate_rolling(days=7) == 100.0
+
+    def test_old_trade_excluded(self):
+        # Add an old (8-day-old) WIN — should not count in 7-day window
+        old_result = TradeResult(
+            symbol="BTC", side="LONG", entry_price=100.0, exit_price=102.0,
+            stop_loss=98.0, tp1=102.0, tp2=104.0, tp3=106.0,
+            opened_at=time.time() - 8 * 86400,  # 8 days ago
+            closed_at=time.time() - 8 * 86400 + 3600,
+            outcome="WIN", pnl_pct=2.0, timeframe="5m",
+        )
+        self.db.record_result(old_result)
+        assert self.db.win_rate_rolling(days=7) == 0.0
+
+    def test_30_day_includes_old(self):
+        old_result = TradeResult(
+            symbol="BTC", side="LONG", entry_price=100.0, exit_price=102.0,
+            stop_loss=98.0, tp1=102.0, tp2=104.0, tp3=106.0,
+            opened_at=time.time() - 8 * 86400,
+            closed_at=time.time() - 8 * 86400 + 3600,
+            outcome="WIN", pnl_pct=2.0, timeframe="5m",
+        )
+        self.db.record_result(old_result)
+        assert self.db.win_rate_rolling(days=30) == 100.0
+
+
 # ── NewsCalendar tests ────────────────────────────────────────────────────────
 
 class TestNewsCalendar:

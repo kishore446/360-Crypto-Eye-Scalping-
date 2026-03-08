@@ -185,6 +185,30 @@ class Dashboard:
         """Return the aggregate floating PnL % across all OPEN signals."""
         return round(sum(r.pnl_pct for r in self._results if r.outcome == "OPEN"), 4)
 
+    def win_rate_rolling(self, days: int = 7) -> float:
+        """
+        Return the win-rate for closed trades within the last *days* days.
+
+        Parameters
+        ----------
+        days:
+            Rolling lookback window in days (e.g. 7 for weekly, 30 for monthly).
+
+        Returns
+        -------
+        float
+            Win-rate as a percentage (0–100), or 0.0 when no trades in window.
+        """
+        cutoff = time.time() - days * 86400
+        closed = [
+            r for r in self._results
+            if r.outcome in ("WIN", "LOSS", "BE") and r.opened_at >= cutoff
+        ]
+        if not closed:
+            return 0.0
+        wins = sum(1 for r in closed if r.outcome == "WIN")
+        return round(wins / len(closed) * 100, 2)
+
     def total_trades(self) -> int:
         return len([r for r in self._results if r.outcome != "OPEN"])
 
