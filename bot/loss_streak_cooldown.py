@@ -12,6 +12,7 @@ crypto channel offers.
 """
 from __future__ import annotations
 
+import threading
 import time
 
 try:
@@ -30,11 +31,13 @@ class CooldownManager:
     """
     Tracks consecutive losses and manages a protective cooldown period.
 
-    Thread-safety note: this class is intentionally not thread-safe — the
-    bot processes signals synchronously so no locking is needed.
+    Thread-safe: all public methods and internal helpers are protected by a
+    ``threading.Lock`` to support concurrent access from asyncio tasks,
+    background scheduler threads, and Telegram command handlers.
     """
 
     def __init__(self) -> None:
+        self._lock = threading.RLock()
         self._consecutive_losses: int = 0
         self._cooldown_active: bool = False
         self._cooldown_signals_remaining: int = 0
@@ -74,38 +77,44 @@ class CooldownManager:
         bool
             ``True`` if cooldown was *just activated* by this call.
         """
-        self._check_time_reset()
+        with self._lock:
+            self._check_time_reset()
 
-        if outcome == "LOSS":
-            self._consecutive_losses += 1
-            if (
-                not self._cooldown_active
-                and self._consecutive_losses >= LOSS_STREAK_THRESHOLD
-            ):
-                self._cooldown_active = True
-                self._cooldown_signals_remaining = COOLDOWN_SIGNALS
-                self._cooldown_started_at = time.time()
-                return True
-        else:
-            # WIN or BE — count toward recovery
-            if self._cooldown_active:
-                self._cooldown_signals_remaining -= 1
-                if self._cooldown_signals_remaining <= 0:
-                    self._reset_cooldown()
+            if outcome == "LOSS":
+                self._consecutive_losses += 1
+                if (
+                    not self._cooldown_active
+                    and self._consecutive_losses >= LOSS_STREAK_THRESHOLD
+                ):
+                    self._cooldown_active = True
+                    self._cooldown_signals_remaining = COOLDOWN_SIGNALS
+                    self._cooldown_started_at = time.time()
+                    return True
             else:
-                self._consecutive_losses = 0
+                # WIN or BE — count toward recovery
+                if self._cooldown_active:
+                    self._cooldown_signals_remaining -= 1
+                    if self._cooldown_signals_remaining <= 0:
+                        self._reset_cooldown()
+                else:
+                    self._consecutive_losses = 0
 
-        return False
+            return False
 
     def is_cooldown_active(self) -> bool:
         """Return True if cooldown mode is currently active."""
-        self._check_time_reset()
-        return self._cooldown_active
+        with self._lock:
+            self._check_time_reset()
+            return self._cooldown_active
 
     def get_risk_modifier(self) -> float:
         """Return position size multiplier (0.5 during cooldown, 1.0 normal)."""
-        return 0.5 if self.is_cooldown_active() else 1.0
+        with self._lock:
+            self._check_time_reset()
+            return 0.5 if self._cooldown_active else 1.0
 
     def should_suppress_low_confidence(self) -> bool:
         """Return True if LOW confidence signals should be suppressed during cooldown."""
-        return self.is_cooldown_active()
+        with self._lock:
+            self._check_time_reset()
+            return self._cooldown_active

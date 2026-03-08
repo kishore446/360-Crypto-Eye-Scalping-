@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from bot.price_fmt import fmt_price
 from bot.signal_engine import (
     CandleData,
     Side,
@@ -46,10 +47,10 @@ class BreakoutResult:
         return (
             f"⚡ MOMENTUM ALERT — #{self.symbol}/USDT\n"
             f"Direction: {direction}\n\n"
-            f"Entry: {self.entry_price:.4f}\n"
-            f"🎯 TP 1: {self.tp1:.4f}\n"
-            f"🎯 TP 2: {self.tp2:.4f}\n"
-            f"🛑 SL: {self.stop_loss:.4f}\n\n"
+            f"Entry: {fmt_price(self.entry_price)}\n"
+            f"🎯 TP 1: {fmt_price(self.tp1)}\n"
+            f"🎯 TP 2: {fmt_price(self.tp2)}\n"
+            f"🛑 SL: {fmt_price(self.stop_loss)}\n\n"
             f"⚠️ Breakout alert — use tight risk management."
         )
 

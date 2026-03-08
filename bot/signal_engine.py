@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
+from bot.price_fmt import fmt_price
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -91,9 +93,9 @@ class SignalResult:
 
     def format_message(self) -> str:
         """Return the standardised Telegram broadcast message."""
-        entry_range = f"{self.entry_low:.4f} – {self.entry_high:.4f}"
-        copy_trade_entry = f"{(self.entry_low + self.entry_high) / 2:.4f}"
-        tp_list = f"{self.tp1:.4f}, {self.tp2:.4f}, {self.tp3:.4f}"
+        entry_range = f"{fmt_price(self.entry_low)} – {fmt_price(self.entry_high)}"
+        copy_trade_entry = fmt_price((self.entry_low + self.entry_high) / 2)
+        tp_list = f"{fmt_price(self.tp1)}, {fmt_price(self.tp2)}, {fmt_price(self.tp3)}"
 
         # Confidence stars
         stars = {"High": "⭐⭐⭐", "Medium": "⭐⭐", "Low": "⭐"}.get(self.confidence.value, "⭐")
@@ -104,22 +106,22 @@ class SignalResult:
         bybit_copy = (
             f"\n\n👇 CLICK TO COPY FOR BYBIT:\n"
             f"`{self.symbol}/USDT {self.side.value} ENTRY {copy_trade_entry} "
-            f"TP {tp_list} SL {self.stop_loss:.4f}`"
+            f"TP {tp_list} SL {fmt_price(self.stop_loss)}`"
         )
         okx_copy = (
             f"\n\n👇 CLICK TO COPY FOR OKX:\n"
             f"`{self.symbol}/USDT {self.side.value} ENTRY {copy_trade_entry} "
-            f"TP {tp_list} SL {self.stop_loss:.4f}`"
+            f"TP {tp_list} SL {fmt_price(self.stop_loss)}`"
         )
         bitget_copy = (
             f"\n\n👇 CLICK TO COPY FOR BITGET:\n"
             f"`{self.symbol}/USDT {self.side.value} ENTRY {copy_trade_entry} "
-            f"TP {tp_list} SL {self.stop_loss:.4f}`"
+            f"TP {tp_list} SL {fmt_price(self.stop_loss)}`"
         )
         hyperliquid_copy = (
             f"\n\n👇 CLICK TO COPY FOR HYPERLIQUID:\n"
             f"`{self.symbol}-USD {self.side.value} ENTRY {copy_trade_entry} "
-            f"TP {tp_list} SL {self.stop_loss:.4f}`"
+            f"TP {tp_list} SL {fmt_price(self.stop_loss)}`"
         )
 
         return (
@@ -131,14 +133,14 @@ class SignalResult:
             f"- Risk: 1% of Account Balance.\n\n"
             f"⚡ ENTRY ZONE: {entry_range}\n"
             f"🎯 TARGETS:\n"
-            f"- TP 1: {self.tp1:.4f} (Close 50% + Move SL to Entry)\n"
-            f"- TP 2: {self.tp2:.4f} (Close 25% + Start Trailing)\n"
-            f"- TP 3: {self.tp3:.4f} (Final Moon Bag)\n\n"
-            f"🛑 STOP LOSS: {self.stop_loss:.4f} (Structural Invalidation)\n"
+            f"- TP 1: {fmt_price(self.tp1)} (Close 50% + Move SL to Entry)\n"
+            f"- TP 2: {fmt_price(self.tp2)} (Close 25% + Start Trailing)\n"
+            f"- TP 3: {fmt_price(self.tp3)} (Final Moon Bag)\n\n"
+            f"🛑 STOP LOSS: {fmt_price(self.stop_loss)} (Structural Invalidation)\n"
             f"Leverage: Cross {self.leverage_min}x - {self.leverage_max}x (Recommended)\n\n"
             f"👇 CLICK TO COPY FOR BINANCE:\n"
             f"`{self.symbol} {self.side.value} ENTRY {copy_trade_entry} "
-            f"TP {tp_list} SL {self.stop_loss:.4f}`"
+            f"TP {tp_list} SL {fmt_price(self.stop_loss)}`"
             f"{bybit_copy}"
             f"{okx_copy}"
             f"{bitget_copy}"
