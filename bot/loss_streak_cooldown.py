@@ -32,7 +32,7 @@ class CooldownManager:
     Tracks consecutive losses and manages a protective cooldown period.
 
     Thread-safe: all public methods and internal helpers are protected by a
-    ``threading.Lock`` to support concurrent access from asyncio tasks,
+    ``threading.RLock`` to support concurrent access from asyncio tasks,
     background scheduler threads, and Telegram command handlers.
     """
 
