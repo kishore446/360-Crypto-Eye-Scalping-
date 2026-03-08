@@ -61,7 +61,9 @@ def classify_regime(
     Parameters
     ----------
     daily_candles:
-        1D BTC candles (most-recent last). Needs at least 200 candles.
+        1D BTC candles (most-recent last). Needs at least 200 candles for
+        full accuracy; falls back to 50-day SMA when 50–199 candles are
+        available.
     current_price:
         Current BTC price.
     fear_and_greed:
@@ -71,11 +73,20 @@ def classify_regime(
     -------
     One of: 'BULL', 'BEAR', 'SIDEWAYS', or 'UNKNOWN'.
     """
-    if len(daily_candles) < 200:
+    if len(daily_candles) < 50:
         return "UNKNOWN"
 
-    sma200 = sum(c.close for c in daily_candles[-200:]) / 200
-    above_sma = current_price > sma200
+    if len(daily_candles) >= 200:
+        sma = sum(c.close for c in daily_candles[-200:]) / 200
+    else:
+        # Graceful degradation: use 50-day SMA when fewer than 200 candles available
+        sma = sum(c.close for c in daily_candles[-50:]) / 50
+        logger.debug(
+            "Regime detector: only %d daily candles available; using 50-day SMA fallback.",
+            len(daily_candles),
+        )
+
+    above_sma = current_price > sma
 
     if fear_and_greed is None:
         # Fall back to SMA-only classification
@@ -95,11 +106,18 @@ def format_regime_message(
     regime: str,
 ) -> str:
     """Build the CH5C regime post message."""
-    if len(daily_candles) < 200:
-        return f"🌍 MARKET REGIME: {regime}\nInsufficient data for 200-day SMA."
+    if len(daily_candles) < 50:
+        return f"🌍 MARKET REGIME: {regime}\nInsufficient data for SMA calculation."
 
-    sma200 = sum(c.close for c in daily_candles[-200:]) / 200
-    sma_pct = (current_price - sma200) / sma200 * 100
+    using_fallback = len(daily_candles) < 200
+    if using_fallback:
+        sma = sum(c.close for c in daily_candles[-50:]) / 50
+        sma_label = "50D SMA (fallback)"
+    else:
+        sma = sum(c.close for c in daily_candles[-200:]) / 200
+        sma_label = "200D SMA"
+
+    sma_pct = (current_price - sma) / sma * 100
 
     regime_emoji = {"BULL": "🟢", "BEAR": "🔴", "SIDEWAYS": "🟡"}.get(regime, "⚪")
 
@@ -126,7 +144,7 @@ def format_regime_message(
 
     return (
         f"🌍 MARKET REGIME: {regime} {regime_emoji}\n"
-        f"BTC vs 200D SMA: {sma_pct:+.1f}%\n"
+        f"BTC vs {sma_label}: {sma_pct:+.1f}%\n"
         f"Fear & Greed: {fg_label}{fg_sentiment}\n"
         f"{action}"
     )

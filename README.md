@@ -118,7 +118,7 @@ cp .env.example .env
 | `AUTO_SCAN_PAIRS` | `""` | Comma-separated watchlist pairs (empty = all 200+ pairs) |
 | `AUTO_SCAN_INTERVAL_SECONDS` | `60` | Fallback poll interval when WS is degraded (≥60s) |
 | `AUTO_SCAN_ENABLED_ON_BOOT` | `true` | Start auto-scanner automatically on boot; set to `false` to require manual `/auto_scan` |
-| `MAX_SAME_SIDE_SIGNALS` | `5` | Same-side signal limit |
+| `MAX_SAME_SIDE_SIGNALS` | `3` | Same-side signal limit |
 | `SESSION_FILTER_ENABLED` | `false` | Restrict signals to London+NYC hours only; `false` enables 24/7 scanning |
 | `STALE_SIGNAL_HOURS` | `4` | Auto-close threshold |
 | `BE_TRIGGER_FRACTION` | `0.50` | BE trigger at 50% of TP1 distance |

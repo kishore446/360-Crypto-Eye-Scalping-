@@ -39,6 +39,7 @@ __all__ = [
     "assess_macro_bias_relaxed",
     "calculate_atr",
     "calculate_rsi",
+    "calculate_ema",
     "calculate_targets",
     "run_confluence_check",
     "run_confluence_check_relaxed",
@@ -151,7 +152,7 @@ def _average_volume(candles: list[CandleData]) -> float:
     return sum(c.volume for c in candles) / len(candles)
 
 
-def _calculate_ema(candles: list[CandleData], period: int) -> float:
+def calculate_ema(candles: list[CandleData], period: int) -> float:
     """
     Calculate the Exponential Moving Average of closing prices.
 
@@ -294,7 +295,7 @@ def assess_macro_bias(
     sma20_daily = sum(c.close for c in daily_candles[-20:]) / 20
 
     # EMA-9 on daily candles (smoothing factor k = 2/(9+1) = 0.2)
-    ema9_daily = _calculate_ema(daily_candles, period=9)
+    ema9_daily = calculate_ema(daily_candles, period=9)
 
     last_daily = daily_candles[-1]
     prev_daily = daily_candles[-2]

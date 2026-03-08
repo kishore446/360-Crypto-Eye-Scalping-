@@ -18,8 +18,9 @@ def get_regime_adjustments(regime: str) -> dict:
     Parameters
     ----------
     regime:
-        One of ``"BULL"``, ``"BEAR"``, or ``"SIDEWAYS"`` (case-insensitive).
-        Any unrecognised value is treated as ``"SIDEWAYS"``.
+        One of ``"BULL"``, ``"BEAR"``, ``"SIDEWAYS"``, or ``"UNKNOWN"``
+        (case-insensitive).  Any other unrecognised value is treated as
+        ``"SIDEWAYS"``.
 
     Returns
     -------
@@ -37,11 +38,17 @@ def get_regime_adjustments(regime: str) -> dict:
     {'tp3_rr': 3.0, 'max_signals': 3, 'risk_modifier': 0.75}
     >>> get_regime_adjustments("SIDEWAYS")
     {'tp3_rr': 2.5, 'max_signals': 2, 'risk_modifier': 0.5}
+    >>> get_regime_adjustments("UNKNOWN")
+    {'tp3_rr': 4.0, 'max_signals': 4, 'risk_modifier': 0.85}
     """
     regime_upper = regime.upper() if isinstance(regime, str) else "SIDEWAYS"
     if regime_upper == "BULL":
         return {"tp3_rr": 5.0, "max_signals": 5, "risk_modifier": 1.0}
     if regime_upper == "BEAR":
         return {"tp3_rr": 3.0, "max_signals": 3, "risk_modifier": 0.75}
-    # SIDEWAYS or unknown
+    if regime_upper == "UNKNOWN":
+        # Regime could not be determined (e.g. insufficient data for 200-day SMA).
+        # Use neutral/moderate settings to avoid silently throttling signal generation.
+        return {"tp3_rr": 4.0, "max_signals": 4, "risk_modifier": 0.85}
+    # SIDEWAYS or any other unrecognised value
     return {"tp3_rr": 2.5, "max_signals": 2, "risk_modifier": 0.5}

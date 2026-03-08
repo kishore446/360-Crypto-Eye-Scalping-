@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Optional
 
-import requests
+import httpx
 
 if TYPE_CHECKING:
     from bot.exchange import ResilientExchange
@@ -64,14 +64,14 @@ class LiquidationMonitor:
     async def _check_via_api(self) -> Optional[str]:
         """Fetch real liquidation data from the Coinglass API."""
         try:
-            resp = requests.get(
-                _COINGLASS_API_URL,
-                headers={"coinglassSecret": COINGLASS_API_KEY},
-                params={"symbol": "BTC", "interval": "1h"},
-                timeout=_TIMEOUT,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                resp = await client.get(
+                    _COINGLASS_API_URL,
+                    headers={"coinglassSecret": COINGLASS_API_KEY},
+                    params={"symbol": "BTC", "interval": "1h"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
             records = data.get("data") or []
             if not records:
                 return None

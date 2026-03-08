@@ -1673,8 +1673,9 @@ def _seed_historical_candles(symbols: list[str]) -> None:
 
     Uses up to 10 concurrent workers with a short sleep between batches
     to respect Binance rate limits while reducing boot time from ~2.5min to ~15s.
-    Fetches 1D (30), 4H (30), and 5m (50) candles for every pair so the
+    Fetches 1D (210), 4H (30), and 5m (50) candles for every pair so the
     signal engine has enough data before the first WS events arrive.
+    210 daily candles are required for the 200-day SMA used by the regime detector.
     """
     total = len(symbols)
     logger.info("Seeding historical candles for %d pairs (parallel)…", total)
@@ -1682,7 +1683,7 @@ def _seed_historical_candles(symbols: list[str]) -> None:
     def _seed_one(base: str) -> None:
         ccxt_symbol = _normalise_symbol(base)
         try:
-            for timeframe, limit in (("1d", 100), ("4h", 30), ("5m", 50), ("15m", 50)):
+            for timeframe, limit in (("1d", 210), ("4h", 30), ("5m", 50), ("15m", 50)):
                 rows = _resilient_exchange.fetch_ohlcv(ccxt_symbol, timeframe, limit=limit)
                 for row in rows:
                     market_data.update_candle(base, timeframe, row)

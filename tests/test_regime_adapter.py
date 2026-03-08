@@ -32,11 +32,18 @@ class TestGetRegimeAdjustments:
         assert get_regime_adjustments("Bear") == get_regime_adjustments("BEAR")
         assert get_regime_adjustments("sideways") == get_regime_adjustments("SIDEWAYS")
 
-    def test_unknown_regime_falls_back_to_sideways(self):
-        """Any unrecognised regime string should default to SIDEWAYS parameters."""
+    def test_unknown_regime_has_neutral_settings(self):
+        """UNKNOWN regime should map to neutral/moderate parameters, not SIDEWAYS."""
+        adj = get_regime_adjustments("UNKNOWN")
+        assert adj["tp3_rr"] == pytest.approx(4.0)
+        assert adj["max_signals"] == 4
+        assert adj["risk_modifier"] == pytest.approx(0.85)
+
+    def test_unknown_regime_is_not_sideways(self):
+        """UNKNOWN must have distinct parameters from SIDEWAYS."""
         adj = get_regime_adjustments("UNKNOWN")
         sideways = get_regime_adjustments("SIDEWAYS")
-        assert adj == sideways
+        assert adj != sideways
 
     def test_empty_string_falls_back_to_sideways(self):
         adj = get_regime_adjustments("")
