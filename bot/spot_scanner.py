@@ -59,6 +59,11 @@ except Exception:  # pragma: no cover — fallback for tests without full env
     SPOT_SCAN_BATCH_SIZE = 30
     SPOT_SCAN_BATCH_DELAY = 0.5
 
+try:
+    from bot.ws_manager import _BUF_1D as _DEFAULT_BUF_1D
+except ImportError:  # pragma: no cover
+    _DEFAULT_BUF_1D = 30
+
 
 @dataclass
 class SpotGemResult:
@@ -190,6 +195,7 @@ class SpotScanner:
         crash_threshold_pct: float = SPOT_SCAM_CRASH_THRESHOLD_PCT,
         batch_size: int = SPOT_SCAN_BATCH_SIZE,
         batch_delay: float = SPOT_SCAN_BATCH_DELAY,
+        max_buffer_size: int = _DEFAULT_BUF_1D,
     ) -> None:
         self._spot_market_data = spot_market_data
         self._min_volume_usdt = min_volume_usdt
@@ -201,6 +207,7 @@ class SpotScanner:
         self._crash_threshold_pct = crash_threshold_pct
         self._batch_size = batch_size
         self._batch_delay = batch_delay
+        self._max_buffer_size = max_buffer_size
 
         self._pairs: list[dict] = []
         self._last_pair_refresh: float = 0.0
@@ -319,9 +326,14 @@ class SpotScanner:
         stop_loss = entry_mid * 0.90
 
         # ── NEW_LISTING detection ──────────────────────────────────────────
-        # Proxy: fewer daily candles available than lookback days
+        # Only flag as NEW_LISTING when the buffer isn't full yet — meaning the
+        # coin genuinely has fewer candles than the buffer capacity because it
+        # hasn't been listed long enough.  If the buffer is full (len ==
+        # _max_buffer_size) the coin is established; the buffer is just smaller
+        # than the lookback window by design.
         lookback = self._new_listing_lookback_days
-        if len(candles_1d) < lookback:
+        buffer_is_full = len(candles_1d) >= self._max_buffer_size
+        if not buffer_is_full and len(candles_1d) < lookback:
             risk_flags.append("new_listing_volatility")
             return SpotGemResult(
                 symbol=symbol,
