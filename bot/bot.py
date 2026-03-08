@@ -1128,13 +1128,55 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                 ch3_result = None
 
             if ch3_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.EASY):
-                risk_manager.add_signal(ch3_result, origin_channel=signal_router.get_channel_id(ChannelTier.EASY), created_regime=regime)
-                signal_router.record_signal(base_symbol, ChannelTier.EASY)
-                logger.info("CH3 breakout: %s %s", base_symbol, ch3_result.side.value)
+                # Convert BreakoutResult → SignalResult for risk_manager compatibility.
+                # entry_price is split into a ±0.5% zone; tp3 is extrapolated from tp1/tp2.
+                _entry_low = ch3_result.entry_price * 0.995
+                _entry_high = ch3_result.entry_price * 1.005
+                _tp3 = ch3_result.tp2 + (ch3_result.tp2 - ch3_result.tp1)  # linear extrapolation
+                ch3_signal_result = SignalResult(
+                    symbol=base_symbol,
+                    side=ch3_result.side,
+                    confidence=Confidence.LOW,
+                    entry_low=_entry_low,
+                    entry_high=_entry_high,
+                    tp1=ch3_result.tp1,
+                    tp2=ch3_result.tp2,
+                    tp3=_tp3,
+                    stop_loss=ch3_result.stop_loss,
+                    structure_note="",
+                    context_note="",
+                    leverage_min=3,
+                    leverage_max=5,
+                )
                 try:
-                    await _broadcast_to_channel(ch3_result.format_message(), signal_router.get_channel_id(ChannelTier.EASY))
-                except Exception as exc:
-                    logger.error("CH3 broadcast error for %s: %s", base_symbol, exc)
+                    risk_manager.add_signal(
+                        ch3_signal_result,
+                        origin_channel=signal_router.get_channel_id(ChannelTier.EASY),
+                        created_regime=regime,
+                    )
+                    signal_router.record_signal(base_symbol, ChannelTier.EASY)
+                except RuntimeError as _cap_exc:
+                    logger.warning("CH3 3-pair cap reached for %s: %s", base_symbol, _cap_exc)
+                    return
+                except Exception as _add_exc:
+                    logger.error("CH3 signal registration error for %s: %s", base_symbol, _add_exc)
+                    return
+                logger.info("CH3 breakout: %s %s", base_symbol, ch3_result.side.value)
+                _now = time.time()
+                _tier_key = ChannelTier.EASY.value
+                _last_broadcast = _last_signal_broadcast_time.get(_tier_key, 0.0)
+                if _now - _last_broadcast >= MIN_SIGNAL_GAP_SECONDS:
+                    _last_signal_broadcast_time[_tier_key] = _now
+                    try:
+                        await _broadcast_to_channel(ch3_result.format_message(), signal_router.get_channel_id(ChannelTier.EASY))
+                    except Exception as exc:
+                        logger.error("CH3 broadcast error for %s: %s", base_symbol, exc)
+                else:
+                    logger.debug(
+                        "CH3 signal rate-limited for %s — %ds since last broadcast.",
+                        base_symbol,
+                        int(_now - _last_broadcast),
+                    )
 
 
 # ── Fallback polling scan (runs only when WebSocket stream is unhealthy) ────────
@@ -2176,15 +2218,64 @@ def build_application() -> Application:
         try:
             gems, scams = spot_scanner.scan_once()
             for gem in gems:
-                # TODO: SpotGemResult is incompatible with SignalResult (missing side/confidence);
-                # track gem signals in risk_manager once SpotGemResult is aligned with SignalResult.
-                msg_text = gem.format_message()
+                if signal_router.should_suppress_duplicate(gem.symbol, ChannelTier.SPOT):
+                    logger.debug("CH4 gem dedup suppressed for %s", gem.symbol)
+                    continue
+                # Wrap SpotGemResult into SignalResult for risk tracking.
+                # Spot gems are always LONG, no leverage.
+                gem_signal_result = SignalResult(
+                    symbol=gem.symbol,
+                    side=Side.LONG,
+                    confidence=Confidence.MEDIUM,
+                    entry_low=gem.entry_low,
+                    entry_high=gem.entry_high,
+                    tp1=gem.tp1,
+                    tp2=gem.tp2,
+                    tp3=gem.tp3,
+                    stop_loss=gem.stop_loss,
+                    structure_note="",
+                    context_note="",
+                    leverage_min=1,
+                    leverage_max=1,
+                )
+                try:
+                    risk_manager.add_signal(
+                        gem_signal_result,
+                        origin_channel=signal_router.get_channel_id(ChannelTier.SPOT),
+                        created_regime=_bot_state.market_regime,
+                    )
+                    signal_router.record_signal(gem.symbol, ChannelTier.SPOT)
+                except RuntimeError as _cap_exc:
+                    logger.warning("CH4 gem 3-pair cap reached for %s: %s", gem.symbol, _cap_exc)
+                    continue
+                except Exception as _add_exc:
+                    logger.error("CH4 gem signal registration error for %s: %s", gem.symbol, _add_exc)
+                    continue
+                logger.info("CH4 spot gem: %s (%s, score=%d)", gem.symbol, gem.gem_type, gem.score)
+                _now_gem = time.time()
+                _gem_tier_key = ChannelTier.SPOT.value
+                _last_gem_broadcast = _last_signal_broadcast_time.get(_gem_tier_key, 0.0)
+                if _now_gem - _last_gem_broadcast >= MIN_SIGNAL_GAP_SECONDS:
+                    _last_signal_broadcast_time[_gem_tier_key] = _now_gem
+                    msg_text = gem.format_message()
 
-                async def _send_gem(m: str = msg_text) -> None:
-                    await _broadcast_to_channel(m, signal_router.get_channel_id(ChannelTier.SPOT))
+                    async def _send_gem(m: str = msg_text) -> None:
+                        await _broadcast_to_channel(m, signal_router.get_channel_id(ChannelTier.SPOT))
 
-                if _main_loop is not None and _main_loop.is_running():
-                    asyncio.run_coroutine_threadsafe(_send_gem(), _main_loop)
+                    if _main_loop is not None and _main_loop.is_running():
+                        asyncio.run_coroutine_threadsafe(_send_gem(), _main_loop)
+                    else:
+                        new_loop = asyncio.new_event_loop()
+                        try:
+                            new_loop.run_until_complete(_send_gem())
+                        finally:
+                            new_loop.close()
+                else:
+                    logger.debug(
+                        "CH4 gem rate-limited for %s — %ds since last broadcast.",
+                        gem.symbol,
+                        int(_now_gem - _last_gem_broadcast),
+                    )
             for scam in scams:
                 msg_text = scam.format_message()
 
