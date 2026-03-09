@@ -26,6 +26,7 @@ import concurrent.futures
 import logging
 import platform
 import time
+import traceback
 from typing import Optional
 
 try:
@@ -35,6 +36,7 @@ except ImportError:
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from telegram import Bot, Update
+from telegram.error import NetworkError as TelegramNetworkError
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -2068,6 +2070,32 @@ async def cmd_db_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # ── Application bootstrap ─────────────────────────────────────────────────────
 
+async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Global error handler for the Telegram application.
+
+    - Network errors are logged at WARNING level (transient, auto-recovered).
+    - All other errors are logged at ERROR level with full traceback.
+    - For non-network errors, sends a DM to ADMIN_CHAT_ID if configured.
+    """
+    err = context.error
+    if isinstance(err, TelegramNetworkError):
+        logger.warning("Transient network error (auto-recovering): %s", err)
+        return
+
+    logger.error("Unhandled exception in Telegram handler:", exc_info=err)
+
+    if ADMIN_CHAT_ID:
+        tb_text = "".join(traceback.format_exception(type(err), err, err.__traceback__, chain=True))
+        msg = f"⚠️ *Bot error*\n```\n{tb_text}\n```"
+        if len(msg) > 4096:
+            msg = msg[:4093] + "…`"
+        try:
+            async with Bot(token=TELEGRAM_BOT_TOKEN) as _b:
+                await _b.send_message(chat_id=ADMIN_CHAT_ID, text=msg, parse_mode="Markdown")
+        except Exception as notify_exc:
+            logger.warning("Failed to send error notification to admin: %s", notify_exc)
+
+
 def build_application() -> Application:
     """Create and configure the Telegram bot application."""
     global _dynamic_pairs, _main_loop
@@ -2126,6 +2154,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("spot_scan", cmd_spot_scan))
     app.add_handler(CommandHandler("spot_status", cmd_spot_status))
     app.add_handler(CommandHandler("scam_check", cmd_scam_check))
+    app.add_error_handler(_error_handler)
 
     # Fetch Binance USDT-M perpetual pairs dynamically at startup
     _refresh_dynamic_pairs()
