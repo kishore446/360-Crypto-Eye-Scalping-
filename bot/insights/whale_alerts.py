@@ -1,8 +1,8 @@
 """
-Whale Alert Monitor — CH5 Insights (CH5G)
-==========================================
+Whale Alert Monitor — CH7 Whale Tracker (falls back to CH5 Insights)
+=====================================================================
 Monitors for unusually large exchange inflows/outflows and posts formatted
-alerts to CH5 Market Insights channel.
+alerts to CH7 Whale Tracker (if configured) or CH5 Market Insights.
 
 When WHALE_ALERT_API_KEY is configured, uses the real Whale Alert REST API
 (https://docs.whale-alert.io/) to fetch large on-chain transactions > $1M.
@@ -15,7 +15,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Optional
 
-import requests
+import httpx
 
 if TYPE_CHECKING:
     from bot.exchange import ResilientExchange
@@ -36,8 +36,22 @@ except ImportError:
     WHALE_ALERT_API_KEY = ""
 
 
+def get_target_channel_id() -> int:
+    """
+    Return the appropriate channel ID for whale alerts.
+
+    Routes to CH7 (Whale Tracker) if configured; falls back to CH5 Insights.
+    Returns 0 if neither channel is configured.
+    """
+    try:
+        from config import TELEGRAM_CHANNEL_ID_INSIGHTS, TELEGRAM_CHANNEL_ID_WHALE
+        return TELEGRAM_CHANNEL_ID_WHALE or TELEGRAM_CHANNEL_ID_INSIGHTS
+    except ImportError:
+        return 0
+
+
 class WhaleAlertMonitor:
-    """Monitors large exchange inflows/outflows and posts to CH5 Insights."""
+    """Monitors large exchange inflows/outflows and posts to CH7 Whale Tracker (or CH5 Insights)."""
 
     async def check_whale_movements(
         self, exchange: "ResilientExchange"
@@ -68,17 +82,17 @@ class WhaleAlertMonitor:
         """Fetch real whale transactions from the Whale Alert API."""
         try:
             start_ts = int(time.time()) - 3600  # last hour
-            resp = requests.get(
-                _WHALE_ALERT_API_URL,
-                params={
-                    "api_key": WHALE_ALERT_API_KEY,
-                    "min_value": _WHALE_API_MIN_VALUE,
-                    "start": start_ts,
-                },
-                timeout=_TIMEOUT,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                resp = await client.get(
+                    _WHALE_ALERT_API_URL,
+                    params={
+                        "api_key": WHALE_ALERT_API_KEY,
+                        "min_value": _WHALE_API_MIN_VALUE,
+                        "start": start_ts,
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
             transactions = data.get("transactions") or []
             if not transactions:
                 return None

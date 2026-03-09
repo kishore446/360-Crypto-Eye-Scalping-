@@ -92,6 +92,7 @@ class AutoCloseMonitor:
         signal_router: "SignalRouter",
         poll_interval: float = 30.0,
         bot_state: "object | None" = None,
+        telegram_bot: "object | None" = None,
     ) -> None:
         self._risk_manager = signal_tracker
         self._dashboard = dashboard
@@ -100,10 +101,12 @@ class AutoCloseMonitor:
         self._router = signal_router
         self._poll_interval = poll_interval
         self._bot_state = bot_state
+        self._telegram_bot = telegram_bot  # Reuse bot instance (BUG #4 fix)
         self._running = False
         self._task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
         self._partial_positions: dict[str, PartialPosition] = {}
         self._alerted_invalidations: set[str] = set()
+        self._tp_levels_hit: dict[str, set[str]] = {}  # BUG #3: sequential TP tracking
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -202,20 +205,26 @@ class AutoCloseMonitor:
         if reason:
             self._alerted_invalidations.add(sig_id)
             alert = detector.format_alert(signal, reason, current_price)
-            await self._broadcast_close_raw(alert)
+            # Route invalidation alert to the signal's origin channel (BUG #1 fix)
+            origin = signal.origin_channel if signal.origin_channel else 0
+            await self._broadcast_close_raw(alert, channel_id=origin)
 
-    async def _broadcast_close_raw(self, message: str) -> None:
-        """Broadcast a raw text message to the insights channel."""
-        from bot.signal_router import ChannelTier
-        channel_id = self._router.get_channel_id(ChannelTier.INSIGHTS)
+    async def _broadcast_close_raw(self, message: str, channel_id: int = 0) -> None:
+        """Broadcast a raw text message to the given channel (defaults to CH5 Insights)."""
+        if not channel_id:
+            from bot.signal_router import ChannelTier
+            channel_id = self._router.get_channel_id(ChannelTier.INSIGHTS)
         if not channel_id:
             return
         try:
-            from telegram import Bot
+            if self._telegram_bot is not None:
+                await self._telegram_bot.send_message(chat_id=channel_id, text=message)
+            else:
+                from telegram import Bot
 
-            from config import TELEGRAM_BOT_TOKEN
-            bot = Bot(token=TELEGRAM_BOT_TOKEN)
-            await bot.send_message(chat_id=channel_id, text=message)
+                from config import TELEGRAM_BOT_TOKEN
+                bot = Bot(token=TELEGRAM_BOT_TOKEN)
+                await bot.send_message(chat_id=channel_id, text=message)
         except Exception as exc:
             logger.warning("Failed to broadcast invalidation alert: %s", exc)
 
@@ -224,77 +233,97 @@ class AutoCloseMonitor:
         Check whether the current price has hit any TP or SL level.
 
         Returns a ``CloseResult`` if a level was hit, else ``None``.
+        Handles sequential TP tracking: if price gaps past TP1/TP2, the skipped
+        levels are recorded first before the higher-level hit is returned.
         """
         r = signal.result
         now = time.time()
         entry = signal.entry_mid
+        sig_id = r.signal_id
+
+        # BUG #2 fix: derive channel_tier from signal.origin_channel
+        channel_tier = "AGGREGATE"
+        if signal.origin_channel:
+            tier = self._router.get_tier_for_channel_id(signal.origin_channel)
+            if tier is not None:
+                channel_tier = tier.value.upper()
+
+        # BUG #3: Ensure TP levels are tracked for sequential recording
+        if sig_id not in self._tp_levels_hit:
+            self._tp_levels_hit[sig_id] = set()
+        tp_hit = self._tp_levels_hit[sig_id]
+
+        def _make_result(outcome: str, exit_price: float, side: str, pnl: float) -> CloseResult:
+            return CloseResult(
+                signal_id=r.signal_id, symbol=r.symbol, side=side,
+                outcome=outcome, entry_price=entry, exit_price=exit_price,
+                pnl_pct=round(pnl, 4), opened_at=signal.opened_at, closed_at=now,
+                channel_tier=channel_tier,
+            )
 
         if r.side == Side.LONG:
             sl = signal.result.stop_loss if not signal.be_triggered else entry
             if current_price <= sl:
-                pnl = (current_price - entry) / entry * 100
-                return CloseResult(
-                    signal_id=r.signal_id, symbol=r.symbol, side="LONG",
-                    outcome="SL", entry_price=entry, exit_price=current_price,
-                    pnl_pct=round(pnl, 4), opened_at=signal.opened_at, closed_at=now,
-                )
+                return _make_result("SL", current_price, "LONG", (current_price - entry) / entry * 100)
             if current_price >= r.tp3:
-                pnl = (r.tp3 - entry) / entry * 100
-                return CloseResult(
-                    signal_id=r.signal_id, symbol=r.symbol, side="LONG",
-                    outcome="TP3", entry_price=entry, exit_price=r.tp3,
-                    pnl_pct=round(pnl, 4), opened_at=signal.opened_at, closed_at=now,
-                )
+                # BUG #3: Record skipped lower TPs sequentially before TP3
+                if "TP1" not in tp_hit:
+                    tp_hit.add("TP1")
+                    return _make_result("TP1", r.tp1, "LONG", (r.tp1 - entry) / entry * 100)
+                if "TP2" not in tp_hit:
+                    tp_hit.add("TP2")
+                    return _make_result("TP2", r.tp2, "LONG", (r.tp2 - entry) / entry * 100)
+                if "TP3" not in tp_hit:
+                    tp_hit.add("TP3")
+                    return _make_result("TP3", r.tp3, "LONG", (r.tp3 - entry) / entry * 100)
             if current_price >= r.tp2:
-                pnl = (r.tp2 - entry) / entry * 100
-                return CloseResult(
-                    signal_id=r.signal_id, symbol=r.symbol, side="LONG",
-                    outcome="TP2", entry_price=entry, exit_price=r.tp2,
-                    pnl_pct=round(pnl, 4), opened_at=signal.opened_at, closed_at=now,
-                )
+                if "TP1" not in tp_hit:
+                    tp_hit.add("TP1")
+                    return _make_result("TP1", r.tp1, "LONG", (r.tp1 - entry) / entry * 100)
+                if "TP2" not in tp_hit:
+                    tp_hit.add("TP2")
+                    return _make_result("TP2", r.tp2, "LONG", (r.tp2 - entry) / entry * 100)
             if current_price >= r.tp1:
-                pnl = (r.tp1 - entry) / entry * 100
-                return CloseResult(
-                    signal_id=r.signal_id, symbol=r.symbol, side="LONG",
-                    outcome="TP1", entry_price=entry, exit_price=r.tp1,
-                    pnl_pct=round(pnl, 4), opened_at=signal.opened_at, closed_at=now,
-                )
+                if "TP1" not in tp_hit:
+                    tp_hit.add("TP1")
+                    return _make_result("TP1", r.tp1, "LONG", (r.tp1 - entry) / entry * 100)
         else:  # SHORT
             sl = signal.result.stop_loss if not signal.be_triggered else entry
             if current_price >= sl:
-                pnl = (entry - current_price) / entry * 100
-                return CloseResult(
-                    signal_id=r.signal_id, symbol=r.symbol, side="SHORT",
-                    outcome="SL", entry_price=entry, exit_price=current_price,
-                    pnl_pct=round(pnl, 4), opened_at=signal.opened_at, closed_at=now,
-                )
+                return _make_result("SL", current_price, "SHORT", (entry - current_price) / entry * 100)
             if current_price <= r.tp3:
-                pnl = (entry - r.tp3) / entry * 100
-                return CloseResult(
-                    signal_id=r.signal_id, symbol=r.symbol, side="SHORT",
-                    outcome="TP3", entry_price=entry, exit_price=r.tp3,
-                    pnl_pct=round(pnl, 4), opened_at=signal.opened_at, closed_at=now,
-                )
+                if "TP1" not in tp_hit:
+                    tp_hit.add("TP1")
+                    return _make_result("TP1", r.tp1, "SHORT", (entry - r.tp1) / entry * 100)
+                if "TP2" not in tp_hit:
+                    tp_hit.add("TP2")
+                    return _make_result("TP2", r.tp2, "SHORT", (entry - r.tp2) / entry * 100)
+                if "TP3" not in tp_hit:
+                    tp_hit.add("TP3")
+                    return _make_result("TP3", r.tp3, "SHORT", (entry - r.tp3) / entry * 100)
             if current_price <= r.tp2:
-                pnl = (entry - r.tp2) / entry * 100
-                return CloseResult(
-                    signal_id=r.signal_id, symbol=r.symbol, side="SHORT",
-                    outcome="TP2", entry_price=entry, exit_price=r.tp2,
-                    pnl_pct=round(pnl, 4), opened_at=signal.opened_at, closed_at=now,
-                )
+                if "TP1" not in tp_hit:
+                    tp_hit.add("TP1")
+                    return _make_result("TP1", r.tp1, "SHORT", (entry - r.tp1) / entry * 100)
+                if "TP2" not in tp_hit:
+                    tp_hit.add("TP2")
+                    return _make_result("TP2", r.tp2, "SHORT", (entry - r.tp2) / entry * 100)
             if current_price <= r.tp1:
-                pnl = (entry - r.tp1) / entry * 100
-                return CloseResult(
-                    signal_id=r.signal_id, symbol=r.symbol, side="SHORT",
-                    outcome="TP1", entry_price=entry, exit_price=r.tp1,
-                    pnl_pct=round(pnl, 4), opened_at=signal.opened_at, closed_at=now,
-                )
+                if "TP1" not in tp_hit:
+                    tp_hit.add("TP1")
+                    return _make_result("TP1", r.tp1, "SHORT", (entry - r.tp1) / entry * 100)
         return None
 
     def _build_stale_result(self, signal: "ActiveSignal") -> CloseResult:
         """Build a stale-close result with 0 PnL."""
         entry = signal.entry_mid
         now = time.time()
+        # BUG #2 fix: derive channel_tier from signal.origin_channel
+        channel_tier = "AGGREGATE"
+        if signal.origin_channel:
+            tier = self._router.get_tier_for_channel_id(signal.origin_channel)
+            if tier is not None:
+                channel_tier = tier.value.upper()
         return CloseResult(
             signal_id=signal.result.signal_id,
             symbol=signal.result.symbol,
@@ -305,6 +334,7 @@ class AutoCloseMonitor:
             pnl_pct=0.0,
             opened_at=signal.opened_at,
             closed_at=now,
+            channel_tier=channel_tier,
         )
 
     # ── close processing ──────────────────────────────────────────────────────
@@ -332,8 +362,9 @@ class AutoCloseMonitor:
         partial_exits_json = pp.to_json() if pp.has_exits() else ""
         composite_pnl = pp.composite_pnl() if pp.has_exits() else close_result.pnl_pct
 
-        # Clean up partial position tracker
+        # Clean up partial position tracker and TP level tracker
         self._partial_positions.pop(sig_id, None)
+        self._tp_levels_hit.pop(sig_id, None)
         self._alerted_invalidations.discard(sig_id)
 
         self._risk_manager.close_signal(signal.result.symbol, reason=close_result.outcome.lower())
@@ -374,25 +405,39 @@ class AutoCloseMonitor:
         if dashboard_outcome != "STALE":
             self._cooldown.record_outcome(dashboard_outcome)
 
-        # Broadcast close summary
-        await self._broadcast_close(close_result, partial_position=pp)
+        # Broadcast close summary — route to origin channel (BUG #1 fix)
+        await self._broadcast_close(close_result, signal=signal, partial_position=pp)
 
     # ── broadcast ─────────────────────────────────────────────────────────────
 
-    async def _broadcast_close(self, close_result: CloseResult, partial_position: Optional["PartialPosition"] = None) -> None:
-        """Format and broadcast a signal close summary to the insights channel."""
-        from bot.signal_router import ChannelTier
+    async def _broadcast_close(
+        self,
+        close_result: CloseResult,
+        signal: "ActiveSignal | None" = None,
+        partial_position: Optional["PartialPosition"] = None,
+    ) -> None:
+        """Format and broadcast a signal close summary to the signal's origin channel."""
         message = self._format_close_message(close_result, partial_position=partial_position)
-        channel_id = self._router.get_channel_id(ChannelTier.INSIGHTS)
+        # BUG #1 fix: route to origin channel, not always CH5 Insights
+        if signal is not None and signal.origin_channel:
+            channel_id = signal.origin_channel
+        else:
+            from bot.signal_router import ChannelTier
+            channel_id = self._router.get_channel_id(ChannelTier.INSIGHTS)
         if not channel_id:
-            logger.debug("No CH5 insights channel configured; skipping close broadcast.")
+            logger.debug("No target channel configured; skipping close broadcast.")
             return
         try:
-            from telegram import Bot
+            if self._telegram_bot is not None:
+                await self._telegram_bot.send_message(
+                    chat_id=channel_id, text=message, parse_mode="HTML"
+                )
+            else:
+                from telegram import Bot
 
-            from config import TELEGRAM_BOT_TOKEN
-            bot = Bot(token=TELEGRAM_BOT_TOKEN)
-            await bot.send_message(chat_id=channel_id, text=message, parse_mode="HTML")
+                from config import TELEGRAM_BOT_TOKEN
+                bot = Bot(token=TELEGRAM_BOT_TOKEN)
+                await bot.send_message(chat_id=channel_id, text=message, parse_mode="HTML")
         except Exception as exc:
             logger.warning("Failed to broadcast close summary for %s: %s", close_result.symbol, exc)
 

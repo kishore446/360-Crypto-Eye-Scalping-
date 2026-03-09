@@ -13,8 +13,12 @@ from bot.signal_engine import (
     Side,
     assess_macro_bias,
     assess_macro_bias_relaxed,
+    detect_bollinger_squeeze,
+    detect_cvd_confirmation,
+    detect_ema_ribbon_alignment,
     detect_fair_value_gap,
     detect_liquidity_sweep,
+    detect_macd_confirmation,
     detect_market_structure_shift,
     detect_order_block,
     is_discount_zone,
@@ -35,16 +39,36 @@ class ConfluenceFactors:
     fvg_present: bool = False
     ob_present: bool = False
     session_active: bool = False
+    macd_confirmed: bool = False
+    bb_squeeze: bool = False
+    cvd_confirmed: bool = False
+    ema_ribbon_aligned: bool = False
+    # Tracked for future use — weight is 0 and does not contribute to score
+    funding_favorable: bool = False
+    oi_divergence: bool = False
+    btc_correlated: bool = False
+    rsi_divergence: bool = False
+    vwap_favorable: bool = False
 
 
 WEIGHTS = {
     "macro_bias_aligned": 20,
-    "in_discount_premium_zone": 15,
+    "in_discount_premium_zone": 20,
     "liquidity_swept": 20,
     "mss_confirmed": 20,
     "fvg_present": 10,
     "ob_present": 10,
-    "session_active": 5,
+    "session_active": 10,
+    "macd_confirmed": 10,
+    "bb_squeeze": 10,
+    "cvd_confirmed": 10,
+    "ema_ribbon_aligned": 10,
+    # Below are tracked but not included in the 100-point base total
+    "funding_favorable": 0,
+    "oi_divergence": 0,
+    "btc_correlated": 0,
+    "rsi_divergence": 0,
+    "vwap_favorable": 0,
 }
 
 
@@ -67,6 +91,14 @@ def compute_confluence_score(factors: ConfluenceFactors) -> int:
         score += WEIGHTS["ob_present"]
     if factors.session_active:
         score += WEIGHTS["session_active"]
+    if factors.macd_confirmed:
+        score += WEIGHTS["macd_confirmed"]
+    if factors.bb_squeeze:
+        score += WEIGHTS["bb_squeeze"]
+    if factors.cvd_confirmed:
+        score += WEIGHTS["cvd_confirmed"]
+    if factors.ema_ribbon_aligned:
+        score += WEIGHTS["ema_ribbon_aligned"]
     return score
 
 
@@ -106,6 +138,10 @@ def build_confluence_factors(
     mss = detect_market_structure_shift(five_min_candles, side)
     fvg = detect_fair_value_gap(five_min_candles, side)
     ob = detect_order_block(five_min_candles, side)
+    macd_ok = detect_macd_confirmation(five_min_candles, side)
+    bb_sq = detect_bollinger_squeeze(five_min_candles)
+    cvd_ok = detect_cvd_confirmation(five_min_candles, side)
+    ribbon_ok = detect_ema_ribbon_alignment(five_min_candles, side)
 
     return ConfluenceFactors(
         macro_bias_aligned=macro_aligned,
@@ -115,4 +151,8 @@ def build_confluence_factors(
         fvg_present=fvg,
         ob_present=ob,
         session_active=session_active,
+        macd_confirmed=macd_ok,
+        bb_squeeze=bb_sq,
+        cvd_confirmed=cvd_ok,
+        ema_ribbon_aligned=ribbon_ok,
     )

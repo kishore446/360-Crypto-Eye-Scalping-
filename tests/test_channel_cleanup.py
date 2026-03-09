@@ -160,8 +160,18 @@ class TestSignalRouterChannels:
             channel_spot=-100_444,
             channel_insights=-100_555,
         )
-        for tier in ChannelTier:
+        # Core CH1-CH5 channels should be enabled
+        for tier in (
+            ChannelTier.HARD, ChannelTier.MEDIUM, ChannelTier.EASY,
+            ChannelTier.SPOT, ChannelTier.INSIGHTS,
+        ):
             assert router.is_channel_enabled(tier), f"{tier} should be enabled"
+        # New optional CH6-CH9 channels default to 0 (disabled) — this is correct
+        for tier in (
+            ChannelTier.ALTGEMS, ChannelTier.WHALE_TRACKER,
+            ChannelTier.EDUCATION, ChannelTier.VIP_DISCUSSION,
+        ):
+            assert not router.is_channel_enabled(tier), f"{tier} should be disabled by default"
 
 
 class TestNewSpotConfigVars:
