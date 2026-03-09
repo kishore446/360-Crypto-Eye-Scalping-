@@ -148,3 +148,11 @@ class TestFormatAlert:
         alert = detector.format_alert(sig, "Volume Death", 103.5)
         assert "SHORT" in alert
         assert "Volume Death" in alert
+
+    def test_format_alert_no_hash_before_symbol(self):
+        """Regression: symbol must not be prefixed with # to avoid Telegram Markdown parse errors."""
+        detector = InvalidationDetector()
+        sig = _make_signal("LONG", entry_low=98.0, entry_high=102.0)
+        alert = detector.format_alert(sig, "OB Breach", 97.5)
+        assert "#BTC" not in alert
+        assert "BTC/USDT" in alert
