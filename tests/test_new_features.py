@@ -175,9 +175,15 @@ async def test_close_falls_back_to_insights_when_no_origin(monitor):
     monitor._telegram_bot = mock_bot
 
     close_result = CloseResult(
-        signal_id="x", symbol="BTC", side="LONG", outcome="SL",
-        entry_price=101.0, exit_price=95.0, pnl_pct=-6.0,
-        opened_at=time.time() - 1800, closed_at=time.time(),
+        signal_id="x",
+        symbol="BTC",
+        side="LONG",
+        outcome="SL",
+        entry_price=101.0,
+        exit_price=95.0,
+        pnl_pct=-6.0,
+        opened_at=time.time() - 1800,
+        closed_at=time.time(),
     )
     await monitor._broadcast_close(close_result, signal=signal)
     assert sent_to == [insights_id]

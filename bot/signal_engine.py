@@ -365,13 +365,13 @@ def assess_macro_bias(
     ema9_daily = calculate_ema(daily_candles, period=9)
 
     # BUG #5 fix: use 3-day comparison instead of single-candle
-    last3 = daily_candles[-4:]  # need 4 candles for 3 comparisons
-    if len(last3) >= 4:
+    last4 = daily_candles[-4:]  # need 4 candles for 3 comparisons
+    if len(last4) >= 4:
         rises = sum(
-            1 for i in range(1, 4) if last3[i].close > last3[i - 1].close
+            1 for i in range(1, 4) if last4[i].close > last4[i - 1].close
         )
         falls = sum(
-            1 for i in range(1, 4) if last3[i].close < last3[i - 1].close
+            1 for i in range(1, 4) if last4[i].close < last4[i - 1].close
         )
     else:
         # Fallback to single-candle comparison when insufficient history

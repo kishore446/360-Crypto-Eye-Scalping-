@@ -43,6 +43,7 @@ class ConfluenceFactors:
     bb_squeeze: bool = False
     cvd_confirmed: bool = False
     ema_ribbon_aligned: bool = False
+    # Tracked for future use — weight is 0 and does not contribute to score
     funding_favorable: bool = False
     oi_divergence: bool = False
     btc_correlated: bool = False

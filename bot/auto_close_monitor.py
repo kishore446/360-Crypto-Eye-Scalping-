@@ -253,9 +253,9 @@ class AutoCloseMonitor:
             self._tp_levels_hit[sig_id] = set()
         tp_hit = self._tp_levels_hit[sig_id]
 
-        def _make_result(outcome: str, exit_price: float, side_str: str, pnl: float) -> CloseResult:
+        def _make_result(outcome: str, exit_price: float, side: str, pnl: float) -> CloseResult:
             return CloseResult(
-                signal_id=r.signal_id, symbol=r.symbol, side=side_str,
+                signal_id=r.signal_id, symbol=r.symbol, side=side,
                 outcome=outcome, entry_price=entry, exit_price=exit_price,
                 pnl_pct=round(pnl, 4), opened_at=signal.opened_at, closed_at=now,
                 channel_tier=channel_tier,
