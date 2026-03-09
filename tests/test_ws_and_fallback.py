@@ -404,3 +404,51 @@ class TestFallbackScanJob:
                 _bot._run_fallback_scan_job()
 
         self._risk.add_signal.assert_called_once_with(fake_result, origin_channel=ANY, created_regime=ANY)
+
+
+# ── MarketDataStore thread-safety ────────────────────────────────────────────
+
+class TestMarketDataStoreThreadSafety:
+    """Regression tests for the Lock→RLock and _ensure_buffers race-condition fixes."""
+
+    def test_uses_rlock(self):
+        """Regression: _lock must be a RLock (reentrant) to prevent deadlock on re-entry."""
+        import threading
+        store = MarketDataStore()
+        assert isinstance(store._lock, type(threading.RLock())), (
+            "MarketDataStore._lock must be threading.RLock(), not Lock()"
+        )
+
+    def test_ensure_buffers_is_idempotent(self):
+        """Regression: calling _ensure_buffers twice must not overwrite existing buffer data."""
+        store = MarketDataStore()
+        store.update_candle("BTC", "5m", [1.0, 2.0, 3.0, 0.5, 2.5, 100.0])
+        buf_before = store._candles["BTC"]["5m"]
+        # Calling _ensure_buffers again with the lock held (simulates re-entry)
+        with store._lock:
+            store._ensure_buffers("BTC")
+        assert store._candles["BTC"]["5m"] is buf_before, (
+            "_ensure_buffers must not overwrite existing buffers (setdefault semantics)"
+        )
+
+    def test_concurrent_update_candle_no_exception(self):
+        """Regression: concurrent update_candle calls from multiple threads must not raise."""
+        import threading
+        store = MarketDataStore()
+        errors: list[Exception] = []
+
+        def worker(symbol: str) -> None:
+            try:
+                for i in range(50):
+                    store.update_candle(symbol, "5m", [float(i), 1.0, 2.0, 0.5, 1.5, 100.0])
+            except Exception as exc:
+                errors.append(exc)
+
+        symbols = [f"SYM{i}" for i in range(10)]
+        threads = [threading.Thread(target=worker, args=(s,)) for s in symbols]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == [], f"Concurrent updates raised exceptions: {errors}"

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -238,3 +239,28 @@ async def test_process_close_records_dashboard(monitor):
     assert call_args.symbol == "BTC"
     monitor._cooldown.record_outcome.assert_called_once_with("WIN")
     monitor._risk_manager.close_signal.assert_called_once_with("BTC", reason="tp2")
+
+
+@pytest.mark.asyncio
+async def test_broadcast_close_raw_sends_plain_text(monitor):
+    """Regression: _broadcast_close_raw must NOT use parse_mode to avoid Markdown entity errors."""
+    sent_kwargs: dict[str, Any] = {}
+
+    async def fake_send_message(**kwargs):
+        sent_kwargs.update(kwargs)
+
+    mock_bot_instance = MagicMock()
+    mock_bot_instance.send_message = AsyncMock(side_effect=fake_send_message)
+
+    monitor._router.get_channel_id.return_value = 12345
+
+    with (
+        patch("telegram.Bot", return_value=mock_bot_instance),
+        patch("config.TELEGRAM_BOT_TOKEN", "fake-token"),
+    ):
+        await monitor._broadcast_close_raw("⚠️ SIGNAL INVALIDATION — BTC/USDT LONG\nReason: OB Breach")
+
+    mock_bot_instance.send_message.assert_called_once()
+    assert "parse_mode" not in sent_kwargs, (
+        "_broadcast_close_raw must not pass parse_mode (causes Telegram Markdown entity errors)"
+    )
