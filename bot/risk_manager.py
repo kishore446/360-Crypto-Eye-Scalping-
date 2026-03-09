@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -27,6 +28,8 @@ from config import (
     SIGNALS_FILE,
     STALE_SIGNAL_HOURS,
 )
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "ActiveSignal",
@@ -94,29 +97,105 @@ class RiskManager:
     # ── persistence ───────────────────────────────────────────────────────────
 
     def _save(self) -> None:
-        """Serialise ``_signals`` to JSON for restart-safe persistence."""
-        data = []
-        for sig in self._signals:
-            d = dataclasses.asdict(sig)
-            # str-Enums serialise to their string value via json.dumps; store
-            # them explicitly so deserialisation is unambiguous.
-            d["result"]["side"] = sig.result.side.value
-            d["result"]["confidence"] = sig.result.confidence.value
-            data.append(d)
+        """Persist ``_signals`` to SQLite database (primary) and JSON (legacy backup)."""
         try:
-            Path(SIGNALS_FILE).write_text(
-                json.dumps(data, indent=2), encoding="utf-8"
-            )
-        except OSError as exc:
-            import logging
-            logging.getLogger(__name__).error(
-                "Failed to persist signals to %s: %s", SIGNALS_FILE, exc
-            )
+            from bot.database import init_db, save_signal
+            init_db()
+            for sig in self._signals:
+                signal_data = {
+                    "id": sig.result.signal_id or f"sig_{int(sig.opened_at)}",
+                    "symbol": sig.result.symbol,
+                    "side": sig.result.side.value,
+                    "confidence": sig.result.confidence.value,
+                    "entry_low": sig.result.entry_low,
+                    "entry_high": sig.result.entry_high,
+                    "tp1": sig.result.tp1,
+                    "tp2": sig.result.tp2,
+                    "tp3": sig.result.tp3,
+                    "stop_loss": sig.result.stop_loss,
+                    "structure_note": sig.result.structure_note,
+                    "context_note": sig.result.context_note,
+                    "leverage_min": sig.result.leverage_min,
+                    "leverage_max": sig.result.leverage_max,
+                    "opened_at": sig.opened_at,
+                    "closed_at": None,
+                    "be_triggered": sig.be_triggered,
+                    "closed": sig.closed,
+                    "close_reason": sig.close_reason,
+                    "created_by": "risk_manager",
+                    "confluence_gates_json": None,
+                    "origin_channel": sig.origin_channel,
+                    "confluence_score": sig.result.confluence_score,
+                }
+                save_signal(signal_data)
+        except Exception as exc:
+            logger.error("Failed to persist signals to SQLite: %s", exc)
 
     def _load(self) -> None:
-        """Deserialise ``_signals`` from the JSON persistence file."""
+        """Load ``_signals`` from SQLite database, with one-time JSON migration fallback."""
+        # One-time migration: if JSON file exists, migrate it to SQLite first
+        json_path = Path(SIGNALS_FILE)
+        if json_path.exists():
+            try:
+                from bot.database import init_db, migrate_from_json
+                init_db()
+                migrate_from_json(str(json_path), "")
+                logger.info("Migrated signals from JSON to SQLite: %s", json_path)
+            except Exception as exc:
+                logger.warning("JSON migration failed (%s); falling back to JSON load.", exc)
+                self._load_from_json()
+                return
+
+        # Load from SQLite
+        try:
+            from bot.database import init_db, load_active_signals
+            init_db()
+            rows = load_active_signals()
+            signals = []
+            for row in rows:
+                try:
+                    result = SignalResult(
+                        symbol=row["symbol"],
+                        side=Side(row["side"]),
+                        confidence=Confidence(row["confidence"]),
+                        entry_low=float(row["entry_low"]),
+                        entry_high=float(row["entry_high"]),
+                        tp1=float(row["tp1"]),
+                        tp2=float(row["tp2"]),
+                        tp3=float(row["tp3"]),
+                        stop_loss=float(row["stop_loss"]),
+                        structure_note=row.get("structure_note") or "",
+                        context_note=row.get("context_note") or "",
+                        leverage_min=int(row.get("leverage_min") or 10),
+                        leverage_max=int(row.get("leverage_max") or 20),
+                        signal_id=row.get("id") or "",
+                        confluence_score=int(row.get("confluence_score") or 0),
+                    )
+                    signals.append(
+                        ActiveSignal(
+                            result=result,
+                            opened_at=float(row.get("opened_at") or time.time()),
+                            be_triggered=bool(row.get("be_triggered") or False),
+                            closed=bool(row.get("closed") or False),
+                            close_reason=row.get("close_reason"),
+                            origin_channel=int(row.get("origin_channel") or 0),
+                            created_regime=row.get("created_regime") or "UNKNOWN",
+                        )
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    logger.warning("Skipping malformed signal row: %s", exc)
+            self._signals = signals
+        except Exception as exc:
+            logger.warning(
+                "Could not load signals from SQLite (%s); starting with empty list.", exc
+            )
+            self._signals = []
+
+    def _load_from_json(self) -> None:
+        """Legacy JSON load, used only as last-resort fallback during migration."""
         path = Path(SIGNALS_FILE)
         if not path.exists():
+            self._signals = []
             return
         try:
             raw: list[dict] = json.loads(path.read_text(encoding="utf-8"))
@@ -153,10 +232,9 @@ class RiskManager:
                 )
             self._signals = signals
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-            import logging
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 "Could not load signals from %s (%s); starting with empty list.",
-                SIGNALS_FILE, exc
+                SIGNALS_FILE, exc,
             )
             self._signals = []
 

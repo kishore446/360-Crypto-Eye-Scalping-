@@ -100,6 +100,30 @@ try:
         min_confluence_score: int = 40  # 40 = filter out low-quality signals
         min_displacement_pct: float = 0.15  # Gate ④ displacement filter (§2.2)
 
+        # ── 3-Channel Futures Thresholds ──────────────────────────────────────
+        ch1_min_confluence: int = 70          # Hard scalp minimum score
+        ch2_min_confluence: int = 50          # Medium scalp minimum score
+        ch3_min_confluence: int = 35          # Easy breakout minimum score
+        ch1_news_window_minutes: int = 60     # Hard scalp news freeze
+        ch3_news_window_minutes: int = 15     # Easy breakout news freeze
+        ch2_volume_percentile: float = 0.60   # Relaxed volume for CH2
+        ch3_volume_percentile: float = 0.50   # Relaxed volume for CH3
+        ch1_leverage_min: int = 15
+        ch1_leverage_max: int = 20
+        ch2_leverage_min: int = 10
+        ch2_leverage_max: int = 15
+        ch3_leverage_min: int = 5
+        ch3_leverage_max: int = 10
+        ch1_tp1_rr: float = 1.5
+        ch1_tp2_rr: float = 2.5
+        ch1_tp3_rr: float = 4.0
+        ch2_tp1_rr: float = 1.2
+        ch2_tp2_rr: float = 2.0
+        ch2_tp3_rr: float = 3.0
+        ch3_tp1_rr: float = 1.0
+        ch3_tp2_rr: float = 1.5
+        ch3_tp3_rr: float = 2.5
+
         # ── RSI Divergence ────────────────────────────────────────────────────
         rsi_divergence_period: int = 14  # RSI period for divergence detection
 
@@ -267,6 +291,29 @@ try:
     MIN_DISPLACEMENT_PCT: float = settings.min_displacement_pct
     NEWS_FAIL_SAFE_WINDOW_MINUTES: int = settings.news_fail_safe_window_minutes
 
+    CH1_MIN_CONFLUENCE: int = settings.ch1_min_confluence
+    CH2_MIN_CONFLUENCE: int = settings.ch2_min_confluence
+    CH3_MIN_CONFLUENCE: int = settings.ch3_min_confluence
+    CH1_NEWS_WINDOW_MINUTES: int = settings.ch1_news_window_minutes
+    CH3_NEWS_WINDOW_MINUTES: int = settings.ch3_news_window_minutes
+    CH2_VOLUME_PERCENTILE: float = settings.ch2_volume_percentile
+    CH3_VOLUME_PERCENTILE: float = settings.ch3_volume_percentile
+    CH1_LEVERAGE_MIN: int = settings.ch1_leverage_min
+    CH1_LEVERAGE_MAX: int = settings.ch1_leverage_max
+    CH2_LEVERAGE_MIN: int = settings.ch2_leverage_min
+    CH2_LEVERAGE_MAX: int = settings.ch2_leverage_max
+    CH3_LEVERAGE_MIN: int = settings.ch3_leverage_min
+    CH3_LEVERAGE_MAX: int = settings.ch3_leverage_max
+    CH1_TP1_RR: float = settings.ch1_tp1_rr
+    CH1_TP2_RR: float = settings.ch1_tp2_rr
+    CH1_TP3_RR: float = settings.ch1_tp3_rr
+    CH2_TP1_RR: float = settings.ch2_tp1_rr
+    CH2_TP2_RR: float = settings.ch2_tp2_rr
+    CH2_TP3_RR: float = settings.ch2_tp3_rr
+    CH3_TP1_RR: float = settings.ch3_tp1_rr
+    CH3_TP2_RR: float = settings.ch3_tp2_rr
+    CH3_TP3_RR: float = settings.ch3_tp3_rr
+
     RSI_DIVERGENCE_PERIOD: int = settings.rsi_divergence_period
 
     CHANNEL_DEGRADATION_LOW_WR: float = settings.channel_degradation_low_wr
@@ -390,6 +437,29 @@ except ImportError:
     MIN_CONFLUENCE_SCORE: int = int(os.environ.get("MIN_CONFLUENCE_SCORE", "40"))
     MIN_DISPLACEMENT_PCT: float = float(os.environ.get("MIN_DISPLACEMENT_PCT", "0.15"))
     NEWS_FAIL_SAFE_WINDOW_MINUTES: int = int(os.environ.get("NEWS_FAIL_SAFE_WINDOW_MINUTES", "60"))
+
+    CH1_MIN_CONFLUENCE: int = int(os.environ.get("CH1_MIN_CONFLUENCE", "70"))
+    CH2_MIN_CONFLUENCE: int = int(os.environ.get("CH2_MIN_CONFLUENCE", "50"))
+    CH3_MIN_CONFLUENCE: int = int(os.environ.get("CH3_MIN_CONFLUENCE", "35"))
+    CH1_NEWS_WINDOW_MINUTES: int = int(os.environ.get("CH1_NEWS_WINDOW_MINUTES", "60"))
+    CH3_NEWS_WINDOW_MINUTES: int = int(os.environ.get("CH3_NEWS_WINDOW_MINUTES", "15"))
+    CH2_VOLUME_PERCENTILE: float = float(os.environ.get("CH2_VOLUME_PERCENTILE", "0.60"))
+    CH3_VOLUME_PERCENTILE: float = float(os.environ.get("CH3_VOLUME_PERCENTILE", "0.50"))
+    CH1_LEVERAGE_MIN: int = int(os.environ.get("CH1_LEVERAGE_MIN", "15"))
+    CH1_LEVERAGE_MAX: int = int(os.environ.get("CH1_LEVERAGE_MAX", "20"))
+    CH2_LEVERAGE_MIN: int = int(os.environ.get("CH2_LEVERAGE_MIN", "10"))
+    CH2_LEVERAGE_MAX: int = int(os.environ.get("CH2_LEVERAGE_MAX", "15"))
+    CH3_LEVERAGE_MIN: int = int(os.environ.get("CH3_LEVERAGE_MIN", "5"))
+    CH3_LEVERAGE_MAX: int = int(os.environ.get("CH3_LEVERAGE_MAX", "10"))
+    CH1_TP1_RR: float = float(os.environ.get("CH1_TP1_RR", "1.5"))
+    CH1_TP2_RR: float = float(os.environ.get("CH1_TP2_RR", "2.5"))
+    CH1_TP3_RR: float = float(os.environ.get("CH1_TP3_RR", "4.0"))
+    CH2_TP1_RR: float = float(os.environ.get("CH2_TP1_RR", "1.2"))
+    CH2_TP2_RR: float = float(os.environ.get("CH2_TP2_RR", "2.0"))
+    CH2_TP3_RR: float = float(os.environ.get("CH2_TP3_RR", "3.0"))
+    CH3_TP1_RR: float = float(os.environ.get("CH3_TP1_RR", "1.0"))
+    CH3_TP2_RR: float = float(os.environ.get("CH3_TP2_RR", "1.5"))
+    CH3_TP3_RR: float = float(os.environ.get("CH3_TP3_RR", "2.5"))
 
     RSI_DIVERGENCE_PERIOD: int = int(os.environ.get("RSI_DIVERGENCE_PERIOD", "14"))
 

@@ -90,3 +90,9 @@ class BotState:
             if self._last_signal_generated_at == 0.0:
                 return float("inf")
             return time.time() - self._last_signal_generated_at
+
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the singleton instance — useful for test isolation."""
+        with cls._lock:
+            cls._instance = None

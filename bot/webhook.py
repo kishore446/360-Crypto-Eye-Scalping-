@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+import threading
 import time
 import uuid
 from collections import defaultdict
@@ -43,6 +44,17 @@ from config import (
     WEBHOOK_SECRET,
 )
 
+try:
+    from config import (
+        TELEGRAM_CHANNEL_ID_HARD,
+        TELEGRAM_CHANNEL_ID_MEDIUM,
+        TELEGRAM_CHANNEL_ID_EASY,
+    )
+except ImportError:
+    TELEGRAM_CHANNEL_ID_HARD = 0
+    TELEGRAM_CHANNEL_ID_MEDIUM = 0
+    TELEGRAM_CHANNEL_ID_EASY = 0
+
 logger = logging.getLogger(__name__)
 
 # ── Start time for uptime tracking ───────────────────────────────────────────
@@ -50,6 +62,7 @@ _start_time = time.time()
 
 # ── Rate limiting: track request timestamps per IP ───────────────────────────
 _request_log: dict[str, list[float]] = defaultdict(list)
+_rate_limit_lock = threading.Lock()
 
 # ── Pydantic payload validation (optional but available) ─────────────────────
 try:
@@ -97,15 +110,15 @@ def _check_ip_allowlist(remote_addr: str) -> bool:
 
 def _check_rate_limit(remote_addr: str) -> bool:
     """Return True when the IP has not exceeded the rate limit."""
-    now = time.time()
-    window_start = now - WEBHOOK_RATE_LIMIT_WINDOW
-    # Prune old entries (handle both defaultdict and regular dict)
-    existing = _request_log.get(remote_addr, [])
-    _request_log[remote_addr] = [t for t in existing if t > window_start]
-    if len(_request_log[remote_addr]) >= WEBHOOK_RATE_LIMIT_MAX:
-        return False
-    _request_log[remote_addr].append(now)
-    return True
+    with _rate_limit_lock:
+        now = time.time()
+        window_start = now - WEBHOOK_RATE_LIMIT_WINDOW
+        existing = _request_log.get(remote_addr, [])
+        _request_log[remote_addr] = [t for t in existing if t > window_start]
+        if len(_request_log[remote_addr]) >= WEBHOOK_RATE_LIMIT_MAX:
+            return False
+        _request_log[remote_addr].append(now)
+        return True
 
 
 def create_app() -> Flask:
@@ -126,6 +139,13 @@ def create_app() -> Flask:
             "service": "360-crypto-eye-scalping",
             "uptime_seconds": uptime_seconds,
             "active_signal_count": active_count,
+            "channels": {
+                "ch1_hard": bool(TELEGRAM_CHANNEL_ID_HARD),
+                "ch2_medium": bool(TELEGRAM_CHANNEL_ID_MEDIUM),
+                "ch3_easy": bool(TELEGRAM_CHANNEL_ID_EASY),
+            },
+            "circuit_breaker": "closed",
+            "last_scan_ts": None,
         })
 
     @app.route("/webhook", methods=["POST"])
@@ -227,33 +247,36 @@ def create_app() -> Flask:
 
 def _send_telegram_message(text: str, channel_id: int = TELEGRAM_CHANNEL_ID) -> None:
     """
-    Send *text* to the specified Telegram channel using the Bot API (synchronous).
+    Send *text* to the specified Telegram channel using the Bot API.
 
-    In production prefer the async handler in bot.py.  This synchronous
-    helper exists specifically for the webhook context where an async event
-    loop is not available.
+    The actual HTTP call is performed on a background daemon thread so that
+    the Flask worker is not blocked while waiting for the Telegram API.
     """
-    import json as _json
-    import urllib.error
-    import urllib.request
+    def _send() -> None:
+        import json as _json
+        import urllib.error
+        import urllib.request
 
-    if not TELEGRAM_BOT_TOKEN:
-        logger.warning("TELEGRAM_BOT_TOKEN not set — skipping Telegram broadcast.")
-        return
+        if not TELEGRAM_BOT_TOKEN:
+            logger.warning("TELEGRAM_BOT_TOKEN not set — skipping Telegram broadcast.")
+            return
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = _json.dumps({
-        "chat_id": channel_id,
-        "text": text,
-        "parse_mode": "Markdown",
-    }).encode()
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        data = _json.dumps({
+            "chat_id": channel_id,
+            "text": text,
+            "parse_mode": "Markdown",
+        }).encode()
 
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            logger.debug("Telegram API response: %s", resp.read())
-    except urllib.error.URLError as exc:
-        logger.error("Failed to send Telegram message: %s", exc)
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                logger.debug("Telegram API response: %s", resp.read())
+        except urllib.error.URLError as exc:
+            logger.error("Failed to send Telegram message: %s", exc)
+
+    thread = threading.Thread(target=_send, daemon=True)
+    thread.start()
 
 
 if __name__ == "__main__":

@@ -8,9 +8,20 @@ import time
 
 import pytest
 
+import bot.database as db_module
 from bot.risk_manager import ActiveSignal, RiskManager, calculate_position_size
 from bot.signal_engine import Confidence, Side, SignalResult
 from config import MAX_SAME_SIDE_SIGNALS, STALE_SIGNAL_HOURS
+
+
+# ── DB isolation ──────────────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def _isolated_db(tmp_path, monkeypatch):
+    """Each test gets its own SQLite database file, so RiskManager starts fresh."""
+    db_file = str(tmp_path / "test_risk_manager.db")
+    monkeypatch.setattr(db_module, "_DB_PATH", db_file)
+    yield db_file
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

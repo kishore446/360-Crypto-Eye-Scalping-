@@ -10,7 +10,10 @@ import bot.database as db_module
 from bot.database import (
     _get_conn,
     init_db,
+    load_active_signals,
     migrate_from_json,
+    save_signal,
+    update_signal,
 )
 
 
@@ -42,6 +45,51 @@ class TestInitDb:
     def test_idempotent_multiple_calls(self):
         init_db()
         init_db()  # should not raise
+
+    def test_creates_indexes(self):
+        init_db()
+        with _get_conn() as conn:
+            indexes = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                ).fetchall()
+            }
+        assert "idx_signals_closed" in indexes
+        assert "idx_signals_symbol" in indexes
+        assert "idx_trade_results_outcome" in indexes
+        assert "idx_signals_opened_at" in indexes
+
+    def test_creates_origin_channel_column(self):
+        """init_db() should add origin_channel and confluence_score columns."""
+        init_db()
+        with _get_conn() as conn:
+            cols = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(signals)").fetchall()
+            }
+        assert "origin_channel" in cols
+        assert "confluence_score" in cols
+
+    def test_db_path_reads_from_config(self, monkeypatch):
+        """_DB_PATH should default to config.DB_PATH value, not hardcoded."""
+        # The module-level default should NOT be the old hardcoded "360eye.db"
+        # (it may be overridden by monkeypatch in _isolated_db fixture, so check
+        # the import behaviour instead)
+        import importlib
+        import sys
+        # Remove cached module to test fresh import
+        if "bot.database" in sys.modules:
+            saved = sys.modules.pop("bot.database")
+        try:
+            fresh_mod = importlib.import_module("bot.database")
+            # The default should be "data/360eye.db" (from config or fallback),
+            # NOT the old hardcoded "360eye.db" (no directory prefix)
+            assert fresh_mod._DB_PATH != "360eye.db"
+        finally:
+            # Restore monkeypatched module
+            sys.modules["bot.database"] = saved
+            db_module._DB_PATH = saved._DB_PATH
 
 
 class TestCRUD:
@@ -96,6 +144,95 @@ class TestCRUD:
         with _get_conn() as conn:
             count = conn.execute("SELECT COUNT(*) FROM signals WHERE id=?", (sig_id,)).fetchone()[0]
         assert count == 1
+
+
+class TestSignalCRUD:
+    """Test save_signal, load_active_signals, update_signal helpers."""
+
+    def _make_signal_data(self, sig_id: str = "SIG-001", closed: bool = False) -> dict:
+        return {
+            "id": sig_id,
+            "symbol": "BTC",
+            "side": "LONG",
+            "confidence": "High",
+            "entry_low": 64900.0,
+            "entry_high": 65000.0,
+            "tp1": 65750.0,
+            "tp2": 66500.0,
+            "tp3": 68000.0,
+            "stop_loss": 64400.0,
+            "structure_note": "Test note",
+            "context_note": "Test context",
+            "leverage_min": 15,
+            "leverage_max": 20,
+            "opened_at": time.time(),
+            "closed_at": None,
+            "be_triggered": False,
+            "closed": closed,
+            "close_reason": None,
+            "created_by": "scanner",
+            "confluence_gates_json": None,
+            "origin_channel": 12345,
+            "confluence_score": 75,
+        }
+
+    def test_save_signal_inserts_row(self):
+        init_db()
+        save_signal(self._make_signal_data("SAVE-001"))
+        with _get_conn() as conn:
+            row = conn.execute("SELECT * FROM signals WHERE id='SAVE-001'").fetchone()
+        assert row is not None
+        assert row["symbol"] == "BTC"
+        assert row["origin_channel"] == 12345
+        assert row["confluence_score"] == 75
+
+    def test_save_signal_upserts_on_duplicate(self):
+        init_db()
+        data = self._make_signal_data("UPSERT-001")
+        save_signal(data)
+        data["confidence"] = "Medium"
+        save_signal(data)  # Should replace, not error
+        with _get_conn() as conn:
+            row = conn.execute("SELECT * FROM signals WHERE id='UPSERT-001'").fetchone()
+        assert row["confidence"] == "Medium"
+
+    def test_load_active_signals_excludes_closed(self):
+        init_db()
+        save_signal(self._make_signal_data("OPEN-001", closed=False))
+        save_signal(self._make_signal_data("CLOSED-001", closed=True))
+        signals = load_active_signals()
+        ids = [s["id"] for s in signals]
+        assert "OPEN-001" in ids
+        assert "CLOSED-001" not in ids
+
+    def test_load_active_signals_returns_dict_list(self):
+        init_db()
+        save_signal(self._make_signal_data("DICT-001"))
+        signals = load_active_signals()
+        assert isinstance(signals, list)
+        assert all(isinstance(s, dict) for s in signals)
+
+    def test_update_signal_changes_fields(self):
+        init_db()
+        save_signal(self._make_signal_data("UPDATE-001"))
+        update_signal("UPDATE-001", {"closed": 1, "close_reason": "tp1_hit"})
+        with _get_conn() as conn:
+            row = conn.execute("SELECT * FROM signals WHERE id='UPDATE-001'").fetchone()
+        assert row["closed"] == 1
+        assert row["close_reason"] == "tp1_hit"
+
+    def test_update_signal_noop_on_empty_updates(self):
+        init_db()
+        save_signal(self._make_signal_data("NOOP-001"))
+        update_signal("NOOP-001", {})  # Should not raise
+        with _get_conn() as conn:
+            row = conn.execute("SELECT * FROM signals WHERE id='NOOP-001'").fetchone()
+        assert row is not None
+
+    def test_load_active_signals_empty_db(self):
+        init_db()
+        signals = load_active_signals()
+        assert signals == []
 
 
 class TestMigrateFromJson:
