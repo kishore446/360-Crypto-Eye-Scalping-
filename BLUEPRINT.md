@@ -1,6 +1,6 @@
 # 360 Crypto Eye Scalping — Institutional Master Blueprint
 
-**Version:** `3.0.0-domination`  
+**Version:** `4.0.0-domination`  
 **Status:** Canonical Authority — if code differs from this document, the code is wrong.  
 **Purpose:** Single source of truth for architecture, strategy, modules, safety protocols, and deployment.
 
@@ -36,6 +36,13 @@
   - [§3.13 bot/funding_rate.py](#313-botfunding_ratepy--funding-rate-gate)
   - [§3.14 bot/open_interest.py](#314-botopen_interestpy--open-interest-monitor)
   - [§3.15 bot/loss_streak_cooldown.py](#315-botloss_streak_cooldownpy--loss-streak-cooldown)
+  - [§3.16 bot/spot_scanner.py](#316-botspot_scannerpy--spot-market-scanner)
+  - [§3.17 bot/ws_manager.py](#317-botws_managerpy--websocket-market-data-manager)
+  - [§3.18 bot/regime_adapter.py](#318-botregime_adapterpy--regime-adaptive-parameters)
+  - [§3.19 bot/insights/regime_detector.py](#319-botinsightsregime_detectorpy--market-regime-classifier)
+  - [§3.20 bot/weekly_report.py](#320-botweekly_reportpy--weekly-performance-report)
+  - [§3.21 bot/gate_labels.py](#321-botgate_labelspy--gate-label-registry)
+  - [§3.22 bot/price_fmt.py](#322-botprice_fmtpy--adaptive-price-formatter)
 - [§4 — Signal Broadcast Template](#4--signal-broadcast-template)
 - [§5 — Safety Protocols](#5--safety-protocols-complete-reference)
 - [§6 — Dashboard Parameters & Formulas](#6--dashboard-parameters--formulas)
@@ -98,7 +105,7 @@ bot/dashboard.py (Sharpe, drawdown, equity curve, win-rate by TF)
 
 ### §1.3 Version
 
-`3.0.0-domination`
+`4.0.0-domination`
 
 ### §1.4 Technology Stack
 
@@ -140,11 +147,12 @@ Each gate is described with its function, exact logic, and failure condition.
 - **1D Bearish** = `daily_candles[-1].close < daily_candles[-2].close` AND `daily_candles[-1].close < SMA_20_daily`
 - **4H Bullish** = `four_hour_candles[-1].close > four_hour_candles[-2].close`
 - **4H Bearish** = `four_hour_candles[-1].close < four_hour_candles[-2].close`
-- Both timeframes must agree: `(1D bullish AND 4H bullish)` → `Side.LONG`; `(1D bearish AND 4H bearish)` → `Side.SHORT`
+- If 4H is **neutral** (no clear direction): the function returns the 1D bias directly (not suppressed)
+- Full agreement: `(1D bullish AND 4H bullish)` → `Side.LONG`; `(1D bearish AND 4H bearish)` → `Side.SHORT`
 
 **Minimum data:** 20 daily candles, 2 four-hour candles.
 
-**Failure:** Returns `None` when timeframes conflict (no-trade condition). Signal is suppressed.
+**Failure:** Returns `None` **only** when 1D and 4H give **conflicting** signals (e.g. 1D bullish but 4H bearish). When 4H is neutral, the 1D bias is returned directly. Signal is suppressed only on true conflict.
 
 **SMA-20 formula:**
 ```
@@ -172,7 +180,7 @@ SHORT entry: price >= midpoint  (upper 50% = premium zone)
 
 **Function:** `detect_liquidity_sweep(candles, key_level, side) -> bool`
 
-**Logic:** Checks last 3 candles. A sweep is a wick that pierces the key level with the body closing back on the opposite side:
+**Logic:** Checks last **15** candles (~75 minutes of 5m data). A sweep is a wick that pierces the key level with the body closing back on the opposite side:
 - **LONG sweep:** `candle.low < key_level AND candle.close > key_level` (stop-hunt of longs)
 - **SHORT sweep:** `candle.high > key_level AND candle.close < key_level` (stop-hunt of shorts)
 
@@ -180,7 +188,7 @@ SHORT entry: price >= midpoint  (upper 50% = premium zone)
 - LONG = lowest low of last 10 5m candles
 - SHORT = highest high of last 10 5m candles
 
-**Failure:** No candle in the last 3 has swept the key level.
+**Failure:** No candle in the last 15 has swept the key level.
 
 #### Gate ④ — Market Structure Shift (MSS/ChoCh)
 
@@ -192,11 +200,21 @@ SHORT entry: price >= midpoint  (upper 50% = premium zone)
 - **LONG MSS:** `last_candle.close > max(c.high for c in prior_candles) AND last_candle.volume > avg_vol`
 - **SHORT MSS:** `last_candle.close < min(c.low for c in prior_candles) AND last_candle.volume > avg_vol`
 
-**Displacement filter:** The break must exceed **0.15% of price** to filter false breakouts:
+**Displacement filter (ATR-adaptive):** The break must exceed an ATR-based threshold to filter false breakouts:
 ```
 displacement = abs(last_candle.close - swing_level)
+# When atr > 0 (preferred):
+PASS if displacement >= 0.3 * atr
+# Fallback when atr == 0:
 displacement_pct = displacement / last_candle.close
-PASS if displacement_pct >= 0.0015
+PASS if displacement_pct >= 0.0015   (0.15% of price)
+```
+
+When the `atr` parameter is provided and positive, the threshold is `0.3 × ATR` (adaptive to current volatility). When `atr` is zero or not provided, falls back to the fixed 0.15% threshold.
+
+**Function signature:**
+```python
+def detect_market_structure_shift(candles: list[CandleData], side: Side, atr: float = 0.0) -> bool
 ```
 
 **Failure:** Last candle does not break the prior swing with above-average volume, or fewer than 3 candles provided.
@@ -354,7 +372,7 @@ Only activates when OI change exceeds `OI_CHANGE_THRESHOLD` (default: 5%). Contr
 | `TELEGRAM_BOT_TOKEN` | `str` | `""` | ✅ | Bot token from @BotFather. Must not be empty or placeholder. |
 | `TELEGRAM_CHANNEL_ID` | `int` | — | ✅ | Numeric Telegram channel ID for signal broadcasts. No default in production — must be explicitly set. |
 | `ADMIN_CHAT_ID` | `int` | — | ✅ | Telegram user ID for admin-only commands. No default in production. |
-| `WEBHOOK_SECRET` | `str` | `""` | ⚠️ | Shared secret for TradingView webhook auth. WARNING: if empty, all requests are accepted (dev only). |
+| `WEBHOOK_SECRET` | `str` | `""` | ⚠️ | Shared secret for TradingView webhook auth. WARNING: if empty, all requests are accepted (dev only). Must be ≥32 characters in production. |
 | `WEBHOOK_HOST` | `str` | `"0.0.0.0"` | ❌ | Flask bind host. |
 | `WEBHOOK_PORT` | `int` | `5000` | ❌ | Flask bind port. |
 | `MAX_SAME_SIDE_SIGNALS` | `int` | `3` | ❌ | 3-Pair Cap: max concurrent signals on same side. Valid range: 1–10. |
@@ -364,8 +382,15 @@ Only activates when OI change exceeds `OI_CHANGE_THRESHOLD` (default: 5%). Contr
 | `DEFAULT_RISK_FRACTION` | `float` | `0.01` | ❌ | Risk per trade as fraction of account (1%). |
 | `LEVERAGE_MIN` | `int` | `10` | ❌ | Minimum recommended leverage. |
 | `LEVERAGE_MAX` | `int` | `20` | ❌ | Maximum recommended leverage. |
-| `AUTO_SCAN_PAIRS` | `list[str]` | `BTC,ETH,SOL,XRP,DOGE,ADA,AVAX,LINK,DOT,MATIC` | ❌ | Comma-separated watchlist pairs (base symbols only). |
+| `AUTO_SCAN_PAIRS` | `list[str]` | `""` (empty = scan ALL USDT-M perpetuals) | ❌ | Comma-separated watchlist pairs (base symbols only). Empty string triggers a full Binance Futures scan. |
 | `AUTO_SCAN_INTERVAL_SECONDS` | `int` | `300` | ❌ | Auto-scan cycle interval in seconds. Valid range: ≥60. |
+| `FUTURES_MIN_24H_VOLUME_USDT` | `int` | `0` | ❌ | Minimum 24h volume (USDT) for a futures pair to be included in the auto-scan. 0 = no filter. |
+| `FUTURES_SCAN_BATCH_SIZE` | `int` | `20` | ❌ | Number of futures pairs to process per batch in the auto-scanner. |
+| `FUTURES_SCAN_BATCH_DELAY` | `float` | `0.5` | ❌ | Seconds to pause between batch iterations in the futures auto-scanner. |
+| `SPOT_SCAN_ENABLED` | `bool` | `true` | ❌ | Enable/disable the spot gem scanner (CH4). |
+| `SPOT_SCAN_INTERVAL_MINUTES` | `int` | `60` | ❌ | How often (in minutes) the spot gem scan runs. |
+| `SPOT_MIN_24H_VOLUME_USDT` | `int` | `100000` | ❌ | Minimum 24h volume (USDT) for a spot pair to pass the gem scan filter. |
+| `SPOT_GEM_VOLUME_SPIKE_RATIO` | `float` | `3.0` | ❌ | Volume spike multiplier required for DORMANT_AWAKENING gem detection. |
 | `COINMARKETCAL_API_KEY` | `str` | `""` | ❌ | Optional: enables live news filtering from CoinMarketCal. |
 | `SIGNALS_FILE` | `str` | `"signals.json"` | ❌ | Legacy JSON path for signal persistence (backward compatibility). |
 | `DASHBOARD_LOG_FILE` | `str` | `"dashboard.json"` | ❌ | Legacy JSON path for trade results (backward compatibility). |
@@ -380,7 +405,8 @@ Only activates when OI change exceeds `OI_CHANGE_THRESHOLD` (default: 5%). Contr
 **Validation rules:**
 - `TELEGRAM_BOT_TOKEN` must not be empty string or the literal `"your-bot-token-from-botfather"`
 - `TELEGRAM_CHANNEL_ID` and `ADMIN_CHAT_ID` should be explicitly set — the hardcoded defaults are placeholder values for development only
-- `WEBHOOK_SECRET` being empty triggers a `WARNING` log at startup and accepts all webhook requests (acceptable only in local development)
+- `WEBHOOK_SECRET` must be **at least 32 characters** in production; an empty value triggers a `WARNING` log at startup and accepts all webhook requests (acceptable only in local development). A `ValueError` is raised at startup if the value is non-empty but shorter than 32 characters.
+- The `data/` directory is **auto-created** at module load time (no manual `mkdir` needed)
 - `.env` file is supported — copy `.env.example` to `.env` and populate before running
 
 **Reading pattern:**
@@ -467,6 +493,17 @@ Returns the simple average volume. Returns `0.0` for an empty list.
 **`calculate_atr(candles: list[CandleData], period: int = 14) -> float`**  
 Computes the Average True Range over `period` candles (see formula in §2.5). Returns `0.0` if insufficient candles.
 
+**`calculate_ema(candles: list[CandleData], period: int) -> float`**  
+Computes the Exponential Moving Average of closing prices over `period` candles. Public function exported in `__all__`. Returns `0.0` if fewer than `period` candles provided.
+
+**`calculate_vwap(candles: list[CandleData]) -> float`**  
+Computes the Volume-Weighted Average Price over all provided candles:
+```
+vwap = Σ(typical_price × volume) / Σ(volume)
+typical_price = (high + low + close) / 3
+```
+Returns `0.0` if total volume is zero. Also exported in `__all__`. Identical implementation exists in `bot/vwap.py` (with an `is_near_vwap` helper).
+
 **`is_discount_zone(price: float, range_low: float, range_high: float) -> bool`**  
 Returns `True` when `price <= midpoint` of the range. Precondition for LONG entries.
 
@@ -520,6 +557,10 @@ Gate execution order (fail-fast):
 3. Gate ② — discount/premium zone
 4. Gate ③ — liquidity sweep
 5. Gate ④ — market structure shift
+
+**Structured logging:** All gate results are logged in a single structured line at the conclusion of every evaluation (pass or fail), enabling easy grep-based diagnostics.
+
+**Near-miss warning:** When exactly **one required gate** fails (all others pass), a `WARNING`-level log entry is emitted identifying the single failing gate. This makes near-misses immediately visible in logs without requiring manual gate-by-gate analysis.
 
 If all gates pass, `SignalResult` is constructed with `signal_id = generate_signal_id()` and appropriate `confidence` scoring (§2.6).
 
@@ -587,14 +628,17 @@ Sets `self.closed = True` and `self.close_reason = reason`.
 
 **Persistence:** JSON serialisation to `SIGNALS_FILE` (legacy) or SQLite via `bot/database.py`.
 
+**`_load() -> None`** (internal)  
+Deserialises persisted signals from JSON. Now correctly restores `signal_id` and `confluence_score` fields from the stored dictionary (using `.get("signal_id", "")` and `.get("confluence_score", 0)` with safe defaults for backward compatibility).
+
 **`can_open_signal(side: Side) -> bool`**  
 Counts active (non-closed) signals on `side`. Returns `True` if count < `MAX_SAME_SIDE_SIGNALS`.
 
-**`add_signal(result: SignalResult) -> ActiveSignal`**  
-Registers a new signal. Raises `RuntimeError` if the cap would be violated. Persists immediately.
+**`add_signal(result: SignalResult, origin_channel: int = 0, created_regime: str = "UNKNOWN") -> ActiveSignal`**  
+Registers a new signal. Raises `RuntimeError` if the cap would be violated. Persists immediately. All channels (CH1, CH2, CH3, CH4) call `risk_manager.add_signal()` before posting to Telegram.
 
 **`update_prices(prices: dict[str, float]) -> list[str]`**  
-Feeds latest prices. For each open signal:
+Feeds latest prices. The entire iteration over open signals is performed **inside a single lock acquisition** (TOCTOU fix — prevents race conditions where a signal could be concurrently modified between read and update). For each open signal:
 1. Checks staleness → closes and appends broadcast message if stale
 2. Checks BE trigger → marks BE and appends broadcast message if triggered
 
@@ -602,6 +646,8 @@ Returns list of broadcast messages to send to Telegram.
 
 **`close_signal(symbol: str, reason: str = "manual") -> bool`**  
 Closes first open signal matching `symbol`. Returns `True` on success, `False` if not found.
+
+**Signal lifecycle broadcasts** (BE trigger, stale close, TP updates) route to `sig.origin_channel` — the channel ID that originally posted the signal — rather than a hardcoded CH1 channel. Falls back to `TELEGRAM_CHANNEL_ID_HARD or TELEGRAM_CHANNEL_ID` when `origin_channel` is 0.
 
 **`active_signals -> list[ActiveSignal]`** (property)  
 Returns all signals where `closed == False`.
@@ -643,10 +689,24 @@ Raises `ValueError` if prices are non-positive or identical.
 risk_manager: RiskManager       # singleton
 news_calendar: NewsCalendar     # singleton
 dashboard: Dashboard            # singleton
+signal_router: SignalRouter     # channel routing singleton
 _scheduler: BackgroundScheduler # APScheduler instance (daemon=True)
-_news_freeze: bool = False      # toggled by /news_caution
-_trail_active: bool = False     # toggled by /trail_sl
-_auto_scan_active: bool = False # toggled by /auto_scan
+_bot_state: BotState            # thread-safe state singleton (§3.8)
+
+# Futures market data (CH1/CH2/CH3)
+futures_market_data: MarketDataStore   # market_type="futures"
+futures_ws: WebSocketManager           # fstream.binance.com
+
+# Backward-compatible aliases
+market_data = futures_market_data
+ws_manager = futures_ws
+
+# Spot market data (CH4 spot scanner)
+spot_market_data: MarketDataStore      # market_type="spot"
+spot_ws: WebSocketManager              # stream.binance.com
+spot_scanner: SpotScanner              # gem/scam scanner
+
+_last_signal_broadcast_time: dict[str, float]  # rate-limit per tier
 ```
 
 State is managed at module level (process singleton). For thread-safe access in a multi-threaded context, use `bot/state.py` (§3.8).
@@ -671,6 +731,10 @@ All admin commands check this first and reply `"⛔ Admin only."` if the check f
 | `/news_caution` | Admin | none | Toggle news freeze, list active signals | ✅ |
 | `/risk_calc BAL ENTRY SL` | User | balance, entry, stop_loss (floats) | Calculate position size | ❌ Private reply |
 | `/close_signal SYM OUTCOME PNL` | Admin | symbol, WIN\|LOSS\|BE, pnl% | Close signal, record in dashboard, broadcast summary | ✅ |
+| `/spot_scan [on\|off]` | Admin | optional `on` or `off` | Enable/disable the spot gem scanner; shows current state if no arg | ❌ Private reply |
+| `/spot_status` | Admin | none | Show spot scanner status: enabled state, pair count, last scan time, gem/scam counts | ❌ Private reply |
+| `/scam_check SYMBOL` | Admin | base symbol (e.g. `PEPE`) | Run manual scam pattern analysis on a spot symbol; uses `validate_symbol()` for strict alphanumeric-only input sanitisation | ❌ Private reply |
+| `/status` | Admin | none | Extended status: per-channel breakdown (🔴 Hard \| 🟡 Medium \| 🔵 Easy \| 💎 Spot), performance stats (win rate, profit factor), trailing SL per-signal status | ❌ Private reply |
 
 **`/signal_gen` flow:**
 1. Validate admin + args
@@ -693,8 +757,27 @@ All admin commands check this first and reply `"⛔ Admin only."` if the check f
 | Job ID | Interval | Condition | Logic |
 |---|---|---|---|
 | `news_refresh` | 30 min | Always running | `fetch_and_reload(news_calendar)` — calls CoinMarketCal API |
-| `trailing_sl` | 60 sec | `_trail_active == True` | Fetch last 3 × 5m candles per open signal; trail SL to Higher Low (LONG) or Lower High (SHORT); only move SL in favourable direction |
-| `auto_scan` | `AUTO_SCAN_INTERVAL_SECONDS` | `_auto_scan_active == True` | For each pair in `AUTO_SCAN_PAIRS`: skip if already active, check both sides, run full confluence, broadcast qualifying signals |
+| `trailing_sl` | 60 sec | `_bot_state.trail_active == True` | Fetch last 3 × 5m candles per open signal; trail SL to Higher Low (LONG) or Lower High (SHORT); only move SL in favourable direction |
+| `auto_scan` | `AUTO_SCAN_INTERVAL_SECONDS` | `_bot_state.auto_scan_active == True` | For each pair in `AUTO_SCAN_PAIRS` (or all Binance USDT-M perpetuals if empty): skip if already active, check both sides, run full confluence, broadcast qualifying signals; batched with `FUTURES_SCAN_BATCH_SIZE` and `FUTURES_SCAN_BATCH_DELAY` |
+| `spot_scan` | `SPOT_SCAN_INTERVAL_MINUTES` min | `SPOT_SCAN_ENABLED == True` | Iterates `spot_scanner._pairs`, reads candles from `spot_market_data`, posts gems → CH4, scams → CH5 |
+| `spot_scanner_refresh` | Daily | Always | `spot_scanner.refresh_pairs()` + `_seed_spot_historical_candles()` |
+| `dead_man_check` | 60 min | `_bot_state.auto_scan_active == True` | Alerts admin via DM if no signal generated in past 24h (dead-man switch) |
+| `weekly_report` | Sunday 20:00 UTC | Always | `send_weekly_report(app, dashboard)` — see §3.20 |
+
+**`_broadcast(context, text) -> None`** (internal async)  
+Channel routing: uses `TELEGRAM_CHANNEL_ID_HARD or TELEGRAM_CHANNEL_ID` as fallback. If neither is set, the call is silently skipped with a debug log.
+
+**`_seed_spot_historical_candles(pairs: list[dict]) -> None`** (internal)  
+Seeds 1h/4h/1d candle history (up to 210 candles each) into `spot_market_data` at startup using `ThreadPoolExecutor`. Ensures the spot scanner has sufficient historical data before the first scan cycle.
+
+**Signal delivery latency tracking:**  
+After each successful CH1/CH2/CH3 broadcast, the bot logs `signal_delivery_latency_ms` (from candle-close event to Telegram API response). If latency exceeds **10 seconds**, an admin DM is sent with the symbol, tier, and latency value.
+
+**Dead-man switch:**  
+The hourly `dead_man_check` job reads `_bot_state.seconds_since_last_signal()`. If no signal has been generated in `_DEAD_MAN_SILENCE_HOURS` (24h) while the scanner is active, it sends an alert DM to the admin with the silence duration and a recommended action to check WS connection and scanner state.
+
+**TP1 hit → auto-activate trailing SL:**  
+When TP1 is hit on any open signal, `_bot_state.trail_active` is automatically set to `True` (if not already active), activating the 60s trailing SL job.
 
 #### §3.4.5 Async Bridge Pattern
 
@@ -726,6 +809,14 @@ Called by `bot/webhook.py` after payload validation. Runs full confluence logic 
 def create_app() -> Flask:
 ```
 Returns a configured Flask application instance. Use this pattern for both direct execution and Gunicorn.
+
+**Dashboard route wiring:** `create_app()` calls `register_dashboard_routes(app, get_dashboard_fn, get_risk_manager_fn)` from `bot/dashboard_web.py`, which wires three additional routes:
+
+| Route | Description |
+|---|---|
+| `GET /dashboard` | HTML dashboard page |
+| `GET /api/stats` | JSON performance statistics |
+| `GET /api/signals` | JSON active signal list |
 
 #### §3.5.2 Routes
 
@@ -905,6 +996,29 @@ List of `{"timestamp": float, "cumulative_pnl": float}` dicts, one per closed tr
 **`summary() -> str`**  
 Formatted Telegram-ready dashboard summary including all key statistics.
 
+**`protected_win_rate(timeframe: Optional[str] = None) -> float`**  
+Win rate counting break-even trades as wins (BE = protected capital = success):
+```
+protected_wins = count(outcome == WIN) + count(outcome == BE)
+protected_win_rate = (protected_wins / total_closed) * 100
+```
+
+**`avg_risk_reward() -> float`**  
+Average realised risk-reward ratio across all closed trades:
+```
+for each closed trade:
+    sl_dist_pct = abs(entry_price - stop_loss) / entry_price * 100
+    rr = abs(pnl_pct) / sl_dist_pct   (only when sl_dist_pct > 0)
+avg_rr = mean(rr values)
+```
+Returns `0.0` if no valid trades.
+
+**`win_rate_rolling(days: int = 7) -> float`**  
+Win rate over the last `days` days (rolling window). Uses `opened_at` timestamp for the window calculation.
+
+**`check_drawdown_halt(threshold_pct: float = -15.0) -> bool`**  
+Returns `True` if current max drawdown (from `max_drawdown()`) exceeds the threshold. Used to trigger an automatic trading halt at -15% drawdown.
+
 ---
 
 ### §3.7 `bot/news_filter.py` — News Calendar
@@ -955,6 +1069,7 @@ Provides a thread-safe singleton for shared bot state, replacing the module-leve
 
 ```python
 import threading
+import time
 
 class BotState:
     def __init__(self) -> None:
@@ -962,6 +1077,7 @@ class BotState:
         self._news_freeze: bool = False
         self._trail_active: bool = False
         self._auto_scan_active: bool = False
+        self._last_signal_generated_at: float = 0.0  # dead-man switch
 
     @property
     def news_freeze(self) -> bool:
@@ -975,11 +1091,25 @@ class BotState:
 
     # ... same pattern for trail_active and auto_scan_active
 
+    def record_signal_generated(self) -> None:
+        """Update the timestamp of the last signal generated (for dead-man switch)."""
+        with self._lock:
+            self._last_signal_generated_at = time.time()
+
+    def seconds_since_last_signal(self) -> float:
+        """Return seconds since last signal, or float('inf') if no signal ever generated."""
+        with self._lock:
+            if self._last_signal_generated_at == 0.0:
+                return float("inf")
+            return time.time() - self._last_signal_generated_at
+
 # Module-level singleton
 bot_state = BotState()
 ```
 
 All property accesses acquire the lock before reading or writing.
+
+**Dead-man switch integration:** `record_signal_generated()` is called every time a signal is successfully broadcast. The hourly APScheduler job in `bot.py` reads `seconds_since_last_signal()` and sends an admin DM alert if silence exceeds 24 hours while the scanner is active (see §3.4.4).
 
 ---
 
@@ -1018,6 +1148,9 @@ Raises last exception after all retries are exhausted.
 | 5m | No cache (always fresh) |
 
 Cache key: `f"{symbol}:{timeframe}"`. Cache stored as `_cache: dict[str, tuple[list, float]]` (data, expiry_timestamp).
+
+**`_evict_expired_cache() -> None`** (internal)  
+Removes all cache entries whose `expiry_timestamp` has passed. Called automatically on every `fetch_ohlcv_safe` call before inserting a new entry, preventing unbounded memory growth during long-running sessions.
 
 **`fetch_binance_candles(symbol: str, side: Side) -> dict`**
 
@@ -1160,6 +1293,8 @@ Restricts signal generation to high-liquidity trading sessions.
 
 When `SESSION_FILTER_ENABLED=false` (default): 24/7 scanning, no restrictions.
 
+> **Default changed:** `SESSION_FILTER_ENABLED` defaults to `False` (changed from `True`). This was changed to ensure that crypto markets — which trade 24/7 — are not artificially restricted out of the box. Operators who want session-based restrictions must explicitly set `SESSION_FILTER_ENABLED=true`.
+
 **Key functions:**
 - `get_current_session(now)` → session name string
 - `is_active_session(now)` → `True` if signals are allowed
@@ -1204,6 +1339,8 @@ After 3+ consecutive losses, automatically activates a protective cooldown:
 
 **Class:** `CooldownManager`
 
+> **Thread-safe:** All methods use `threading.RLock` (re-entrant lock) to support concurrent access from asyncio tasks, background jobs, and command handlers without deadlocks.
+
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `record_outcome(outcome)` | `bool` | Record WIN/LOSS/BE. Returns `True` if cooldown just activated |
@@ -1218,6 +1355,275 @@ After 3+ consecutive losses, automatically activates a protective cooldown:
 | `LOSS_STREAK_THRESHOLD` | `3` | Consecutive losses to trigger cooldown |
 | `COOLDOWN_SIGNALS` | `3` | Profitable signals needed to exit cooldown early |
 | `COOLDOWN_HOURS` | `24` | Maximum cooldown duration in hours |
+
+---
+
+### §3.16 `bot/spot_scanner.py` — Spot Market Scanner
+
+Scans all active Binance USDT spot pairs for gem opportunities and manipulation patterns. Gem signals route to CH4; scam alerts route to CH5.
+
+#### §3.16.1 Module Functions
+
+**`fetch_binance_spot_pairs() -> list[dict]`**  
+Returns all active USDT spot pairs from Binance via ccxt, filtered by `SPOT_MIN_24H_VOLUME_USDT`. Each entry is a dict with `symbol`, `base`, `volume` keys.
+
+**`validate_symbol(raw: str) -> Optional[str]`**  
+Strict input sanitisation for user-supplied symbol in `/scam_check`. Returns the uppercased symbol if it matches `^[A-Z0-9]{1,20}$` (alphanumeric only, max 20 chars), or `None` if invalid. Used to prevent injection via Telegram command parameters.
+
+#### §3.16.2 `SpotGemResult` Dataclass
+
+```python
+@dataclass
+class SpotGemResult:
+    symbol: str
+    gem_type: str       # see table below
+    entry_low: float
+    entry_high: float
+    tp1: float          # +15%
+    tp2: float          # +30%
+    tp3: float          # +50%
+    stop_loss: float    # -10%
+    score: int          # 0–100 confidence score
+    reason: str
+    risk_flags: list[str]
+```
+
+**Gem types:**
+
+| Type | Detection Logic |
+|---|---|
+| `NEW_LISTING` | Listed within the last `SPOT_NEW_LISTING_LOOKBACK_DAYS` (90) days |
+| `DORMANT_AWAKENING` | Low volume for 30+ days, then `SPOT_GEM_VOLUME_SPIKE_RATIO` (3×)+ volume spike |
+| `MOMENTUM_BREAKOUT` | Price breaks `SPOT_GEM_BREAKOUT_LOOKBACK_DAYS` (30)-day high with volume confirmation |
+| `ACCUMULATION` | Price within `SPOT_GEM_ACCUMULATION_RANGE_PCT` (10%) of 90-day low with rising volume |
+| `CATALYST_DRIVEN` | Upcoming CoinMarketCal event (mainnet launch / listing / partnership) |
+
+#### §3.16.3 `ScamAlert` Dataclass
+
+```python
+@dataclass
+class ScamAlert:
+    symbol: str
+    alert_type: str     # "PUMP_AND_DUMP" | "WASH_TRADING"
+    description: str
+    severity: str       # "HIGH" | "MEDIUM"
+```
+
+**Scam types:**
+
+| Type | Detection Logic |
+|---|---|
+| `PUMP_AND_DUMP` | >500% price spike followed by >50% crash within 24h |
+| `WASH_TRADING` | Volume coefficient of variation (CV = std_dev / mean) < 2% — unrealistically uniform volume |
+
+#### §3.16.4 `SpotScanner` Class
+
+**`__init__(spot_market_data: MarketDataStore, max_buffer_size: int = _DEFAULT_BUF_1D) -> None`**  
+Accepts an optional `max_buffer_size` parameter (default: `_BUF_1D` = 210) for the history buffer size used during gem detection.
+
+**`scan_once() -> tuple[list[SpotGemResult], list[ScamAlert]]`**  
+Runs a full pass over all tracked spot pairs. Returns `(gems, scams)`. Gems are wrapped in `SignalResult` and registered via `risk_manager.add_signal()` before being posted to CH4. Scams are posted directly to CH5.
+
+**`scam_check_symbol(symbol: str) -> Optional[ScamAlert]`**  
+Runs scam detection on a single symbol. Used by the `/scam_check` admin command.
+
+**`get_status() -> dict`**  
+Returns scanner state: `enabled`, `pair_count`, `last_scan_at`, `total_gems_found`, `total_scams_found`.
+
+**`refresh_pairs() -> None`**  
+Re-fetches the full Binance spot pair list and updates `_pairs`.
+
+**`set_enabled(value: bool) -> None`**  
+Enables or disables scanning.
+
+---
+
+### §3.17 `bot/ws_manager.py` — WebSocket Market Data Manager
+
+Connects to Binance combined-stream endpoints and maintains in-memory ring buffers of OHLCV candles for real-time signal processing.
+
+#### §3.17.1 Constants
+
+| Constant | Value | Description |
+|---|---|---|
+| `_WS_FUTURES_URL` | `wss://fstream.binance.com/stream` | Futures WebSocket endpoint |
+| `_WS_SPOT_URL` | `wss://stream.binance.com:9443/stream` | Spot WebSocket endpoint |
+| `_BUF_5M` | `50` | Futures 5m candle buffer size |
+| `_BUF_15M` | `50` | Futures 15m candle buffer size |
+| `_BUF_4H` | `30` | 4H candle buffer size (both markets) |
+| `_BUF_1D` | `210` | 1D candle buffer size — 210 candles required for 200-day SMA in regime detector |
+| `_BUF_1H` | `50` | Spot 1h candle buffer size |
+| `_STALE_THRESHOLD` | `60.0` | Seconds without any message before stream is considered unhealthy (reduced from 120s) |
+| `_MAX_SYMBOLS_PER_CONN` | `50` | Symbols per WebSocket connection (Binance hard limit: 200 streams / 4–5 streams per symbol) |
+
+#### §3.17.2 `MarketDataStore` Class
+
+```python
+class MarketDataStore:
+    def __init__(self, market_type: str = "futures") -> None
+```
+
+Central in-memory store for all symbols' candles and live prices.
+
+**Timeframe buffers by `market_type`:**
+
+| `market_type` | Timeframes buffered |
+|---|---|
+| `"futures"` | `5m`, `15m`, `4h`, `1d` |
+| `"spot"` | `1h`, `4h`, `1d` |
+
+**Key methods:**
+- `update_candle(symbol, timeframe, ohlcv)` — appends or replaces in-progress candle (same `open_time` → replace; new → append)
+- `set_price(symbol, price)` — updates live price
+- `get_price(symbol) -> Optional[float]`
+- `get_candles(symbol, timeframe) -> list[list[float]]` — snapshot of the buffer as plain list
+- `has_sufficient_data(symbol) -> bool` — checks all timeframes meet minimum candle counts
+
+All reads and writes are protected by `threading.Lock`.
+
+#### §3.17.3 `WebSocketManager` Class
+
+```python
+class WebSocketManager:
+    def __init__(
+        self,
+        store: MarketDataStore,
+        market_type: str = "futures",
+        on_candle_close: Optional[OnCandleClose] = None,
+    ) -> None
+```
+
+Manages multiple WebSocket connections to Binance:
+- **Futures** (`market_type="futures"`) → connects to `fstream.binance.com`; subscribes to `@kline_5m`, `@kline_15m`, `@kline_4h`, `@kline_1d`, `@miniTicker`
+- **Spot** (`market_type="spot"`) → connects to `stream.binance.com:9443`; subscribes to `@kline_1h`, `@kline_4h`, `@kline_1d`, `@miniTicker`
+
+**Key features:**
+- Splits pairs across multiple connections (≤200 streams / ~50 symbols per connection)
+- Fires `on_candle_close(base_symbol, timeframe)` callback on every **closed** kline event
+- Auto-reconnects with exponential backoff + jitter (1s base, 60s cap)
+- `is_healthy() -> bool` — returns `True` if `last_message_at` within `_STALE_THRESHOLD` seconds
+
+---
+
+### §3.18 `bot/regime_adapter.py` — Regime-Adaptive Parameters
+
+Maps the current market regime to concrete signal-generation parameter adjustments.
+
+**`get_regime_adjustments(regime: str) -> dict`**
+
+```python
+# Returns dict with keys: tp3_rr, max_signals, risk_modifier
+get_regime_adjustments("BULL")    # {'tp3_rr': 5.0, 'max_signals': 5, 'risk_modifier': 1.0}
+get_regime_adjustments("BEAR")    # {'tp3_rr': 3.0, 'max_signals': 3, 'risk_modifier': 0.75}
+get_regime_adjustments("SIDEWAYS") # {'tp3_rr': 2.5, 'max_signals': 2, 'risk_modifier': 0.5}
+get_regime_adjustments("UNKNOWN") # {'tp3_rr': 4.0, 'max_signals': 4, 'risk_modifier': 0.85}
+```
+
+**`UNKNOWN` handling:** When the regime cannot be determined (e.g. insufficient data for the 200-day SMA), `UNKNOWN` returns **neutral/moderate** settings — NOT the same as `SIDEWAYS`. This prevents silently throttling signal generation during startup or data gaps.
+
+Any unrecognised regime string is treated as `SIDEWAYS`.
+
+---
+
+### §3.19 `bot/insights/regime_detector.py` — Market Regime Classifier
+
+Classifies BTC market regime daily at 09:00 UTC. Stores result in `BotState.market_regime`.
+
+**`classify_regime(daily_candles, current_price, fear_and_greed) -> str`**
+
+**Regime rules:**
+
+| Regime | Condition |
+|---|---|
+| `BULL` | `current_price > 200d SMA` AND `fear_and_greed > 50` |
+| `BEAR` | `current_price < 200d SMA` AND `fear_and_greed < 40` |
+| `SIDEWAYS` | Anything else (SMA and F&G disagree, or F&G is None) |
+| `UNKNOWN` | Fewer than 50 daily candles available |
+
+**Graceful degradation:** When 50–199 candles are available (below the 200-day SMA threshold), the function falls back to the **50-day SMA** instead of returning `UNKNOWN`. A `DEBUG` log records the fallback. Returns `UNKNOWN` only when fewer than 50 candles are available.
+
+```python
+if len(daily_candles) >= 200:
+    sma = sum(c.close for c in daily_candles[-200:]) / 200
+elif len(daily_candles) >= 50:
+    sma = sum(c.close for c in daily_candles[-50:]) / 50  # 50-day fallback
+else:
+    return "UNKNOWN"
+```
+
+**`fetch_fear_and_greed(url, timeout) -> Optional[int]`**  
+Fetches the current Fear & Greed Index from `alternative.me` API. Returns `0–100` or `None` on failure.
+
+---
+
+### §3.20 `bot/weekly_report.py` — Weekly Performance Report
+
+Generates an automated weekly performance summary. Wired as an APScheduler `cron` job in `bot.py` running every **Sunday at 20:00 UTC**.
+
+**`generate_weekly_report(dashboard: Dashboard, days: int = 7) -> str`**
+
+Returns a Telegram-formatted report covering the rolling `days`-day window:
+
+| Metric | Description |
+|---|---|
+| Total signals | Count of WIN + LOSS + BE in the window |
+| Win rate | `wins / total * 100` |
+| Protected win rate | `(wins + BE) / total * 100` |
+| Profit factor | `gross_profit / gross_loss` |
+| Average R:R | Mean realised risk-reward ratio |
+| Best trade | Symbol + PnL% of the highest-return trade |
+| Worst trade | Symbol + PnL% of the lowest-return trade |
+
+**`send_weekly_report(application, dashboard) -> None`**  
+Async wrapper that calls `generate_weekly_report()` and posts the result to the CH5 (Insights) channel.
+
+---
+
+### §3.21 `bot/gate_labels.py` — Gate Label Registry
+
+Single source of truth for all gate keys, human-readable labels, and circled-number symbols. Used by `narrative.py`, `postmortem.py`, and any future gate-related modules.
+
+**`GATE_KEYS`** (class with string constants):
+```python
+class GATE_KEYS:
+    MACRO_BIAS = "macro_bias"
+    ZONE = "zone"
+    SWEEP = "sweep"
+    MSS = "mss"
+    NEWS = "news"
+    FVG = "fvg"
+    ORDER_BLOCK = "order_block"
+    CONFLUENCE_SCORE = "confluence_score"
+    FUNDING_RATE = "funding_rate"
+    OPEN_INTEREST = "open_interest"
+    SESSION_FILTER = "session_filter"
+```
+
+**`GATE_LABELS: dict[str, str]`** — maps gate key → human-readable label (e.g. `"macro_bias"` → `"Macro Bias (Gate ①)"`)
+
+**`GATE_SYMBOLS: dict[str, str]`** — maps gate key → circled-number symbol (e.g. `"macro_bias"` → `"①"`)
+
+**`gate_symbols_str(gates_fired: list[str]) -> str`**  
+Formats a list of gate keys to a compact `"①②③④"` style string for display in signal messages and postmortems.
+
+---
+
+### §3.22 `bot/price_fmt.py` — Adaptive Price Formatter
+
+Provides adaptive decimal precision for price display, replacing the previous fixed `:.4f` format throughout the codebase.
+
+**`fmt_price(price: float) -> str`**
+
+```python
+def fmt_price(price: float) -> str:
+    abs_price = abs(price)
+    if abs_price >= 1_000:   return f"{price:,.2f}"   # BTC: "90,000.00"
+    if abs_price >= 0.01:    return f"{price:.4f}"    # mid-range: "0.4567"
+    if abs_price >= 0.0001:  return f"{price:.6f}"    # micro: "0.000123"
+    return f"{price:.8f}"                              # nano: "0.00000012"
+```
+
+All `SignalResult.format_message()` price fields use `fmt_price()` — entry zone, TP1/TP2/TP3, stop loss, and the copy-trade line. This replaces the previous hardcoded `:.4f` format.
 
 ---
 
@@ -1253,9 +1659,9 @@ Leverage: Cross 10x - 20x (Recommended)
 - `LONG|SHORT` → `result.side.value`
 - `SIG-XXXXXXXXXXXX` → `result.signal_id`
 - `High/Medium/Low` → `result.confidence.value`
-- `[Low] – [High]` → `f"{result.entry_low:.4f} – {result.entry_high:.4f}"`
-- `[Price]` for ENTRY in copy trade block → `f"{(entry_low + entry_high) / 2:.4f}"`
-- All prices formatted to 4 decimal places (`.4f`)
+- `[Low] – [High]` → `f"{fmt_price(result.entry_low)} – {fmt_price(result.entry_high)}"`
+- `[Price]` for ENTRY in copy trade block → `fmt_price((entry_low + entry_high) / 2)`
+- All prices formatted using `fmt_price()` (adaptive decimal precision — see §3.22): ≥$1k → 2dp, ≥$0.01 → 4dp, ≥$0.0001 → 6dp, else 8dp
 - Parse mode: `Markdown`
 
 **Break-Even Broadcast Template:**
@@ -1300,7 +1706,9 @@ SHORT: current_price <= trigger_level
 
 **Manual trigger:** `/move_be [SYMBOL]` admin command.
 
-**Broadcast message:** `"🔒 #{SYMBOL}/USDT {SIDE}: Move SL to Entry {entry_mid:.4f} (Risk-Free Mode ON)."`
+**TP1 hit → auto-trailing SL:** When TP1 price is reached, `_bot_state.trail_active` is automatically set to `True` (if not already active). This ensures the 60-second trailing SL job activates immediately on first profit target.
+
+**Broadcast message:** `"🔒 #{SYMBOL}/USDT {SIDE}: Move SL to Entry {entry_mid} (Risk-Free Mode ON)."` (price formatted via `fmt_price()`)
 
 ### §5.2 3-Pair Cap
 
@@ -1470,11 +1878,21 @@ NEWS_SKIP_WINDOW_MINUTES=60
 DEFAULT_RISK_FRACTION=0.01
 LEVERAGE_MIN=10
 LEVERAGE_MAX=20
-AUTO_SCAN_PAIRS=BTC,ETH,SOL,XRP,DOGE,ADA,AVAX,LINK,DOT,MATIC
+# empty = scan ALL Binance USDT-M perpetuals
+AUTO_SCAN_PAIRS=
 AUTO_SCAN_INTERVAL_SECONDS=300
-SIGNALS_FILE=signals.json
-DASHBOARD_LOG_FILE=dashboard.json
-DATABASE_URL=sqlite:///360eye.db
+FUTURES_MIN_24H_VOLUME_USDT=0
+FUTURES_SCAN_BATCH_SIZE=20
+FUTURES_SCAN_BATCH_DELAY=0.5
+SPOT_SCAN_ENABLED=true
+SPOT_SCAN_INTERVAL_MINUTES=60
+SPOT_MIN_24H_VOLUME_USDT=100000
+SPOT_GEM_VOLUME_SPIKE_RATIO=3.0
+# default false — set true to restrict signals to London/NYC sessions
+SESSION_FILTER_ENABLED=false
+SIGNALS_FILE=data/signals.json
+DASHBOARD_LOG_FILE=data/dashboard.json
+DATABASE_URL=sqlite:///data/360eye.db
 ALLOWED_WEBHOOK_IPS=
 WEBHOOK_RATE_LIMIT=30
 TP1_RR=1.5
@@ -1625,6 +2043,9 @@ All 75+ tests must pass before any code is merged. Coverage targets:
 ### §8.3 Running Tests
 
 ```bash
+# Install all test dependencies (required)
+pip install -r requirements-dev.txt
+
 # Run all tests
 pytest tests/ -v
 
@@ -1638,6 +2059,8 @@ pytest tests/ --cov=bot --cov-report=term-missing
 pytest tests/ -v -k "thread"
 ```
 
+> **CI note:** The GitHub Actions CI pipeline installs `requirements-dev.txt` (not just `requirements.txt`) to ensure test-only dependencies (pytest, pytest-asyncio, etc.) are available.
+
 ### §8.4 Test Fixtures (`tests/conftest.py`)
 
 Key fixtures available to all tests:
@@ -1646,6 +2069,8 @@ Key fixtures available to all tests:
 - `risk_manager` — fresh `RiskManager` instance with temp file
 - `dashboard` — fresh `Dashboard` instance with temp file
 - `news_calendar` — `NewsCalendar` instance with no events
+
+**Environment isolation:** `conftest.py` sets dummy environment variables (`TELEGRAM_BOT_TOKEN`, channel IDs, API keys) before any bot module imports. This prevents real network calls to Binance or Telegram during test runs. An `autouse` fixture patches `httpx` and `ccxt` clients to return mock data.
 
 ---
 
@@ -1658,7 +2083,9 @@ Key fixtures available to all tests:
 ├── Procfile                       # Heroku/Render: worker=bot, web=webhook
 ├── .env.example                   # Environment variable template (no secrets)
 ├── .gitignore                     # Excludes .env, *.db, *.json data files
-├── requirements.txt               # Pinned Python dependencies
+├── requirements.txt               # Pinned Python production dependencies
+├── requirements-dev.txt           # Test-only dependencies (pytest, etc.)
+├── requirements-prod.txt          # Production-optimised subset of requirements.txt
 ├── config.py                      # Centralised config (§3.1) — all env vars
 ├── README.md                      # Professional project page (references Blueprint)
 ├── BLUEPRINT.md                   # This document — canonical authority
@@ -1671,6 +2098,7 @@ Key fixtures available to all tests:
 │   ├── news_filter.py             # News calendar, high-impact detection (§3.7)
 │   ├── news_fetcher.py            # CoinMarketCal API integration
 │   ├── dashboard.py               # Transparency dashboard, statistics (§3.6)
+│   ├── dashboard_web.py           # Flask routes: /dashboard, /api/stats, /api/signals
 │   ├── webhook.py                 # TradingView Flask webhook receiver (§3.5)
 │   ├── exchange.py                # ResilientExchange: CCXT wrapper (§3.9)
 │   ├── database.py                # SQLite/SQLAlchemy persistence (§3.10)
@@ -1679,30 +2107,75 @@ Key fixtures available to all tests:
 │   ├── session_filter.py          # Trading session gate — London/NYC/Asia (§3.12)
 │   ├── funding_rate.py            # Gate ⑧ — Funding rate sentiment (§3.13)
 │   ├── open_interest.py           # Gate ⑨ — OI divergence monitor (§3.14)
-│   ├── loss_streak_cooldown.py    # Smart cooldown after loss streak (§3.15)
+│   ├── loss_streak_cooldown.py    # Smart cooldown after loss streak, RLock (§3.15)
+│   ├── spot_scanner.py            # Spot gem/scam scanner (§3.16)
+│   ├── ws_manager.py              # WebSocket market data manager (§3.17)
+│   ├── regime_adapter.py          # Regime-adaptive signal parameters (§3.18)
+│   ├── weekly_report.py           # Sunday weekly performance report (§3.20)
+│   ├── gate_labels.py             # Gate key/label/symbol registry (§3.21)
+│   ├── price_fmt.py               # Adaptive price formatter fmt_price() (§3.22)
+│   ├── signal_router.py           # Channel routing + deduplication
+│   ├── vwap.py                    # VWAP + is_near_vwap helpers
+│   ├── btc_correlation.py         # BTC correlation gate
+│   ├── correlation_guard.py       # Cross-pair correlation guard
+│   ├── invalidation_detector.py   # Signal invalidation detector
+│   ├── auto_close_monitor.py      # Auto-close monitor background job
+│   ├── performance.py             # Historical performance metrics
+│   ├── narrative.py               # Signal narrative generator
+│   ├── postmortem.py              # Post-trade analysis
+│   ├── structure_detector.py      # Market structure detection utilities
+│   ├── confluence_score.py        # Confluence score calculation
+│   ├── signal_tracker.py          # Signal tracking utilities
+│   ├── admin_alerts.py            # Admin DM alert helpers
+│   ├── backtester.py              # Walk-forward backtesting engine (§11)
+│   ├── backtest_cli.py            # Backtest command-line interface (§11)
+│   ├── chart_generator.py         # Chart image generation
+│   ├── exchange_formatter.py      # Exchange response formatter
+│   ├── funding_rate.py            # Funding rate fetcher + sentiment
+│   ├── open_interest.py           # Open interest monitor
+│   ├── news_filter.py             # News calendar
+│   ├── news_fetcher.py            # CoinMarketCal API
+│   ├── channels/
+│   │   ├── __init__.py
+│   │   ├── hard_scalp.py          # CH1 gate runner (full 7 gates, HIGH only)
+│   │   ├── medium_scalp.py        # CH2 gate runner (relaxed gates, HIGH+MEDIUM)
+│   │   ├── easy_breakout.py       # CH3 breakout detector + BreakoutResult
+│   │   └── spot_momentum.py       # CH4 spot scanner + SpotSignalResult
 │   └── insights/
 │       ├── __init__.py
 │       ├── btc_structure.py       # CH5A — BTC 4H structure post
-│       ├── fear_greed.py          # CH5B — Fear & Greed Index every 6h
+│       ├── fear_greed.py          # CH5B — Fear & Greed Index every 6h (uses httpx)
 │       ├── news_digest.py         # CH5C — Daily news brief at 08:00 UTC
-│       ├── regime_detector.py     # CH5D — BULL/BEAR/SIDEWAYS classification
+│       ├── regime_detector.py     # CH5D — BULL/BEAR/SIDEWAYS classifier (§3.19)
 │       ├── daily_performance.py   # CH5E — Daily Performance Recap at 23:00 UTC
-│       └── weekly_briefing.py     # CH5F — Weekly BTC analysis on Sundays
+│       ├── weekly_briefing.py     # CH5F — Weekly BTC analysis on Sundays
+│       ├── liquidation_map.py     # Liquidation map analysis (uses httpx)
+│       └── market_briefing.py     # Market briefing generator
+│
+├── data/                          # Auto-created at startup (signals.json, dashboard.json, *.db)
 │
 └── tests/
     ├── __init__.py
-    ├── conftest.py                # Shared fixtures
+    ├── conftest.py                # Shared fixtures + dummy env vars + network patches
     ├── test_signal_engine.py      # Unit tests for Fractal Liquidity Engine
     ├── test_risk_manager.py       # Unit tests for safety protocols
-    ├── test_dashboard.py          # Unit tests for dashboard statistics (incl. Bessel's correction)
-    ├── test_news_fetcher.py       # Unit tests for news fetcher (incl. no-key bug fix)
-    ├── test_signal_tracker.py     # Unit tests for signal tracker (incl. BE-SL bug fix)
+    ├── test_dashboard.py          # Unit tests for dashboard statistics
+    ├── test_news_fetcher.py       # Unit tests for news fetcher
+    ├── test_signal_tracker.py     # Unit tests for signal tracker
     ├── test_session_filter.py     # Unit tests for trading session gate
     ├── test_funding_rate.py       # Unit tests for funding rate sentiment gate
     ├── test_open_interest.py      # Unit tests for OI divergence monitor
     ├── test_loss_cooldown.py      # Unit tests for loss streak cooldown
     ├── test_fear_greed.py         # Unit tests for Fear & Greed index
-    └── test_daily_performance.py  # Unit tests for daily performance recap
+    ├── test_daily_performance.py  # Unit tests for daily performance recap
+    ├── test_spot_scanner.py       # Unit tests for spot gem/scam scanner
+    ├── test_ws_and_fallback.py    # Unit tests for WebSocket manager
+    ├── test_regime_adapter.py     # Unit tests for regime adapter
+    ├── test_weekly_report.py      # Unit tests for weekly report generator
+    ├── test_gate_labels.py        # Unit tests for gate label registry
+    ├── test_price_fmt.py          # Unit tests for adaptive price formatter
+    ├── test_separate_market_data.py # Tests for dual futures/spot market stores
+    └── [... additional test files for each module]
 ```
 
 ---
@@ -1818,7 +2291,7 @@ refactor: extract exchange module from bot.py
 
 ---
 
-*End of Blueprint — version `3.0.0-domination`*  
+*End of Blueprint — version `4.0.0-domination`*  
 *Maintained by the 360 Crypto Eye development team.*  
 *If code behaviour differs from this document, the code must be corrected to match.*
 
@@ -2046,13 +2519,16 @@ Classifies market into three states daily at 09:00 UTC:
 - **BULL:** BTC price > 200d SMA AND Fear & Greed > 50
 - **BEAR:** BTC price < 200d SMA AND Fear & Greed < 40
 - **SIDEWAYS:** Anything else
+- **UNKNOWN:** Fewer than 50 daily candles available (graceful degradation)
+
+**Graceful degradation:** Falls back to 50-day SMA when 50–199 candles are available (instead of returning `UNKNOWN`). Only returns `UNKNOWN` when fewer than 50 candles exist. See §3.19 for full details.
 
 In **BEAR** regime:
 - CH1 and CH2 suppress new LONG signals automatically
 - CH3 (Easy Breakout) is unaffected — informational alerts continue
 - CH4 (Spot) is unaffected — accumulation longs are valid regardless of regime
 
-Regime is stored in `BotState.market_regime` and accessible via the `/regime` command.
+Regime is stored in `BotState.market_regime` and accessible via the `/regime` command. The `get_regime_adjustments()` function in `bot/regime_adapter.py` (§3.18) maps the regime to concrete TP3/max_signals/risk_modifier parameters.
 
 ### §12.5 Bug Fixes in Signal Engine
 
@@ -2068,10 +2544,11 @@ Three critical bugs fixed in v2.0 that caused zero signals on live VPS:
 
 **Bug 3 — Liquidity sweep window too narrow** (fixed):
 - Old: `candles[-3:]` — only 15 minutes of data
-- New: `candles[-7:]` — 35 minutes (wider sweep detection window)
+- New: `candles[-15:]` — 75 minutes (wider sweep detection window; previously intermediate fix used `candles[-7:]`)
 
 **Bug 4 — No gate-level logging** (fixed):
 - Added `[GATE_FAIL]` and `[GATE_FAIL][RELAXED]` INFO-level log entries in `run_confluence_check()` and `run_confluence_check_relaxed()` showing exactly which gate killed each scan
+- All gates are now evaluated up-front and logged in a single structured line; near-miss WARNING emitted when exactly one gate fails (see §3.2)
 
 ### §12.6 New Commands
 
@@ -2079,6 +2556,10 @@ Three critical bugs fixed in v2.0 that caused zero signals on live VPS:
 |---------|-------------|
 | `/regime` | Show current BULL/BEAR/SIDEWAYS regime and its effect on signal generation |
 | `/channels` | Show all 5 channel IDs and their configuration status |
+| `/spot_scan [on\|off]` | Enable/disable spot gem scanner |
+| `/spot_status` | Show spot scanner health: enabled, pair count, last scan, gem/scam counts |
+| `/scam_check SYMBOL` | Run manual scam detection on a spot pair |
+| `/status` | Extended status with per-channel breakdown, performance stats, trailing SL state |
 
 ### §12.7 Configuration Reference (v2.0 additions)
 
@@ -2097,29 +2578,36 @@ Three critical bugs fixed in v2.0 that caused zero signals on live VPS:
 | `REGIME_DETECTOR_ENABLED` | `true` | Enable/disable regime classification |
 | `DEDUP_WINDOW_MINUTES` | `15` | Suppress CH2/CH3 if CH1 fired same symbol within N minutes |
 
-### §12.8 New v2.0 File Tree
+### §12.8 Technical Standards Added in v4.0
+
+- **`httpx` standardization:** All async HTTP calls now use `httpx` (replacing `requests`). `fear_greed.py` and `liquidation_map.py` use `httpx.AsyncClient` for proper async I/O.
+- **Price formatting standardized:** All signal message prices use `fmt_price()` from `bot/price_fmt.py` (§3.22) instead of hardcoded `:.4f`.
+- **Gate labels centralised:** `bot/gate_labels.py` (§3.21) is the single source of truth for all gate keys, labels, and symbols.
+- **Dual market architecture:** Separate `futures_market_data`/`futures_ws` and `spot_market_data`/`spot_ws` instances with backward-compatible aliases.
+- **1D buffer expanded:** `_BUF_1D = 210` (up from 30) to support the 200-day SMA regime detector.
+- **CH3/CH4 signal registration:** `BreakoutResult` (CH3) and `SpotGemResult` (CH4) are now wrapped in `SignalResult` and registered via `risk_manager.add_signal()` before posting to Telegram.
+
+### §12.9 New v4.0 File Tree Additions
 
 ```
 bot/
-├── signal_router.py           # Channel routing + deduplication
-├── session_filter.py          # Trading session gate (London/NYC/Asia)
-├── funding_rate.py            # Gate ⑧ — Binance funding rate sentiment
-├── open_interest.py           # Gate ⑨ — OI divergence monitor
-├── loss_streak_cooldown.py    # Smart cooldown after 3+ consecutive losses
-├── channels/
-│   ├── __init__.py
-│   ├── hard_scalp.py          # CH1 gate runner (full 7 gates, HIGH only)
-│   ├── medium_scalp.py        # CH2 gate runner (relaxed gates, HIGH+MEDIUM)
-│   ├── easy_breakout.py       # CH3 breakout detector + BreakoutResult
-│   └── spot_momentum.py       # CH4 spot scanner + SpotSignalResult
+├── spot_scanner.py            # Spot gem/scam scanner (§3.16)
+├── ws_manager.py              # WebSocket market data manager (§3.17)
+├── regime_adapter.py          # Regime-adaptive signal parameters (§3.18)
+├── weekly_report.py           # Sunday weekly performance report (§3.20)
+├── gate_labels.py             # Gate key/label/symbol registry (§3.21)
+├── price_fmt.py               # Adaptive price formatter (§3.22)
 └── insights/
-    ├── __init__.py
-    ├── btc_structure.py       # CH5A — BTC 4H structure post
-    ├── fear_greed.py          # CH5B — Fear & Greed Index every 6 hours
-    ├── regime_detector.py     # CH5D — BULL/BEAR/SIDEWAYS classification
-    ├── news_digest.py         # CH5C — Daily news brief at 08:00 UTC
-    ├── daily_performance.py   # CH5E — Daily Performance Recap at 23:00 UTC
-    └── weekly_briefing.py     # CH5F — Weekly BTC analysis on Sundays
+    └── regime_detector.py     # Updated: 50-day SMA fallback, UNKNOWN handling (§3.19)
+tests/
+├── conftest.py                # Updated: dummy env vars + network patches
+├── test_spot_scanner.py
+├── test_ws_and_fallback.py
+├── test_regime_adapter.py
+├── test_weekly_report.py
+├── test_gate_labels.py
+├── test_price_fmt.py
+└── test_separate_market_data.py
 ```
 
 ---
