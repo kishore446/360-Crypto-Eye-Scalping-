@@ -178,7 +178,6 @@ class AutoCloseMonitor:
 
         def _to_candle(candle_row: list) -> "CandleData":
             return CandleData(
-                timestamp=candle_row[0],
                 open=candle_row[1],
                 high=candle_row[2],
                 low=candle_row[3],
