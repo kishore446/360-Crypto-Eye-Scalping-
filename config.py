@@ -84,6 +84,10 @@ try:
         cooldown_signals: int = 3
         cooldown_hours: int = 24
 
+        # ── Win Streak (Hot Streak) ───────────────────────────────────────────
+        hot_streak_threshold: int = 5           # Consecutive wins to activate hot streak
+        hot_streak_bonus_confluence: int = 5    # Extra confluence bonus during hot streak
+
         # ── Insights Schedule ─────────────────────────────────────────────────
         fear_greed_interval_hours: int = 6
         daily_performance_hour: int = 23  # UTC hour for daily recap
@@ -91,6 +95,15 @@ try:
         # ── Confluence Scoring ────────────────────────────────────────────────
         min_confluence_score: int = 40  # 40 = filter out low-quality signals
         min_displacement_pct: float = 0.15  # Gate ④ displacement filter (§2.2)
+
+        # ── RSI Divergence ────────────────────────────────────────────────────
+        rsi_divergence_period: int = 14  # RSI period for divergence detection
+
+        # ── Channel Degradation ───────────────────────────────────────────────
+        channel_degradation_low_wr: float = 35.0          # Raise confluence below this WR
+        channel_degradation_suppress_wr: float = 25.0     # Suppress channel below this WR
+        channel_degradation_recovery_wr: float = 50.0     # Restore when WR recovers above this
+        channel_degradation_extra_confluence: int = 15    # Extra confluence points when degraded
 
         # ── News Fail-Safe ────────────────────────────────────────────────────
         news_fail_safe_window_minutes: int = 60
@@ -237,11 +250,21 @@ try:
     COOLDOWN_SIGNALS: int = settings.cooldown_signals
     COOLDOWN_HOURS: int = settings.cooldown_hours
 
+    HOT_STREAK_THRESHOLD: int = settings.hot_streak_threshold
+    HOT_STREAK_BONUS_CONFLUENCE: int = settings.hot_streak_bonus_confluence
+
     FEAR_GREED_INTERVAL_HOURS: int = settings.fear_greed_interval_hours
     DAILY_PERFORMANCE_HOUR: int = settings.daily_performance_hour
     MIN_CONFLUENCE_SCORE: int = settings.min_confluence_score
     MIN_DISPLACEMENT_PCT: float = settings.min_displacement_pct
     NEWS_FAIL_SAFE_WINDOW_MINUTES: int = settings.news_fail_safe_window_minutes
+
+    RSI_DIVERGENCE_PERIOD: int = settings.rsi_divergence_period
+
+    CHANNEL_DEGRADATION_LOW_WR: float = settings.channel_degradation_low_wr
+    CHANNEL_DEGRADATION_SUPPRESS_WR: float = settings.channel_degradation_suppress_wr
+    CHANNEL_DEGRADATION_RECOVERY_WR: float = settings.channel_degradation_recovery_wr
+    CHANNEL_DEGRADATION_EXTRA_CONFLUENCE: int = settings.channel_degradation_extra_confluence
 
     DASHBOARD_LOG_FILE: str = settings.dashboard_log_file
     SIGNALS_FILE: str = settings.signals_file
@@ -347,11 +370,21 @@ except ImportError:
     COOLDOWN_SIGNALS: int = int(os.environ.get("COOLDOWN_SIGNALS", "3"))
     COOLDOWN_HOURS: int = int(os.environ.get("COOLDOWN_HOURS", "24"))
 
+    HOT_STREAK_THRESHOLD: int = int(os.environ.get("HOT_STREAK_THRESHOLD", "5"))
+    HOT_STREAK_BONUS_CONFLUENCE: int = int(os.environ.get("HOT_STREAK_BONUS_CONFLUENCE", "5"))
+
     FEAR_GREED_INTERVAL_HOURS: int = int(os.environ.get("FEAR_GREED_INTERVAL_HOURS", "6"))
     DAILY_PERFORMANCE_HOUR: int = int(os.environ.get("DAILY_PERFORMANCE_HOUR", "23"))
     MIN_CONFLUENCE_SCORE: int = int(os.environ.get("MIN_CONFLUENCE_SCORE", "40"))
     MIN_DISPLACEMENT_PCT: float = float(os.environ.get("MIN_DISPLACEMENT_PCT", "0.15"))
     NEWS_FAIL_SAFE_WINDOW_MINUTES: int = int(os.environ.get("NEWS_FAIL_SAFE_WINDOW_MINUTES", "60"))
+
+    RSI_DIVERGENCE_PERIOD: int = int(os.environ.get("RSI_DIVERGENCE_PERIOD", "14"))
+
+    CHANNEL_DEGRADATION_LOW_WR: float = float(os.environ.get("CHANNEL_DEGRADATION_LOW_WR", "35.0"))
+    CHANNEL_DEGRADATION_SUPPRESS_WR: float = float(os.environ.get("CHANNEL_DEGRADATION_SUPPRESS_WR", "25.0"))
+    CHANNEL_DEGRADATION_RECOVERY_WR: float = float(os.environ.get("CHANNEL_DEGRADATION_RECOVERY_WR", "50.0"))
+    CHANNEL_DEGRADATION_EXTRA_CONFLUENCE: int = int(os.environ.get("CHANNEL_DEGRADATION_EXTRA_CONFLUENCE", "15"))
     DASHBOARD_LOG_FILE: str = os.environ.get("DASHBOARD_LOG_FILE", "data/dashboard.json")
     SIGNALS_FILE: str = os.environ.get("SIGNALS_FILE", "data/signals.json")
     DB_PATH: str = os.environ.get("DB_PATH", "data/360eye.db")

@@ -22,6 +22,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
+from bot.partial_position import PartialPosition
 from bot.signal_engine import Side
 
 if TYPE_CHECKING:
@@ -101,6 +102,7 @@ class AutoCloseMonitor:
         self._bot_state = bot_state
         self._running = False
         self._task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
+        self._partial_positions: dict[str, PartialPosition] = {}
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -221,6 +223,14 @@ class AutoCloseMonitor:
         entry = signal.entry_mid
 
         if r.side == Side.LONG:
+            sl = signal.result.stop_loss if not signal.be_triggered else entry
+            if current_price <= sl:
+                pnl = (current_price - entry) / entry * 100
+                return CloseResult(
+                    signal_id=r.signal_id, symbol=r.symbol, side="LONG",
+                    outcome="SL", entry_price=entry, exit_price=current_price,
+                    pnl_pct=round(pnl, 4), opened_at=signal.opened_at, closed_at=now,
+                )
             if current_price >= r.tp3:
                 pnl = (r.tp3 - entry) / entry * 100
                 return CloseResult(
@@ -242,15 +252,15 @@ class AutoCloseMonitor:
                     outcome="TP1", entry_price=entry, exit_price=r.tp1,
                     pnl_pct=round(pnl, 4), opened_at=signal.opened_at, closed_at=now,
                 )
+        else:  # SHORT
             sl = signal.result.stop_loss if not signal.be_triggered else entry
-            if current_price <= sl:
-                pnl = (current_price - entry) / entry * 100
+            if current_price >= sl:
+                pnl = (entry - current_price) / entry * 100
                 return CloseResult(
-                    signal_id=r.signal_id, symbol=r.symbol, side="LONG",
+                    signal_id=r.signal_id, symbol=r.symbol, side="SHORT",
                     outcome="SL", entry_price=entry, exit_price=current_price,
                     pnl_pct=round(pnl, 4), opened_at=signal.opened_at, closed_at=now,
                 )
-        else:  # SHORT
             if current_price <= r.tp3:
                 pnl = (entry - r.tp3) / entry * 100
                 return CloseResult(
@@ -270,14 +280,6 @@ class AutoCloseMonitor:
                 return CloseResult(
                     signal_id=r.signal_id, symbol=r.symbol, side="SHORT",
                     outcome="TP1", entry_price=entry, exit_price=r.tp1,
-                    pnl_pct=round(pnl, 4), opened_at=signal.opened_at, closed_at=now,
-                )
-            sl = signal.result.stop_loss if not signal.be_triggered else entry
-            if current_price >= sl:
-                pnl = (entry - current_price) / entry * 100
-                return CloseResult(
-                    signal_id=r.signal_id, symbol=r.symbol, side="SHORT",
-                    outcome="SL", entry_price=entry, exit_price=current_price,
                     pnl_pct=round(pnl, 4), opened_at=signal.opened_at, closed_at=now,
                 )
         return None
@@ -302,15 +304,41 @@ class AutoCloseMonitor:
 
     async def _process_close(self, signal: "ActiveSignal", close_result: CloseResult) -> None:
         """Close signal, record result, update cooldown, and broadcast."""
+        sig_id = signal.result.signal_id
+
+        # ── Partial position tracking ─────────────────────────────────────────
+        pp = self._partial_positions.get(sig_id)
+        if pp is None:
+            pp = PartialPosition(
+                signal_id=sig_id,
+                entry_price=close_result.entry_price,
+                side=close_result.side,
+            )
+            self._partial_positions[sig_id] = pp
+
+        pp.add_exit(
+            level=close_result.outcome,
+            exit_price=close_result.exit_price,
+        )
+
+        # Compute composite PnL when partial exits are present
+        partial_exits_json = pp.to_json() if pp.has_exits() else ""
+        composite_pnl = pp.composite_pnl() if pp.has_exits() else close_result.pnl_pct
+
+        # Clean up partial position tracker
+        self._partial_positions.pop(sig_id, None)
+
         self._risk_manager.close_signal(signal.result.symbol, reason=close_result.outcome.lower())
 
-        # Map outcome to dashboard WIN/LOSS/BE
+        # Map outcome to dashboard WIN/LOSS/BE/STALE
         if close_result.outcome.startswith("TP"):
             dashboard_outcome = "WIN"
         elif close_result.outcome == "SL":
             dashboard_outcome = "LOSS"
+        elif close_result.outcome == "STALE":
+            dashboard_outcome = "STALE"
         else:
-            dashboard_outcome = "BE"  # STALE treated as break-even
+            dashboard_outcome = "BE"
 
         from bot.dashboard import TradeResult
         trade_result = TradeResult(
@@ -329,21 +357,24 @@ class AutoCloseMonitor:
             timeframe="5m",
             channel_tier=close_result.channel_tier,
             session=close_result.session,
+            partial_exits=partial_exits_json,
+            composite_pnl_pct=composite_pnl,
         )
         self._dashboard.record_result(trade_result)
 
-        # Feed outcome to cooldown manager
-        self._cooldown.record_outcome(dashboard_outcome)
+        # Feed outcome to cooldown manager (STALE excluded from streak logic)
+        if dashboard_outcome != "STALE":
+            self._cooldown.record_outcome(dashboard_outcome)
 
         # Broadcast close summary
-        await self._broadcast_close(close_result)
+        await self._broadcast_close(close_result, partial_position=pp)
 
     # ── broadcast ─────────────────────────────────────────────────────────────
 
-    async def _broadcast_close(self, close_result: CloseResult) -> None:
+    async def _broadcast_close(self, close_result: CloseResult, partial_position: Optional["PartialPosition"] = None) -> None:
         """Format and broadcast a signal close summary to the insights channel."""
         from bot.signal_router import ChannelTier
-        message = self._format_close_message(close_result)
+        message = self._format_close_message(close_result, partial_position=partial_position)
         channel_id = self._router.get_channel_id(ChannelTier.INSIGHTS)
         if not channel_id:
             logger.debug("No CH5 insights channel configured; skipping close broadcast.")
@@ -358,8 +389,8 @@ class AutoCloseMonitor:
             logger.warning("Failed to broadcast close summary for %s: %s", close_result.symbol, exc)
 
     @staticmethod
-    def _format_close_message(r: CloseResult) -> str:
-        """Format a Telegram close summary message."""
+    def _format_close_message(r: CloseResult, partial_position: Optional["PartialPosition"] = None) -> str:
+        """Format a Telegram close summary message, with multi-exit breakdown when available."""
         outcome_map = {
             "TP1": "✅ TP1 HIT",
             "TP2": "✅ TP2 HIT",
@@ -371,6 +402,21 @@ class AutoCloseMonitor:
         pnl_sign = "+" if r.pnl_pct >= 0 else ""
         duration = _duration_str(r.closed_at - r.opened_at)
         tier_label = r.channel_tier.replace("_", " ")
+
+        # Enhanced composite message when partial exits exist
+        if partial_position is not None and partial_position.exit_count() >= 1:
+            composite_pnl = partial_position.composite_pnl()
+            composite_sign = "+" if composite_pnl >= 0 else ""
+            exit_breakdown = partial_position.format_exit_breakdown(side=r.side)
+            sep = "━" * 21
+            return (
+                f"📋 *SIGNAL CLOSED — #{r.symbol}/USDT {r.side}*\n"
+                f"{sep}\n"
+                f"{exit_breakdown}\n"
+                f"{sep}\n"
+                f"Composite P&L: {composite_sign}{composite_pnl:.2f}% (weighted)\n"
+                f"Time Held: {duration} | Channel: {tier_label}"
+            )
 
         return (
             f"📋 *SIGNAL CLOSED — #{r.symbol}/USDT {r.side}*\n"

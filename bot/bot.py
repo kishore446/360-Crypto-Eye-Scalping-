@@ -997,6 +997,25 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
 
     atr_proxy = (range_high - range_low) * 0.01
 
+    # ── Session-aware signal quality gate ────────────────────────────────────
+    try:
+        from bot.session_filter import get_current_session as _get_session
+        _current_session = _get_session()
+        _session_map = {
+            "LONDON": "LONDON",
+            "NEW_YORK": "NYC",
+            "LONDON+NYC_OVERLAP": "OVERLAP",
+            "ASIA": "ASIA",
+        }
+        _dashboard_session = _session_map.get(_current_session, "UNKNOWN")
+        _session_stats = dashboard.per_session_stats()
+        _session_wr = _session_stats.get(_dashboard_session, {}).get("win_rate", 50.0)
+        _session_total = _session_stats.get(_dashboard_session, {}).get("total_signals", 0)
+    except Exception:
+        _session_wr = 50.0
+        _session_total = 0
+        _dashboard_session = "UNKNOWN"
+
     for side in (Side.LONG, Side.SHORT):
         if not risk_manager.can_open_signal(side):
             continue
@@ -1035,6 +1054,19 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
             )
         except Exception as exc:
             logger.error("CH1 confluence error for %s %s: %s", base_symbol, side.value, exc)
+            ch1_result = None
+
+        # Session-aware quality gate: suppress LOW confidence signals during weak sessions
+        if (
+            ch1_result is not None
+            and _session_total >= 10
+            and _session_wr < 40.0
+            and ch1_result.confidence == Confidence.LOW
+        ):
+            logger.info(
+                "Suppressing LOW confidence CH1 signal for %s during weak session %s (WR=%.1f%%)",
+                base_symbol, _dashboard_session, _session_wr,
+            )
             ch1_result = None
 
         if ch1_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.HARD):

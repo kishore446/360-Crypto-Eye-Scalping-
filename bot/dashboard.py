@@ -38,11 +38,13 @@ class TradeResult:
     tp3: float
     opened_at: float    # Unix timestamp
     closed_at: Optional[float]
-    outcome: str        # "WIN" | "LOSS" | "BE" | "OPEN"
+    outcome: str        # "WIN" | "LOSS" | "BE" | "STALE" | "OPEN"
     pnl_pct: float      # % PnL relative to entry
     timeframe: str      # "5m" | "15m" | "1h" — identifies which TF triggered entry
     channel_tier: str = "AGGREGATE"  # "CH1_HARD" | "CH2_MEDIUM" | "CH3_EASY" | "CH4_SPOT" | "AGGREGATE"
     session: str = "UNKNOWN"         # "LONDON" | "NYC" | "ASIA" | "OVERLAP" | "UNKNOWN"
+    partial_exits: str = ""          # JSON-encoded list of {"level": "TP1", "pct": 50, "pnl": 1.5}
+    composite_pnl_pct: float = 0.0   # weighted composite PnL across partial exits
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -202,7 +204,9 @@ class Dashboard:
         cutoff = time.time() - days * 86400
         closed = [
             r for r in self._results
-            if r.outcome in ("WIN", "LOSS", "BE") and r.opened_at >= cutoff
+            if r.outcome in ("WIN", "LOSS", "BE")
+            and r.closed_at is not None
+            and r.closed_at >= cutoff
         ]
         if not closed:
             return 0.0
@@ -211,6 +215,10 @@ class Dashboard:
 
     def total_trades(self) -> int:
         return len([r for r in self._results if r.outcome != "OPEN"])
+
+    def stale_count(self) -> int:
+        """Return the total number of STALE-closed trades."""
+        return sum(1 for r in self._results if r.outcome == "STALE")
 
     def get_closed_trades(self) -> list[TradeResult]:
         """Return all closed trade results (WIN, LOSS, or BE) in chronological order."""
@@ -336,6 +344,7 @@ class Dashboard:
             "📊 360 EYE SCALP — LIVE DASHBOARD",
             "─────────────────────────────────",
             f"Total Closed Trades : {self.total_trades()}",
+            f"  → Stale Closed    : {self.stale_count()}",
             f"Win Rate (strict)    : {self.win_rate():.2f}%",
             f"Win Rate (protected) : {self.protected_win_rate():.2f}%  (BE counted as win)",
             f"  → 5m entries       : {self.win_rate('5m'):.2f}%",
@@ -359,18 +368,20 @@ class Dashboard:
         wins = [r for r in trades if r.outcome == "WIN"]
         losses = [r for r in trades if r.outcome == "LOSS"]
         be_trades = [r for r in trades if r.outcome == "BE"]
-        total = len(trades)
+        stale_trades = [r for r in trades if r.outcome == "STALE"]
+        scored_trades = [r for r in trades if r.outcome in ("WIN", "LOSS", "BE")]
+        total = len(scored_trades)
         win_rate = round(len(wins) / total * 100, 2) if total else 0.0
         protected_win_rate = round((len(wins) + len(be_trades)) / total * 100, 2) if total else 0.0
-        avg_pnl = round(sum(r.pnl_pct for r in trades) / total, 4) if total else 0.0
-        pnl_values = [r.pnl_pct for r in trades]
+        avg_pnl = round(sum(r.pnl_pct for r in scored_trades) / total, 4) if total else 0.0
+        pnl_values = [r.pnl_pct for r in scored_trades]
         best_trade = round(max(pnl_values), 4) if pnl_values else 0.0
         worst_trade = round(min(pnl_values), 4) if pnl_values else 0.0
         # Sharpe for this subset
         sharpe = 0.0
-        if len(trades) >= 3:
+        if len(scored_trades) >= 3:
             mean_r = avg_pnl
-            variance = sum((r.pnl_pct - mean_r) ** 2 for r in trades) / (len(trades) - 1)
+            variance = sum((r.pnl_pct - mean_r) ** 2 for r in scored_trades) / (len(scored_trades) - 1)
             std_r = math.sqrt(variance)
             if std_r > 0:
                 sharpe = round(mean_r / std_r, 4)
@@ -379,6 +390,7 @@ class Dashboard:
             "wins": len(wins),
             "losses": len(losses),
             "be_count": len(be_trades),
+            "stale_count": len(stale_trades),
             "win_rate": win_rate,
             "protected_win_rate": protected_win_rate,
             "avg_pnl": avg_pnl,
@@ -394,7 +406,7 @@ class Dashboard:
         Returns a dict keyed by channel tier containing win_rate, total_signals,
         wins, losses, avg_pnl, best_trade, worst_trade, and sharpe.
         """
-        closed = [r for r in self._results if r.outcome in ("WIN", "LOSS", "BE")]
+        closed = [r for r in self._results if r.outcome in ("WIN", "LOSS", "BE", "STALE")]
         tiers = ["CH1_HARD", "CH2_MEDIUM", "CH3_EASY", "CH4_SPOT", "AGGREGATE"]
         result: dict[str, dict] = {}
         for tier in tiers:
@@ -410,7 +422,7 @@ class Dashboard:
         containing win_rate, total_signals, wins, losses, avg_pnl, best_trade,
         worst_trade, and sharpe.
         """
-        closed = [r for r in self._results if r.outcome in ("WIN", "LOSS", "BE")]
+        closed = [r for r in self._results if r.outcome in ("WIN", "LOSS", "BE", "STALE")]
         sessions = ["LONDON", "NYC", "ASIA", "OVERLAP", "UNKNOWN"]
         result: dict[str, dict] = {}
         for session in sessions:
@@ -430,7 +442,9 @@ class Dashboard:
         cutoff = time.time() - days * 86400
         closed = [
             r for r in self._results
-            if r.outcome in ("WIN", "LOSS", "BE") and r.opened_at >= cutoff
+            if r.outcome in ("WIN", "LOSS", "BE")
+            and r.closed_at is not None
+            and r.closed_at >= cutoff
         ]
 
         channel_configs = [
@@ -454,6 +468,103 @@ class Dashboard:
             lines.append("")
 
         return "\n".join(lines).rstrip()
+
+    def per_channel_rolling_stats(self, days: int = 7) -> dict[str, dict]:
+        """
+        Return per-channel rolling performance statistics filtered by closed_at.
+
+        Parameters
+        ----------
+        days:
+            Rolling lookback window in days.
+
+        Returns
+        -------
+        dict
+            Keyed by channel tier, each value contains rolling win_rate,
+            profit_factor, avg_pnl, and total_signals for the window.
+        """
+        cutoff = time.time() - days * 86400
+        closed = [
+            r for r in self._results
+            if r.outcome in ("WIN", "LOSS", "BE", "STALE")
+            and r.closed_at is not None
+            and r.closed_at >= cutoff
+        ]
+        tiers = ["CH1_HARD", "CH2_MEDIUM", "CH3_EASY", "CH4_SPOT", "AGGREGATE"]
+        result: dict[str, dict] = {}
+        for tier in tiers:
+            subset = [r for r in closed if r.channel_tier == tier]
+            stats = self._channel_stats_for(subset)
+            # Add rolling profit factor
+            wins_pnl = sum(r.pnl_pct for r in subset if r.pnl_pct > 0 and r.outcome in ("WIN", "LOSS", "BE"))
+            loss_pnl = abs(sum(r.pnl_pct for r in subset if r.pnl_pct < 0 and r.outcome in ("WIN", "LOSS", "BE")))
+            stats["profit_factor"] = round(wins_pnl / loss_pnl, 4) if loss_pnl > 0 else 0.0
+            result[tier] = stats
+        return result
+
+    def per_channel_profit_factor(self) -> dict[str, float]:
+        """
+        Return gross profit / gross loss (Profit Factor) per channel tier.
+
+        Returns 0.0 for channels with no losing trades.
+        """
+        closed = [r for r in self._results if r.outcome in ("WIN", "LOSS", "BE")]
+        tiers = ["CH1_HARD", "CH2_MEDIUM", "CH3_EASY", "CH4_SPOT", "AGGREGATE"]
+        result: dict[str, float] = {}
+        for tier in tiers:
+            subset = [r for r in closed if r.channel_tier == tier]
+            gross_profit = sum(r.pnl_pct for r in subset if r.pnl_pct > 0)
+            gross_loss = abs(sum(r.pnl_pct for r in subset if r.pnl_pct < 0))
+            result[tier] = round(gross_profit / gross_loss, 4) if gross_loss > 0 else 0.0
+        return result
+
+    def per_channel_tp_distribution(self) -> dict[str, dict]:
+        """
+        Return TP/SL/BE/STALE outcome distribution per channel tier.
+
+        Returns a dict mapping each channel tier to counts of TP1, TP2, TP3, SL, BE, STALE
+        outcomes. WIN/LOSS outcomes in the dashboard are mapped from original close reasons,
+        so this method uses the raw outcome field stored in TradeResult.
+        """
+        all_closed = [r for r in self._results if r.outcome in ("WIN", "LOSS", "BE", "STALE")]
+        tiers = ["CH1_HARD", "CH2_MEDIUM", "CH3_EASY", "CH4_SPOT", "AGGREGATE"]
+        result: dict[str, dict] = {}
+        for tier in tiers:
+            subset = [r for r in all_closed if r.channel_tier == tier]
+            result[tier] = {
+                "WIN": sum(1 for r in subset if r.outcome == "WIN"),
+                "LOSS": sum(1 for r in subset if r.outcome == "LOSS"),
+                "BE": sum(1 for r in subset if r.outcome == "BE"),
+                "STALE": sum(1 for r in subset if r.outcome == "STALE"),
+                "total": len(subset),
+            }
+        return result
+
+    def per_channel_equity_curve(self) -> dict[str, list[float]]:
+        """
+        Return a separate equity curve (cumulative PnL) per channel tier.
+
+        Returns a dict mapping each channel tier to a list of cumulative PnL
+        values in chronological order. Excludes STALE trades (0 PnL, no price move).
+        """
+        closed = [r for r in self._results if r.outcome in ("WIN", "LOSS", "BE")]
+        # Sort by closed_at for proper chronological order
+        closed_sorted = sorted(
+            (r for r in closed if r.closed_at is not None),
+            key=lambda r: r.closed_at,  # type: ignore[arg-type]
+        )
+        tiers = ["CH1_HARD", "CH2_MEDIUM", "CH3_EASY", "CH4_SPOT", "AGGREGATE"]
+        result: dict[str, list[float]] = {}
+        for tier in tiers:
+            subset = [r for r in closed_sorted if r.channel_tier == tier]
+            curve: list[float] = []
+            cumulative = 0.0
+            for r in subset:
+                cumulative += r.pnl_pct
+                curve.append(round(cumulative, 4))
+            result[tier] = curve
+        return result
 
     def check_drawdown_halt(self, threshold_pct: float = -15.0) -> bool:
         """
