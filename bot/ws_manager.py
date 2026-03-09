@@ -306,7 +306,6 @@ class WebSocketManager:
                     url,
                     ping_interval=None,
                     ping_timeout=None,
-                    pong_timeout=30,
                     close_timeout=10,
                     max_size=2**22,  # 4 MB — handles large combined-stream payloads
                 ) as ws:
