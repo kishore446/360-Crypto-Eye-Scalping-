@@ -39,13 +39,14 @@ def _make_signal_result(
     )
 
 
-def _make_active_signal(result: SignalResult, be_triggered: bool = False) -> MagicMock:
+def _make_active_signal(result: SignalResult, be_triggered: bool = False, origin_channel: int = 0) -> MagicMock:
     sig = MagicMock()
     sig.result = result
     sig.entry_mid = (result.entry_low + result.entry_high) / 2
     sig.opened_at = time.time() - 3600
     sig.be_triggered = be_triggered
     sig.is_stale.return_value = False
+    sig.origin_channel = origin_channel
     return sig
 
 
@@ -58,6 +59,7 @@ def monitor(tmp_path) -> AutoCloseMonitor:
     market_data = MagicMock()
     router = MagicMock()
     router.get_channel_id.return_value = 0
+    router.get_tier_for_channel_id.return_value = None
     return AutoCloseMonitor(
         signal_tracker=risk_manager,
         dashboard=dashboard,
@@ -79,18 +81,31 @@ class TestCheckTpSlHit:
         assert close.pnl_pct > 0
 
     def test_long_tp2_hit(self, monitor):
+        """When price hits TP2 directly, TP1 is returned first (sequential tracking)."""
         result = _make_signal_result()
         signal = _make_active_signal(result)
-        close = monitor._check_tp_sl_hit(signal, current_price=115.5)
-        assert close is not None
-        assert close.outcome == "TP2"
+        # First call at TP2-level price: should return TP1 first (BUG #3 fix)
+        close1 = monitor._check_tp_sl_hit(signal, current_price=115.5)
+        assert close1 is not None
+        assert close1.outcome == "TP1"
+        # Second call (TP1 already recorded): should now return TP2
+        close2 = monitor._check_tp_sl_hit(signal, current_price=115.5)
+        assert close2 is not None
+        assert close2.outcome == "TP2"
 
     def test_long_tp3_hit(self, monitor):
+        """When price hits TP3 directly, TP1 then TP2 then TP3 are returned sequentially."""
         result = _make_signal_result()
         signal = _make_active_signal(result)
-        close = monitor._check_tp_sl_hit(signal, current_price=120.5)
-        assert close is not None
-        assert close.outcome == "TP3"
+        close1 = monitor._check_tp_sl_hit(signal, current_price=120.5)
+        assert close1 is not None
+        assert close1.outcome == "TP1"
+        close2 = monitor._check_tp_sl_hit(signal, current_price=120.5)
+        assert close2 is not None
+        assert close2.outcome == "TP2"
+        close3 = monitor._check_tp_sl_hit(signal, current_price=120.5)
+        assert close3 is not None
+        assert close3.outcome == "TP3"
 
     def test_long_sl_hit(self, monitor):
         result = _make_signal_result()
@@ -251,7 +266,7 @@ async def test_invalidation_alert_sent_only_once(monitor):
 
     broadcast_calls: list[str] = []
 
-    async def fake_broadcast(msg: str) -> None:
+    async def fake_broadcast(msg: str, channel_id: int = 0) -> None:
         broadcast_calls.append(msg)
 
     monitor._market_data.get_candles.return_value = []

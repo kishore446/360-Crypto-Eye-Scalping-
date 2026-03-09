@@ -2,11 +2,15 @@
 Signal Router — routes generated signals to the correct Telegram channel(s).
 
 Channel tiers:
-  HARD     → CH1 — full confluence, HIGH confidence only
-  MEDIUM   → CH2 — relaxed gates, HIGH+MEDIUM confidence
-  EASY     → CH3 — breakout only, all confidence
-  SPOT     → CH4 — spot momentum, all confidence
-  INSIGHTS → CH5 — informational posts only (not signals)
+  HARD          → CH1 — full confluence, HIGH confidence only
+  MEDIUM        → CH2 — relaxed gates, HIGH+MEDIUM confidence
+  EASY          → CH3 — breakout only, all confidence
+  SPOT          → CH4 — spot momentum, all confidence
+  INSIGHTS      → CH5 — informational posts only (not signals)
+  ALTGEMS       → CH6 — altcoin gems (low-cap DCA/swing)
+  WHALE_TRACKER → CH7 — whale movement + liquidation alerts
+  EDUCATION     → CH8 — post-trade reviews, pattern education
+  VIP_DISCUSSION→ CH9 — member analysis & discussion
 
 Deduplication:
   If the same symbol fires on a stricter channel (HARD) within the
@@ -17,6 +21,7 @@ from __future__ import annotations
 
 import time
 from enum import Enum
+from typing import Optional
 
 try:
     from config import DEDUP_WINDOW_MINUTES as _DEDUP_WINDOW_MINUTES
@@ -30,6 +35,10 @@ class ChannelTier(str, Enum):
     EASY = "easy"
     SPOT = "spot"
     INSIGHTS = "insights"
+    ALTGEMS = "altgems"         # CH6
+    WHALE_TRACKER = "whale"     # CH7
+    EDUCATION = "education"     # CH8
+    VIP_DISCUSSION = "vip"      # CH9
 
 
 # Tiers that can suppress lower-priority channels via dedup.
@@ -51,6 +60,10 @@ class SignalRouter:
         channel_easy: int,
         channel_spot: int,
         channel_insights: int,
+        channel_altgems: int = 0,
+        channel_whale: int = 0,
+        channel_education: int = 0,
+        channel_vip: int = 0,
         dedup_window_minutes: int = _DEDUP_WINDOW_MINUTES,
     ) -> None:
         self._channels: dict[ChannelTier, int] = {
@@ -59,6 +72,10 @@ class SignalRouter:
             ChannelTier.EASY: channel_easy,
             ChannelTier.SPOT: channel_spot,
             ChannelTier.INSIGHTS: channel_insights,
+            ChannelTier.ALTGEMS: channel_altgems,
+            ChannelTier.WHALE_TRACKER: channel_whale,
+            ChannelTier.EDUCATION: channel_education,
+            ChannelTier.VIP_DISCUSSION: channel_vip,
         }
         self._dedup_window_seconds: float = dedup_window_minutes * 60.0
         # {symbol: {tier: timestamp}}
@@ -67,6 +84,15 @@ class SignalRouter:
     def get_channel_id(self, tier: ChannelTier) -> int:
         """Return the Telegram channel ID for *tier*."""
         return self._channels[tier]
+
+    def get_tier_for_channel_id(self, channel_id: int) -> Optional["ChannelTier"]:
+        """Reverse-lookup: return the ChannelTier for a given channel ID, or None."""
+        if channel_id == 0:
+            return None
+        for tier, cid in self._channels.items():
+            if cid == channel_id:
+                return tier
+        return None
 
     def is_channel_enabled(self, tier: ChannelTier) -> bool:
         """Return True if the channel ID for *tier* is non-zero (configured)."""

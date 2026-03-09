@@ -53,6 +53,12 @@ __all__ = [
     "volume_percentile",
     "run_confluence_check",
     "run_confluence_check_relaxed",
+    "calculate_macd",
+    "detect_macd_confirmation",
+    "detect_bollinger_squeeze",
+    "calculate_cvd",
+    "detect_cvd_confirmation",
+    "detect_ema_ribbon_alignment",
 ]
 
 
@@ -297,8 +303,9 @@ def detect_market_structure_shift(
     prior_candles = candles[:-1]
 
     # Volume percentile check: require at least 70th percentile for MSS confirmation
-    # volume_percentile is defined later in this module; Python resolves at call time
-    vol_rank = sum(1 for c in candles if c.volume <= last.volume) / len(candles) if candles else 0
+    # Use only the last 20 candles for relevant volume context (BUG #6 fix)
+    recent_for_vol = candles[-20:] if len(candles) > 20 else candles
+    vol_rank = sum(1 for c in recent_for_vol if c.volume <= last.volume) / len(recent_for_vol) if recent_for_vol else 0
     if vol_rank < 0.70:
         return False
 
@@ -337,13 +344,16 @@ def assess_macro_bias(
     the two timeframes are in conflict (no-trade condition).
 
     Logic:
-      - 1D bullish  = last close > previous close AND (close > SMA-20 OR close > EMA-9)
-      - 1D bearish  = last close < previous close AND (close < SMA-20 OR close < EMA-9)
+      - 1D bullish  = at least 2 of the last 3 daily closes rise day-over-day
+                      AND 3-day average close is above SMA-20 or EMA-9.
+      - 1D bearish  = at least 2 of the last 3 daily closes fall day-over-day
+                      AND 3-day average close is below SMA-20 or EMA-9.
       - 4H bullish  = last close > previous close
       Both must agree for a directional bias to be returned.
 
-    Using OR between SMA-20 and EMA-9 prevents false negatives during
-    ranging/consolidating markets where only one MA is above price.
+    Using a 3-day window prevents a single red candle from killing all longs
+    during a strong bull trend. OR between SMA-20 and EMA-9 prevents false
+    negatives during ranging/consolidating markets.
     """
     if len(daily_candles) < 20 or len(four_hour_candles) < 2:
         return None
@@ -354,16 +364,29 @@ def assess_macro_bias(
     # EMA-9 on daily candles (smoothing factor k = 2/(9+1) = 0.2)
     ema9_daily = calculate_ema(daily_candles, period=9)
 
-    last_daily = daily_candles[-1]
-    prev_daily = daily_candles[-2]
+    # BUG #5 fix: use 3-day comparison instead of single-candle
+    last3 = daily_candles[-4:]  # need 4 candles for 3 comparisons
+    if len(last3) >= 4:
+        rises = sum(
+            1 for i in range(1, 4) if last3[i].close > last3[i - 1].close
+        )
+        falls = sum(
+            1 for i in range(1, 4) if last3[i].close < last3[i - 1].close
+        )
+    else:
+        # Fallback to single-candle comparison when insufficient history
+        rises = 1 if daily_candles[-1].close > daily_candles[-2].close else 0
+        falls = 1 if daily_candles[-1].close < daily_candles[-2].close else 0
+
+    avg_close_3d = sum(c.close for c in daily_candles[-3:]) / 3
 
     daily_bullish = (
-        last_daily.close > prev_daily.close
-        and (last_daily.close > sma20_daily or last_daily.close > ema9_daily)
+        rises >= 2
+        and (avg_close_3d > sma20_daily or avg_close_3d > ema9_daily)
     )
     daily_bearish = (
-        last_daily.close < prev_daily.close
-        and (last_daily.close < sma20_daily or last_daily.close < ema9_daily)
+        falls >= 2
+        and (avg_close_3d < sma20_daily or avg_close_3d < ema9_daily)
     )
 
     # 4H bias
@@ -799,6 +822,19 @@ def run_confluence_check(
     rsi_div = detect_rsi_divergence(five_min_candles, side, period=_RSI_DIVERGENCE_PERIOD)
     score += 10 if rsi_div else 0
 
+    # New indicator bonus scores (additive, non-blocking)
+    macd_ok = detect_macd_confirmation(five_min_candles, side)
+    score += 10 if macd_ok else 0
+
+    bb_squeeze = detect_bollinger_squeeze(five_min_candles)
+    score += 10 if bb_squeeze else 0
+
+    cvd_ok = detect_cvd_confirmation(five_min_candles, side)
+    score += 10 if cvd_ok else -5  # divergence penalty
+
+    ribbon_ok = detect_ema_ribbon_alignment(five_min_candles, side)
+    score += 10 if ribbon_ok else 0
+
     # Gate ⑧ — optional funding rate sentiment adjustment (arbitrage gate)
     if funding_rate is not None:
         try:
@@ -1051,6 +1087,204 @@ def volume_percentile(candles: list[CandleData], current_volume: float) -> float
     # Find rank: number of candles with volume <= current_volume
     rank = sum(1 for v in sorted_vols if v <= current_volume)
     return rank / len(sorted_vols)
+
+
+# ── New Indicators ─────────────────────────────────────────────────────────────
+
+
+def calculate_macd(
+    candles: list[CandleData],
+    fast: int = 12,
+    slow: int = 26,
+    signal_period: int = 9,
+) -> tuple[float, float, float]:
+    """
+    Calculate MACD (fast EMA − slow EMA), signal line (EMA of MACD), and histogram.
+
+    Returns (macd_line, signal_line, histogram). Returns (0, 0, 0) on insufficient data.
+    """
+    if len(candles) < slow + signal_period:
+        return 0.0, 0.0, 0.0
+
+    closes = [c.close for c in candles]
+
+    def _ema_series(values: list[float], period: int) -> list[float]:
+        k = 2.0 / (period + 1)
+        ema = [values[0]]
+        for v in values[1:]:
+            ema.append(v * k + ema[-1] * (1 - k))
+        return ema
+
+    fast_ema = _ema_series(closes, fast)
+    slow_ema = _ema_series(closes, slow)
+
+    macd_series = [f - s for f, s in zip(fast_ema, slow_ema)]
+    if len(macd_series) < signal_period:
+        return 0.0, 0.0, 0.0
+
+    signal_series = _ema_series(macd_series, signal_period)
+    macd_line = macd_series[-1]
+    signal_line = signal_series[-1]
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
+
+
+def detect_macd_confirmation(
+    candles: list[CandleData],
+    side: Side,
+    fast: int = 12,
+    slow: int = 26,
+    signal_period: int = 9,
+    lookback: int = 3,
+) -> bool:
+    """
+    Return True when MACD confirms the trade direction.
+
+    Confirmation requires:
+    - Histogram is positive (LONG) or negative (SHORT) on the last candle.
+    - MACD line crossed above/below signal line within the last *lookback* candles.
+    """
+    min_needed = slow + signal_period + lookback
+    if len(candles) < min_needed:
+        return False
+
+    closes = [c.close for c in candles]
+
+    def _ema_series(values: list[float], period: int) -> list[float]:
+        k = 2.0 / (period + 1)
+        ema = [values[0]]
+        for v in values[1:]:
+            ema.append(v * k + ema[-1] * (1 - k))
+        return ema
+
+    fast_ema = _ema_series(closes, fast)
+    slow_ema = _ema_series(closes, slow)
+    macd_series = [f - s for f, s in zip(fast_ema, slow_ema)]
+    if len(macd_series) < signal_period + lookback:
+        return False
+
+    signal_series = _ema_series(macd_series, signal_period)
+
+    # Check histogram direction on last candle
+    last_hist = macd_series[-1] - signal_series[-1]
+    if side == Side.LONG and last_hist <= 0:
+        return False
+    if side == Side.SHORT and last_hist >= 0:
+        return False
+
+    # Check for a crossover within the last *lookback* candles
+    window_macd = macd_series[-lookback - 1:]
+    window_signal = signal_series[-lookback - 1:]
+    for i in range(1, len(window_macd)):
+        prev_above = window_macd[i - 1] > window_signal[i - 1]
+        curr_above = window_macd[i] > window_signal[i]
+        if side == Side.LONG and not prev_above and curr_above:
+            return True
+        if side == Side.SHORT and prev_above and not curr_above:
+            return True
+    return False
+
+
+def detect_bollinger_squeeze(
+    candles: list[CandleData],
+    period: int = 20,
+    squeeze_threshold: float = 0.04,
+) -> bool:
+    """
+    Return True when Bollinger Band width is below *squeeze_threshold*.
+
+    Bandwidth = (upper − lower) / middle. A squeeze (low bandwidth) signals
+    potential breakout imminent. Threshold of 0.04 = 4% band width.
+    """
+    if len(candles) < period:
+        return False
+
+    recent = candles[-period:]
+    closes = [c.close for c in recent]
+    middle = sum(closes) / period
+    variance = sum((c - middle) ** 2 for c in closes) / period
+    std_dev = variance ** 0.5
+
+    upper = middle + 2 * std_dev
+    lower = middle - 2 * std_dev
+    if middle == 0:
+        return False
+    bandwidth = (upper - lower) / middle
+    return bandwidth < squeeze_threshold
+
+
+def calculate_cvd(candles: list[CandleData]) -> list[float]:
+    """
+    Estimate Cumulative Volume Delta (CVD) per candle.
+
+    Buy volume proxy: (close − low) / (high − low) * volume
+    Sell volume proxy: remainder.
+    CVD = cumulative sum of (buy_vol − sell_vol).
+
+    Returns a list of CVD values the same length as *candles*.
+    Returns an empty list when *candles* is empty.
+    """
+    if not candles:
+        return []
+
+    cvd_series: list[float] = []
+    cumulative = 0.0
+    for c in candles:
+        rng = c.high - c.low
+        if rng > 0:
+            buy_vol = (c.close - c.low) / rng * c.volume
+        else:
+            buy_vol = c.volume / 2.0
+        sell_vol = c.volume - buy_vol
+        delta = buy_vol - sell_vol
+        cumulative += delta
+        cvd_series.append(cumulative)
+    return cvd_series
+
+
+def detect_cvd_confirmation(
+    candles: list[CandleData],
+    side: Side,
+    lookback: int = 5,
+) -> bool:
+    """
+    Return True when CVD trend aligns with the trade direction.
+
+    Computes CVD for *candles* and checks whether the net CVD change over the
+    last *lookback* candles is positive (LONG) or negative (SHORT).
+    """
+    if len(candles) < lookback + 1:
+        return False
+
+    cvd = calculate_cvd(candles)
+    if len(cvd) < lookback + 1:
+        return False
+
+    net_delta = cvd[-1] - cvd[-(lookback + 1)]
+    if side == Side.LONG:
+        return net_delta > 0
+    return net_delta < 0
+
+
+def detect_ema_ribbon_alignment(
+    candles: list[CandleData],
+    side: Side,
+    periods: tuple[int, int, int, int] = (8, 13, 21, 55),
+) -> bool:
+    """
+    Return True when the EMA ribbon is fully aligned for *side*.
+
+    For LONG: EMA8 > EMA13 > EMA21 > EMA55.
+    For SHORT: EMA8 < EMA13 < EMA21 < EMA55.
+    """
+    max_period = max(periods)
+    if len(candles) < max_period + 5:
+        return False
+
+    ema_values = [calculate_ema(candles, p) for p in periods]
+    if side == Side.LONG:
+        return all(ema_values[i] > ema_values[i + 1] for i in range(len(ema_values) - 1))
+    return all(ema_values[i] < ema_values[i + 1] for i in range(len(ema_values) - 1))
 
 
 def run_confluence_check_relaxed(
