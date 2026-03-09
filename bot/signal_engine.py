@@ -26,6 +26,11 @@ from bot.price_fmt import fmt_price
 
 logger = logging.getLogger(__name__)
 
+try:
+    from config import RSI_DIVERGENCE_PERIOD as _RSI_DIVERGENCE_PERIOD
+except ImportError:
+    _RSI_DIVERGENCE_PERIOD: int = 14
+
 __all__ = [
     "Side",
     "Confidence",
@@ -44,6 +49,8 @@ __all__ = [
     "calculate_ema",
     "calculate_targets",
     "calculate_vwap",
+    "detect_rsi_divergence",
+    "volume_percentile",
     "run_confluence_check",
     "run_confluence_check_relaxed",
 ]
@@ -290,9 +297,15 @@ def detect_market_structure_shift(
     last = candles[-1]
     prior_candles = candles[:-1]
 
+    # Volume percentile check: require at least 70th percentile for MSS confirmation
+    # volume_percentile is defined later in this module; Python resolves at call time
+    vol_rank = sum(1 for c in candles if c.volume <= last.volume) / len(candles) if candles else 0
+    if vol_rank < 0.70:
+        return False
+
     if side == Side.LONG:
         swing_high = max(c.high for c in prior_candles[-7:])  # last 7 candles ≈ 35 min
-        if not (last.close > swing_high and last.volume > avg_vol):
+        if not (last.close > swing_high):
             return False
         displacement = abs(last.close - swing_high)
         if atr > 0:
@@ -304,7 +317,7 @@ def detect_market_structure_shift(
         return True
     else:
         swing_low = min(c.low for c in prior_candles[-7:])  # last 7 candles ≈ 35 min
-        if not (last.close < swing_low and last.volume > avg_vol):
+        if not (last.close < swing_low):
             return False
         displacement = abs(last.close - swing_low)
         if atr > 0:
@@ -410,13 +423,17 @@ def _compute_dynamic_rr(
     tp1_rr: float = 1.5,
     tp2_rr: float = 2.5,
     tp3_rr: float = 4.0,
+    regime: str = "UNKNOWN",
 ) -> tuple[float, float, float]:
     """
-    Dynamically adjust R:R ratios based on ATR relative to entry price.
+    Dynamically adjust R:R ratios based on ATR relative to entry price and market regime.
 
     When ATR is exceptionally high (volatile market) the targets are stretched
     so they are not clipped by normal noise.  When ATR is very low (compressed
     market) targets are tightened so they remain achievable.
+
+    A regime-based adjustment is applied on top of the ATR scaling to further
+    tune targets for the current market condition.
 
     Degrades gracefully when ATR is 0 or entry is 0 — returns base ratios unchanged.
 
@@ -428,6 +445,9 @@ def _compute_dynamic_rr(
         5-minute candles used to calculate ATR.
     tp1_rr / tp2_rr / tp3_rr:
         Base risk-to-reward ratios.
+    regime:
+        Market regime string: ``"RANGING"``, ``"TRENDING"``, ``"HIGH_VOL"``,
+        or ``"UNKNOWN"`` (default — no regime adjustment).
 
     Returns
     -------
@@ -441,17 +461,41 @@ def _compute_dynamic_rr(
 
     atr = calculate_atr(five_min_candles)
     if atr <= 0 or entry <= 0:
-        return tp1_rr, tp2_rr, tp3_rr
-    atr_pct = atr / entry * 100
-    # Stretch targets in high-volatility environments
-    if atr_pct > _ATR_HIGH_THRESHOLD_PCT:
-        multiplier = min(atr_pct / _ATR_HIGH_BASELINE_PCT, 1.5)
-        return tp1_rr * multiplier, tp2_rr * multiplier, tp3_rr * multiplier
-    # Tighten targets in low-volatility / compressed environments
-    if atr_pct < _ATR_LOW_THRESHOLD_PCT:
-        multiplier = max(atr_pct / _ATR_LOW_THRESHOLD_PCT, _MIN_TARGET_MULTIPLIER)
-        return tp1_rr * multiplier, tp2_rr * multiplier, tp3_rr * multiplier
-    return tp1_rr, tp2_rr, tp3_rr
+        atr_tp1, atr_tp2, atr_tp3 = tp1_rr, tp2_rr, tp3_rr
+    else:
+        atr_pct = atr / entry * 100
+        # Stretch targets in high-volatility environments
+        if atr_pct > _ATR_HIGH_THRESHOLD_PCT:
+            multiplier = min(atr_pct / _ATR_HIGH_BASELINE_PCT, 1.5)
+            atr_tp1 = tp1_rr * multiplier
+            atr_tp2 = tp2_rr * multiplier
+            atr_tp3 = tp3_rr * multiplier
+        # Tighten targets in low-volatility / compressed environments
+        elif atr_pct < _ATR_LOW_THRESHOLD_PCT:
+            multiplier = max(atr_pct / _ATR_LOW_THRESHOLD_PCT, _MIN_TARGET_MULTIPLIER)
+            atr_tp1 = tp1_rr * multiplier
+            atr_tp2 = tp2_rr * multiplier
+            atr_tp3 = tp3_rr * multiplier
+        else:
+            atr_tp1, atr_tp2, atr_tp3 = tp1_rr, tp2_rr, tp3_rr
+
+    # Regime-based adjustment on top of ATR scaling
+    regime_upper = regime.upper() if regime else "UNKNOWN"
+    if regime_upper == "RANGING":
+        atr_tp1 *= 0.85   # tighter TP1, more hits
+        atr_tp2 *= 0.80
+        atr_tp3 *= 0.75
+    elif regime_upper in ("TRENDING", "BULLISH", "BEARISH"):
+        atr_tp1 *= 1.0    # standard
+        atr_tp2 *= 1.15   # wider TP2/3 to let winners run
+        atr_tp3 *= 1.25
+    elif regime_upper in ("HIGH_VOL", "VOLATILE"):
+        atr_tp1 *= 1.1
+        atr_tp2 *= 1.2
+        atr_tp3 *= 1.4
+    # "UNKNOWN" / "SIDEWAYS" / others: no regime adjustment
+
+    return atr_tp1, atr_tp2, atr_tp3
 
 
 def calculate_atr(candles: list[CandleData], period: int = 14) -> float:
@@ -597,6 +641,7 @@ def run_confluence_check(
     min_displacement_pct: Optional[float] = None,
     funding_rate: Optional[float] = None,
     oi_change: Optional[float] = None,
+    regime: str = "UNKNOWN",
 ) -> Optional[SignalResult]:
     """
     Run all four confluence gates and return a :class:`SignalResult` when
@@ -729,7 +774,7 @@ def run_confluence_check(
     entry_low = current_price - entry_spread
     entry_high = current_price + entry_spread
 
-    tp1_dyn, tp2_dyn, tp3_dyn = _compute_dynamic_rr(current_price, five_min_candles, tp1_rr, tp2_rr, tp3_rr)
+    tp1_dyn, tp2_dyn, tp3_dyn = _compute_dynamic_rr(current_price, five_min_candles, tp1_rr, tp2_rr, tp3_rr, regime=regime)
     tp1, tp2, tp3 = calculate_targets(current_price, stop_loss, side, tp1_dyn, tp2_dyn, tp3_dyn)
 
     # Confidence scoring per BLUEPRINT §2.6: always check FVG and OB for scoring
@@ -750,6 +795,10 @@ def run_confluence_check(
     score += 20                                 # Gate ④ (MSS — passed above)
     score += 10 if fvg_present else 0           # Gate ⑥
     score += 15 if ob_present else 0            # Gate ⑦
+
+    # RSI divergence bonus (+10 when divergence confirms trade direction)
+    rsi_div = detect_rsi_divergence(five_min_candles, side, period=_RSI_DIVERGENCE_PERIOD)
+    score += 10 if rsi_div else 0
 
     # Gate ⑧ — optional funding rate sentiment adjustment (arbitrage gate)
     if funding_rate is not None:
@@ -919,6 +968,92 @@ def assess_macro_bias_relaxed(four_hour_candles: list[CandleData]) -> Optional[S
     return None
 
 
+def detect_rsi_divergence(candles: list[CandleData], side: Side, period: int = 14) -> bool:
+    """
+    Detect RSI divergence as a confluence filter.
+
+    LONG: Price makes lower low but RSI makes higher low = bullish divergence (GOOD for LONG)
+    SHORT: Price makes higher high but RSI makes lower high = bearish divergence (GOOD for SHORT)
+
+    Looks at the last 20 candles and finds the two most recent swing lows (LONG)
+    or swing highs (SHORT), then compares price direction vs RSI direction at those swings.
+
+    Parameters
+    ----------
+    candles:
+        OHLCV candles (most-recent last). Minimum ``period + 3`` candles required.
+    side:
+        Direction of the anticipated trade.
+    period:
+        RSI lookback period (default 14).
+
+    Returns
+    -------
+    bool
+        ``True`` if divergence is detected in the direction of *side*.
+    """
+    window = candles[-20:] if len(candles) >= 20 else candles
+    if len(window) < period + 3:
+        return False
+
+    # Compute RSI for each candle in window using expanding subsets
+    rsi_values: list[float] = []
+    for i in range(len(window)):
+        sub = window[: i + 1]
+        rsi_values.append(calculate_rsi(sub, period=period))
+
+    if side == Side.LONG:
+        # Find swing lows: local minima in price (low)
+        swing_indices: list[int] = []
+        for i in range(1, len(window) - 1):
+            if window[i].low < window[i - 1].low and window[i].low < window[i + 1].low:
+                swing_indices.append(i)
+        if len(swing_indices) < 2:
+            return False
+        # Take the two most recent swing lows
+        i1, i2 = swing_indices[-2], swing_indices[-1]
+        price_lower_low = window[i2].low < window[i1].low
+        rsi_higher_low = rsi_values[i2] > rsi_values[i1]
+        return price_lower_low and rsi_higher_low
+    else:  # SHORT
+        # Find swing highs: local maxima in price (high)
+        swing_indices = []
+        for i in range(1, len(window) - 1):
+            if window[i].high > window[i - 1].high and window[i].high > window[i + 1].high:
+                swing_indices.append(i)
+        if len(swing_indices) < 2:
+            return False
+        i1, i2 = swing_indices[-2], swing_indices[-1]
+        price_higher_high = window[i2].high > window[i1].high
+        rsi_lower_high = rsi_values[i2] < rsi_values[i1]
+        return price_higher_high and rsi_lower_high
+
+
+def volume_percentile(candles: list[CandleData], current_volume: float) -> float:
+    """
+    Return the volume percentile (0.0–1.0) of *current_volume* within *candles*.
+
+    Parameters
+    ----------
+    candles:
+        Historical candles used as the population for ranking.
+    current_volume:
+        The volume to rank.
+
+    Returns
+    -------
+    float
+        Percentile between 0.0 (lowest) and 1.0 (highest). Returns 0.0 when
+        *candles* is empty.
+    """
+    if not candles:
+        return 0.0
+    sorted_vols = sorted(c.volume for c in candles)
+    # Find rank: number of candles with volume <= current_volume
+    rank = sum(1 for v in sorted_vols if v <= current_volume)
+    return rank / len(sorted_vols)
+
+
 def run_confluence_check_relaxed(
     symbol: str,
     current_price: float,
@@ -945,6 +1080,7 @@ def run_confluence_check_relaxed(
     min_displacement_pct: Optional[float] = None,
     funding_rate: Optional[float] = None,
     oi_change: Optional[float] = None,
+    regime: str = "UNKNOWN",
     **kwargs,
 ) -> Optional[SignalResult]:
     """
@@ -1050,7 +1186,7 @@ def run_confluence_check_relaxed(
     entry_low = current_price - entry_spread
     entry_high = current_price + entry_spread
 
-    tp1_dyn, tp2_dyn, tp3_dyn = _compute_dynamic_rr(current_price, five_min_candles, tp1_rr, tp2_rr, tp3_rr)
+    tp1_dyn, tp2_dyn, tp3_dyn = _compute_dynamic_rr(current_price, five_min_candles, tp1_rr, tp2_rr, tp3_rr, regime=regime)
     tp1, tp2, tp3 = calculate_targets(current_price, stop_loss, side, tp1_dyn, tp2_dyn, tp3_dyn)
 
     # Confidence scoring for relaxed check (no FVG/OB required)
@@ -1071,6 +1207,10 @@ def run_confluence_check_relaxed(
     score += 20                                 # Gate ④ (MSS — passed above)
     score += 10 if fvg_present else 0           # Gate ⑥
     score += 15 if ob_present else 0            # Gate ⑦
+
+    # RSI divergence bonus (+10 when divergence confirms trade direction)
+    rsi_div = detect_rsi_divergence(five_min_candles, side, period=_RSI_DIVERGENCE_PERIOD)
+    score += 10 if rsi_div else 0
 
     # Gate ⑧ — optional funding rate sentiment adjustment (arbitrage gate)
     if funding_rate is not None:

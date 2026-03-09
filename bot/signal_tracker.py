@@ -161,7 +161,14 @@ class SignalTracker:
 
         atr = getattr(signal, 'atr', None)
         if atr is None or atr <= 0:
-            atr = current_price * 0.01  # 1% fallback
+            if current_price >= 10000:
+                atr = current_price * 0.005   # 0.5% for high-price assets (BTC)
+            elif current_price >= 100:
+                atr = current_price * 0.008   # 0.8% for mid-price
+            elif current_price >= 1:
+                atr = current_price * 0.012   # 1.2% for low-price
+            else:
+                atr = current_price * 0.02    # 2% for micro-price altcoins
 
         if signal.result.side == Side.LONG:
             return current_price - atr
@@ -183,7 +190,14 @@ class SignalTracker:
 
         atr = getattr(signal, 'atr', None)
         if atr is None or atr <= 0:
-            atr = current_price * 0.01
+            if current_price >= 10000:
+                atr = current_price * 0.005
+            elif current_price >= 100:
+                atr = current_price * 0.008
+            elif current_price >= 1:
+                atr = current_price * 0.012
+            else:
+                atr = current_price * 0.02
 
         if side == Side.LONG:
             if trail_extreme is None or current_price > trail_extreme:
