@@ -10,8 +10,8 @@ Key design points:
 - Subscribes to ``@kline_5m``, ``@kline_15m``, ``@kline_4h``, ``@kline_1d``, and
   ``@miniTicker`` for futures pairs; ``@kline_1h``, ``@kline_4h``, ``@kline_1d`` and
   ``@miniTicker`` for spot pairs.
-- Splits pairs across multiple WS connections (≤200 streams per connection,
-  ≈50 symbols per connection because each symbol uses 4 streams).
+- Splits pairs across multiple WS connections (≤150 streams per connection,
+  ≈30 symbols per connection because each symbol uses 5 streams).
 - Fires an async ``on_candle_close(base_symbol, timeframe)`` callback on
   every **closed** 5m kline event (futures) or 1h kline event (spot).
 - Auto-reconnects with exponential back-off + jitter (1 s base, 60 s cap).
@@ -40,9 +40,9 @@ _WS_FUTURES_URL = "wss://fstream.binance.com/stream"
 _WS_SPOT_URL = "wss://stream.binance.com:9443/stream"
 # Keep legacy alias for backward compatibility.
 _WS_BASE_URL = _WS_FUTURES_URL
-_MAX_STREAMS_PER_CONN = 200        # Binance hard limit
+_MAX_STREAMS_PER_CONN = 150        # reduced from 200 to ease event-loop pressure
 _STREAMS_PER_SYMBOL = 5            # kline_5m + kline_15m + kline_4h + kline_1d + miniTicker
-_MAX_SYMBOLS_PER_CONN = _MAX_STREAMS_PER_CONN // _STREAMS_PER_SYMBOL  # 50
+_MAX_SYMBOLS_PER_CONN = _MAX_STREAMS_PER_CONN // _STREAMS_PER_SYMBOL  # 30
 
 _BACKOFF_BASE = 1.0   # seconds
 _BACKOFF_MAX = 60.0   # seconds
@@ -304,9 +304,11 @@ class WebSocketManager:
                 logger.info("WS[%d][%s] connecting (%d streams)…", conn_idx, self._market_type, len(streams))
                 async with websockets.connect(
                     url,
-                    ping_interval=20,
-                    ping_timeout=30,
+                    ping_interval=None,
+                    ping_timeout=None,
+                    pong_timeout=30,
                     close_timeout=10,
+                    max_size=2**22,  # 4 MB — handles large combined-stream payloads
                 ) as ws:
                     attempt = 0  # reset back-off on successful connection
                     self.is_connected = True

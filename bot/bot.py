@@ -1569,6 +1569,10 @@ def process_webhook(payload: dict) -> Optional[tuple[str, ChannelTier]]:
 
 # ── Binance live data helpers ─────────────────────────────────────────────────
 
+# Tokens whose names end in "BTC" but are USDT-settled perpetuals on Binance Futures
+_BTC_SUFFIX_TOKENS = {"PUMPBTC"}
+
+
 def _normalise_symbol(raw: str) -> str:
     """
     Normalise a user-supplied symbol string to the CCXT Binance Futures
@@ -1586,6 +1590,10 @@ def _normalise_symbol(raw: str) -> str:
     # Already in CCXT futures format
     if ":" in raw:
         return raw
+
+    # Special-case tokens whose names end in "BTC" but are USDT-settled
+    if raw in _BTC_SUFFIX_TOKENS:
+        return f"{raw}/USDT:USDT"
 
     if "/" in raw:
         base, quote = raw.split("/", 1)
