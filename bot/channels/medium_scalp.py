@@ -97,6 +97,7 @@ def run(
         news_window_minutes=_CH2_NEWS_WINDOW,
         sweep_window=10,
         mss_window=10,
+        min_displacement_pct=0.08,
         fifteen_min_candles=fifteen_min_candles,
         funding_rate=funding_rate,
     )

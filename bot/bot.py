@@ -508,11 +508,13 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     perf_section = ""
     if total_closed > 0:
         win_rate_all = dashboard.win_rate()
+        protected_wr_all = dashboard.protected_win_rate()
         pf = dashboard.profit_factor()
         perf_section = (
             f"\n📊 *Performance:*\n"
             f"  Total Closed: {total_closed}\n"
             f"  Win Rate: {win_rate_all:.1f}%\n"
+            f"  Protected Win Rate: {protected_wr_all:.1f}% (BE counted as win)\n"
             f"  Profit Factor: {pf:.2f}\n"
         )
         ch_stats = dashboard.per_channel_stats()
@@ -525,7 +527,9 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             s = ch_stats.get(tier_key, {})
             if s.get("total_signals", 0) > 0:
                 perf_section += (
-                    f"  {label}: {s['win_rate']:.1f}% ({s['total_signals']} signals)\n"
+                    f"  {label}: {s['win_rate']:.1f}% WR | "
+                    f"{s['protected_win_rate']:.1f}% Safe WR "
+                    f"({s['total_signals']} signals)\n"
                 )
 
     msg = (
@@ -1642,7 +1646,7 @@ def _fetch_binance_candles(symbol: str, side: Side) -> dict:
 
     # Fetch OHLCV for each required timeframe
     # CCXT returns [[timestamp, open, high, low, close, volume], ...]
-    raw_1d = _resilient_exchange.fetch_ohlcv(symbol, "1d", limit=30)
+    raw_1d = _resilient_exchange.fetch_ohlcv(symbol, "1d", limit=210)
     raw_4h = _resilient_exchange.fetch_ohlcv(symbol, "4h", limit=30)
     raw_5m = _resilient_exchange.fetch_ohlcv(symbol, "5m", limit=50)
 

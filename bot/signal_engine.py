@@ -404,6 +404,56 @@ def calculate_targets(
     return tp1, tp2, tp3
 
 
+def _compute_dynamic_rr(
+    entry: float,
+    five_min_candles: list[CandleData],
+    tp1_rr: float = 1.5,
+    tp2_rr: float = 2.5,
+    tp3_rr: float = 4.0,
+) -> tuple[float, float, float]:
+    """
+    Dynamically adjust R:R ratios based on ATR relative to entry price.
+
+    When ATR is exceptionally high (volatile market) the targets are stretched
+    so they are not clipped by normal noise.  When ATR is very low (compressed
+    market) targets are tightened so they remain achievable.
+
+    Degrades gracefully when ATR is 0 or entry is 0 — returns base ratios unchanged.
+
+    Parameters
+    ----------
+    entry:
+        Current entry price.
+    five_min_candles:
+        5-minute candles used to calculate ATR.
+    tp1_rr / tp2_rr / tp3_rr:
+        Base risk-to-reward ratios.
+
+    Returns
+    -------
+    Adjusted (tp1_rr, tp2_rr, tp3_rr) tuple.
+    """
+    # Threshold constants for ATR-based R:R scaling
+    _ATR_HIGH_THRESHOLD_PCT = 1.5    # ATR > 1.5% of price → stretch targets
+    _ATR_LOW_THRESHOLD_PCT = 0.3     # ATR < 0.3% of price → tighten targets
+    _ATR_HIGH_BASELINE_PCT = 1.0     # Baseline divisor for high-vol multiplier
+    _MIN_TARGET_MULTIPLIER = 0.7     # Floor multiplier to avoid over-tightening
+
+    atr = calculate_atr(five_min_candles)
+    if atr <= 0 or entry <= 0:
+        return tp1_rr, tp2_rr, tp3_rr
+    atr_pct = atr / entry * 100
+    # Stretch targets in high-volatility environments
+    if atr_pct > _ATR_HIGH_THRESHOLD_PCT:
+        multiplier = min(atr_pct / _ATR_HIGH_BASELINE_PCT, 1.5)
+        return tp1_rr * multiplier, tp2_rr * multiplier, tp3_rr * multiplier
+    # Tighten targets in low-volatility / compressed environments
+    if atr_pct < _ATR_LOW_THRESHOLD_PCT:
+        multiplier = max(atr_pct / _ATR_LOW_THRESHOLD_PCT, _MIN_TARGET_MULTIPLIER)
+        return tp1_rr * multiplier, tp2_rr * multiplier, tp3_rr * multiplier
+    return tp1_rr, tp2_rr, tp3_rr
+
+
 def calculate_atr(candles: list[CandleData], period: int = 14) -> float:
     """
     Calculate the Average True Range (ATR) over *period* candles.
@@ -679,7 +729,8 @@ def run_confluence_check(
     entry_low = current_price - entry_spread
     entry_high = current_price + entry_spread
 
-    tp1, tp2, tp3 = calculate_targets(current_price, stop_loss, side, tp1_rr, tp2_rr, tp3_rr)
+    tp1_dyn, tp2_dyn, tp3_dyn = _compute_dynamic_rr(current_price, five_min_candles, tp1_rr, tp2_rr, tp3_rr)
+    tp1, tp2, tp3 = calculate_targets(current_price, stop_loss, side, tp1_dyn, tp2_dyn, tp3_dyn)
 
     # Confidence scoring per BLUEPRINT §2.6: always check FVG and OB for scoring
     if len(four_hour_candles) >= 2:
@@ -700,23 +751,43 @@ def run_confluence_check(
     score += 10 if fvg_present else 0           # Gate ⑥
     score += 15 if ob_present else 0            # Gate ⑦
 
-    # Gate ⑧ — optional funding rate sentiment adjustment
+    # Gate ⑧ — optional funding rate sentiment adjustment (arbitrage gate)
     if funding_rate is not None:
         try:
             from config import FUNDING_EXTREME_NEGATIVE, FUNDING_EXTREME_POSITIVE
         except ImportError:
             FUNDING_EXTREME_NEGATIVE = -0.0001
             FUNDING_EXTREME_POSITIVE = 0.0005
+        # Hard thresholds: 3× the soft extremes — heavily opposing funding rates
+        # indicate crowded positioning that creates squeeze/arbitrage risk.
+        funding_hard_positive = FUNDING_EXTREME_POSITIVE * 3
+        funding_hard_negative = FUNDING_EXTREME_NEGATIVE * 3
         if side == Side.LONG:
-            if funding_rate < FUNDING_EXTREME_NEGATIVE:
-                score += 5   # contrarian: extreme short crowding → bullish edge
+            if funding_rate > funding_hard_positive:
+                # Heavily positive funding while going LONG → extreme long crowding,
+                # high squeeze/arbitrage risk — reject the trade outright.
+                logger.info(
+                    "[GATE_FAIL] %s %s: gate=funding_rate reason=extreme_long_crowding rate=%.6f",
+                    symbol, side.value, funding_rate,
+                )
+                return None
             elif funding_rate > FUNDING_EXTREME_POSITIVE:
-                score -= 5   # risky: extreme long crowding
-        else:
-            if funding_rate > FUNDING_EXTREME_POSITIVE:
-                score += 5   # contrarian: extreme long crowding → bearish edge
+                score -= 15  # strong opposing penalty
             elif funding_rate < FUNDING_EXTREME_NEGATIVE:
-                score -= 5   # risky: extreme short crowding
+                score += 5   # contrarian: extreme short crowding → bullish edge
+        else:
+            if funding_rate < funding_hard_negative:
+                # Heavily negative funding while going SHORT → extreme short crowding,
+                # high short-squeeze risk — reject the trade outright.
+                logger.info(
+                    "[GATE_FAIL] %s %s: gate=funding_rate reason=extreme_short_crowding rate=%.6f",
+                    symbol, side.value, funding_rate,
+                )
+                return None
+            elif funding_rate < FUNDING_EXTREME_NEGATIVE:
+                score -= 15  # strong opposing penalty
+            elif funding_rate > FUNDING_EXTREME_POSITIVE:
+                score += 5   # contrarian: extreme long crowding → bearish edge
 
     # OI divergence / confirmation adjustment
     if oi_change is not None and len(five_min_candles) >= 2:
@@ -979,7 +1050,8 @@ def run_confluence_check_relaxed(
     entry_low = current_price - entry_spread
     entry_high = current_price + entry_spread
 
-    tp1, tp2, tp3 = calculate_targets(current_price, stop_loss, side, tp1_rr, tp2_rr, tp3_rr)
+    tp1_dyn, tp2_dyn, tp3_dyn = _compute_dynamic_rr(current_price, five_min_candles, tp1_rr, tp2_rr, tp3_rr)
+    tp1, tp2, tp3 = calculate_targets(current_price, stop_loss, side, tp1_dyn, tp2_dyn, tp3_dyn)
 
     # Confidence scoring for relaxed check (no FVG/OB required)
     if len(four_hour_candles) >= 2:
@@ -1000,23 +1072,43 @@ def run_confluence_check_relaxed(
     score += 10 if fvg_present else 0           # Gate ⑥
     score += 15 if ob_present else 0            # Gate ⑦
 
-    # Gate ⑧ — optional funding rate sentiment adjustment
+    # Gate ⑧ — optional funding rate sentiment adjustment (arbitrage gate)
     if funding_rate is not None:
         try:
             from config import FUNDING_EXTREME_NEGATIVE, FUNDING_EXTREME_POSITIVE
         except ImportError:
             FUNDING_EXTREME_NEGATIVE = -0.0001
             FUNDING_EXTREME_POSITIVE = 0.0005
+        # Hard thresholds: 3× the soft extremes — heavily opposing funding rates
+        # indicate crowded positioning that creates squeeze/arbitrage risk.
+        funding_hard_positive = FUNDING_EXTREME_POSITIVE * 3
+        funding_hard_negative = FUNDING_EXTREME_NEGATIVE * 3
         if side == Side.LONG:
-            if funding_rate < FUNDING_EXTREME_NEGATIVE:
-                score += 5
+            if funding_rate > funding_hard_positive:
+                # Heavily positive funding while going LONG → extreme long crowding,
+                # high squeeze/arbitrage risk — reject the trade outright.
+                logger.info(
+                    "[GATE_FAIL][RELAXED] %s %s: gate=funding_rate reason=extreme_long_crowding rate=%.6f",
+                    symbol, side.value, funding_rate,
+                )
+                return None
             elif funding_rate > FUNDING_EXTREME_POSITIVE:
-                score -= 5
-        else:
-            if funding_rate > FUNDING_EXTREME_POSITIVE:
-                score += 5
+                score -= 15  # strong opposing penalty
             elif funding_rate < FUNDING_EXTREME_NEGATIVE:
-                score -= 5
+                score += 5
+        else:
+            if funding_rate < funding_hard_negative:
+                # Heavily negative funding while going SHORT → extreme short crowding,
+                # high short-squeeze risk — reject the trade outright.
+                logger.info(
+                    "[GATE_FAIL][RELAXED] %s %s: gate=funding_rate reason=extreme_short_crowding rate=%.6f",
+                    symbol, side.value, funding_rate,
+                )
+                return None
+            elif funding_rate < FUNDING_EXTREME_NEGATIVE:
+                score -= 15  # strong opposing penalty
+            elif funding_rate > FUNDING_EXTREME_POSITIVE:
+                score += 5
 
     # OI divergence / confirmation adjustment
     if oi_change is not None and len(five_min_candles) >= 2:

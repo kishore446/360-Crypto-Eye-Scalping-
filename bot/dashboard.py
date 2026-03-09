@@ -358,8 +358,10 @@ class Dashboard:
         """Compute aggregate stats dict for a list of closed trades."""
         wins = [r for r in trades if r.outcome == "WIN"]
         losses = [r for r in trades if r.outcome == "LOSS"]
+        be_trades = [r for r in trades if r.outcome == "BE"]
         total = len(trades)
         win_rate = round(len(wins) / total * 100, 2) if total else 0.0
+        protected_win_rate = round((len(wins) + len(be_trades)) / total * 100, 2) if total else 0.0
         avg_pnl = round(sum(r.pnl_pct for r in trades) / total, 4) if total else 0.0
         pnl_values = [r.pnl_pct for r in trades]
         best_trade = round(max(pnl_values), 4) if pnl_values else 0.0
@@ -376,7 +378,9 @@ class Dashboard:
             "total_signals": total,
             "wins": len(wins),
             "losses": len(losses),
+            "be_count": len(be_trades),
             "win_rate": win_rate,
+            "protected_win_rate": protected_win_rate,
             "avg_pnl": avg_pnl,
             "best_trade": best_trade,
             "worst_trade": worst_trade,
