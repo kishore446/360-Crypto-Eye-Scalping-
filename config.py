@@ -30,6 +30,10 @@ try:
         telegram_channel_id_easy: int = 0      # CH3: Easy Breakout
         telegram_channel_id_spot: int = 0      # CH4: Spot Momentum
         telegram_channel_id_insights: int = 0  # CH5: Market Insights
+        telegram_channel_id_altgems: int = 0   # CH6: Altcoin Gems
+        telegram_channel_id_whale: int = 0     # CH7: Whale Tracker
+        telegram_channel_id_education: int = 0 # CH8: Education
+        telegram_channel_id_vip: int = 0       # CH9: VIP Discussion
 
         # ── Channel Thresholds ───────────────────────────────────────────────
         ch2_news_window_minutes: int = 30         # Medium channel relaxed news window
@@ -208,6 +212,10 @@ try:
     TELEGRAM_CHANNEL_ID_EASY: int = settings.telegram_channel_id_easy
     TELEGRAM_CHANNEL_ID_SPOT: int = settings.telegram_channel_id_spot
     TELEGRAM_CHANNEL_ID_INSIGHTS: int = settings.telegram_channel_id_insights
+    TELEGRAM_CHANNEL_ID_ALTGEMS: int = settings.telegram_channel_id_altgems
+    TELEGRAM_CHANNEL_ID_WHALE: int = settings.telegram_channel_id_whale
+    TELEGRAM_CHANNEL_ID_EDUCATION: int = settings.telegram_channel_id_education
+    TELEGRAM_CHANNEL_ID_VIP: int = settings.telegram_channel_id_vip
 
     CH2_NEWS_WINDOW_MINUTES: int = settings.ch2_news_window_minutes
     CH3_VOLUME_SPIKE_RATIO: float = settings.ch3_volume_spike_ratio
@@ -333,6 +341,10 @@ except ImportError:
     TELEGRAM_CHANNEL_ID_EASY: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_EASY", "0"))
     TELEGRAM_CHANNEL_ID_SPOT: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_SPOT", "0"))
     TELEGRAM_CHANNEL_ID_INSIGHTS: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_INSIGHTS", "0"))
+    TELEGRAM_CHANNEL_ID_ALTGEMS: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_ALTGEMS", "0"))
+    TELEGRAM_CHANNEL_ID_WHALE: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_WHALE", "0"))
+    TELEGRAM_CHANNEL_ID_EDUCATION: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_EDUCATION", "0"))
+    TELEGRAM_CHANNEL_ID_VIP: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_VIP", "0"))
 
     CH2_NEWS_WINDOW_MINUTES: int = int(os.environ.get("CH2_NEWS_WINDOW_MINUTES", "30"))
     CH3_VOLUME_SPIKE_RATIO: float = float(os.environ.get("CH3_VOLUME_SPIKE_RATIO", "1.5"))

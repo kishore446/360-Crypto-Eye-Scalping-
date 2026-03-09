@@ -82,11 +82,15 @@ from config import (
     STALE_SIGNAL_HOURS,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHANNEL_ID,
+    TELEGRAM_CHANNEL_ID_ALTGEMS,
     TELEGRAM_CHANNEL_ID_EASY,
+    TELEGRAM_CHANNEL_ID_EDUCATION,
     TELEGRAM_CHANNEL_ID_HARD,
     TELEGRAM_CHANNEL_ID_INSIGHTS,
     TELEGRAM_CHANNEL_ID_MEDIUM,
     TELEGRAM_CHANNEL_ID_SPOT,
+    TELEGRAM_CHANNEL_ID_VIP,
+    TELEGRAM_CHANNEL_ID_WHALE,
 )
 
 logger = logging.getLogger(__name__)
@@ -106,6 +110,10 @@ signal_router = SignalRouter(
     channel_easy=TELEGRAM_CHANNEL_ID_EASY,
     channel_spot=TELEGRAM_CHANNEL_ID_SPOT,
     channel_insights=TELEGRAM_CHANNEL_ID_INSIGHTS,
+    channel_altgems=TELEGRAM_CHANNEL_ID_ALTGEMS,
+    channel_whale=TELEGRAM_CHANNEL_ID_WHALE,
+    channel_education=TELEGRAM_CHANNEL_ID_EDUCATION,
+    channel_vip=TELEGRAM_CHANNEL_ID_VIP,
 )
 
 # Background scheduler — refreshes the news calendar every 30 minutes
@@ -921,8 +929,10 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                         session="UNKNOWN",
                     )
                     _insights_id = signal_router.get_channel_id(ChannelTier.INSIGHTS)
-                    if _insights_id:
-                        await _broadcast_to_channel(_pm_msg, _insights_id)
+                    # Route postmortem to origin channel; fall back to CH5 Insights
+                    _target_id = sig.origin_channel if sig.origin_channel else _insights_id
+                    if _target_id:
+                        await _broadcast_to_channel(_pm_msg, _target_id)
                 except Exception as _pm_exc:
                     logger.warning("Postmortem generation failed for %s: %s", base_symbol, _pm_exc)
             elif "TP3 HIT" in msg:

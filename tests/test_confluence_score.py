@@ -11,7 +11,8 @@ from bot.signal_engine import CandleData, Side
 
 
 class TestComputeConfluenceScore:
-    def test_all_true_returns_100(self):
+    def test_all_original_factors_true(self):
+        """All 7 original factors true should sum to their combined weight."""
         factors = ConfluenceFactors(
             macro_bias_aligned=True,
             in_discount_premium_zone=True,
@@ -21,7 +22,16 @@ class TestComputeConfluenceScore:
             ob_present=True,
             session_active=True,
         )
-        assert compute_confluence_score(factors) == 100
+        expected = (
+            WEIGHTS["macro_bias_aligned"]
+            + WEIGHTS["in_discount_premium_zone"]
+            + WEIGHTS["liquidity_swept"]
+            + WEIGHTS["mss_confirmed"]
+            + WEIGHTS["fvg_present"]
+            + WEIGHTS["ob_present"]
+            + WEIGHTS["session_active"]
+        )
+        assert compute_confluence_score(factors) == expected
 
     def test_all_false_returns_zero(self):
         factors = ConfluenceFactors(
@@ -37,6 +47,8 @@ class TestComputeConfluenceScore:
 
     def test_individual_weights(self):
         for key, weight in WEIGHTS.items():
+            if weight == 0:
+                continue  # skip zero-weight tracking fields
             factors = ConfluenceFactors(**{key: True})
             assert compute_confluence_score(factors) == weight
 
@@ -48,6 +60,12 @@ class TestComputeConfluenceScore:
         )
         expected = WEIGHTS["macro_bias_aligned"] + WEIGHTS["liquidity_swept"] + WEIGHTS["mss_confirmed"]
         assert compute_confluence_score(factors) == expected
+
+    def test_new_indicator_weights(self):
+        """New indicator fields should each add their weight to the score."""
+        for key in ("macd_confirmed", "bb_squeeze", "cvd_confirmed", "ema_ribbon_aligned"):
+            factors = ConfluenceFactors(**{key: True})
+            assert compute_confluence_score(factors) == WEIGHTS[key]
 
 
 class TestBuildConfluenceFactors:
@@ -84,7 +102,7 @@ class TestBuildConfluenceFactors:
         assert isinstance(factors, ConfluenceFactors)
         assert factors.session_active is True
 
-    def test_score_between_0_and_100(self):
+    def test_score_non_negative(self):
         daily = self._bullish_candles(20)
         four_h = self._bullish_candles(5)
         five_m = [
@@ -102,4 +120,4 @@ class TestBuildConfluenceFactors:
             four_hour_candles=four_h,
         )
         score = compute_confluence_score(factors)
-        assert 0 <= score <= 100
+        assert score >= 0
