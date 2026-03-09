@@ -48,6 +48,18 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
       - name: Run tests
         run: pytest tests/ -v
+        env:
+          TELEGRAM_BOT_TOKEN: "test:fake-token"
+          TELEGRAM_CH1_ID: "-1001234567890"
+          TELEGRAM_CH2_ID: "-1001234567891"
+          TELEGRAM_CH3_ID: "-1001234567892"
+          TELEGRAM_CH4_ID: "-1001234567893"
+          TELEGRAM_CH5_ID: "-1001234567894"
+          TELEGRAM_ADMIN_CHAT_ID: "-1001234567895"
+          BINANCE_API_KEY: "fake-api-key"
+          BINANCE_API_SECRET: "fake-api-secret"

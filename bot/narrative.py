@@ -9,17 +9,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-__all__ = ["generate_signal_narrative"]
+from bot.gate_labels import GATE_LABELS as _GATE_LABELS
 
-# Gate names mapped to their weighted score contribution
-_GATE_LABELS: dict[str, str] = {
-    "macro_bias": "Macro Bias (Gate ①)",
-    "zone": "Discount/Premium Zone (Gate ②)",
-    "sweep": "Liquidity Sweep (Gate ③)",
-    "mss": "Market Structure Shift (Gate ④)",
-    "fvg": "Fair Value Gap (Gate ⑥)",
-    "order_block": "Order Block (Gate ⑦)",
-}
+__all__ = ["generate_signal_narrative"]
 
 
 def generate_signal_narrative(

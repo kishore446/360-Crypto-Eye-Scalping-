@@ -3,6 +3,7 @@ Tests for bot/loss_streak_cooldown.py — Smart Cooldown After Loss Streak.
 """
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -143,3 +144,24 @@ class TestCooldownReset:
             self.mgr.record_outcome("WIN")
         self.mgr.record_outcome("LOSS")
         assert self.mgr.is_cooldown_active() is False
+
+
+class TestCooldownThreadSafety:
+    def test_concurrent_record_outcome_no_errors(self):
+        cm = CooldownManager()
+        errors = []
+
+        def record_losses(n):
+            try:
+                for _ in range(n):
+                    cm.record_outcome("LOSS")
+                    cm.record_outcome("WIN")
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=record_losses, args=(50,)) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert errors == []

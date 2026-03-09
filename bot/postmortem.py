@@ -12,6 +12,8 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
+from bot.gate_labels import gate_symbols_str
+
 if TYPE_CHECKING:
     from bot.dashboard import TradeResult
 
@@ -25,27 +27,17 @@ _OUTCOME_LABELS = {
 
 
 def _gates_fired_str(gates_fired: list[str]) -> str:
-    """Format a list of gate labels to '①②③④' style string."""
-    gate_map = {
-        "discount_zone": "①",
-        "liquidity_sweep": "②",
-        "market_structure_shift": "③",
-        "confluence_score": "④",
-        "funding_rate": "⑤",
-        "open_interest": "⑥",
-        "session_filter": "⑦",
-    }
-    symbols = [gate_map.get(g, g) for g in gates_fired]
-    return "".join(symbols)
+    """Format a list of gate keys to '①②③④' style string."""
+    return gate_symbols_str(gates_fired)
 
 
 def _what_worked(trade_result: "TradeResult", gates_fired: list[str], regime: str) -> str:
     """Produce a brief 'What Worked' note based on available data."""
     fired_set = set(gates_fired)
     notes: list[str] = []
-    if "market_structure_shift" in fired_set and "discount_zone" in fired_set:
+    if "mss" in fired_set and "zone" in fired_set:
         notes.append("Perfect OB + MSS alignment")
-    if "liquidity_sweep" in fired_set:
+    if "sweep" in fired_set:
         notes.append("Clean liquidity sweep")
     if regime in ("BULL", "BEAR"):
         notes.append(f"Aligned with {regime} macro regime")
