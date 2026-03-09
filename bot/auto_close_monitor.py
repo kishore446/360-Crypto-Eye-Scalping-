@@ -103,6 +103,7 @@ class AutoCloseMonitor:
         self._running = False
         self._task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
         self._partial_positions: dict[str, PartialPosition] = {}
+        self._alerted_invalidations: set[str] = set()
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -123,6 +124,7 @@ class AutoCloseMonitor:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        self._alerted_invalidations.clear()
         logger.info("AutoCloseMonitor stopped.")
 
     # ── main loop ─────────────────────────────────────────────────────────────
@@ -171,6 +173,10 @@ class AutoCloseMonitor:
         except ImportError:
             pass
 
+        sig_id = signal.result.signal_id
+        if sig_id in self._alerted_invalidations:
+            return  # already alerted, don't spam
+
         from bot.invalidation_detector import InvalidationDetector
         from bot.signal_engine import CandleData
 
@@ -194,6 +200,7 @@ class AutoCloseMonitor:
         detector = InvalidationDetector()
         reason = detector.check_invalidation(signal, current_price, candles_5m, candles_4h, market_regime)
         if reason:
+            self._alerted_invalidations.add(sig_id)
             alert = detector.format_alert(signal, reason, current_price)
             await self._broadcast_close_raw(alert)
 
@@ -327,6 +334,7 @@ class AutoCloseMonitor:
 
         # Clean up partial position tracker
         self._partial_positions.pop(sig_id, None)
+        self._alerted_invalidations.discard(sig_id)
 
         self._risk_manager.close_signal(signal.result.symbol, reason=close_result.outcome.lower())
 
