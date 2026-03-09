@@ -124,7 +124,7 @@ class InvalidationDetector:
         r = signal.result
         entry = signal.entry_mid
         return (
-            f"⚠️ SIGNAL INVALIDATION — #{r.symbol}/USDT {r.side.value}\n"
+            f"⚠️ SIGNAL INVALIDATION — {r.symbol}/USDT {r.side.value}\n"
             f"Reason: {reason}\n"
             f"Recommendation: Consider closing manually or tightening SL\n"
             f"Original Entry: {entry:.4f}\n"
