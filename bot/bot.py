@@ -493,7 +493,10 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # ── Per-channel active signal breakdown (Bug 2) ───────────────────────────
     active_sigs = risk_manager.active_signals
     total_active = len(active_sigs)
-    channel_counts: dict[str, int] = {"Hard": 0, "Medium": 0, "Easy": 0, "Spot": 0, "Other": 0}
+    channel_counts: dict[str, int] = {
+        "Hard": 0, "Medium": 0, "Easy": 0, "Spot": 0,
+        "AltGems": 0, "Whale": 0, "Edu": 0, "VIP": 0, "Other": 0,
+    }
     for sig in active_sigs:
         ch = sig.origin_channel
         if ch and ch == signal_router.get_channel_id(ChannelTier.HARD):
@@ -504,6 +507,14 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             channel_counts["Easy"] += 1
         elif ch and ch == signal_router.get_channel_id(ChannelTier.SPOT):
             channel_counts["Spot"] += 1
+        elif ch and ch == signal_router.get_channel_id(ChannelTier.ALTGEMS):
+            channel_counts["AltGems"] += 1
+        elif ch and ch == signal_router.get_channel_id(ChannelTier.WHALE_TRACKER):
+            channel_counts["Whale"] += 1
+        elif ch and ch == signal_router.get_channel_id(ChannelTier.EDUCATION):
+            channel_counts["Edu"] += 1
+        elif ch and ch == signal_router.get_channel_id(ChannelTier.VIP_DISCUSSION):
+            channel_counts["VIP"] += 1
         else:
             channel_counts["Other"] += 1
     active_breakdown = (
@@ -559,7 +570,11 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"  CH2 Medium:  {signal_router.get_channel_id(ChannelTier.MEDIUM) or 'not set'}\n"
         f"  CH3 Easy:    {signal_router.get_channel_id(ChannelTier.EASY) or 'not set'}\n"
         f"  CH4 Spot:    {signal_router.get_channel_id(ChannelTier.SPOT) or 'not set'}\n"
-        f"  CH5 Insights:{signal_router.get_channel_id(ChannelTier.INSIGHTS) or 'not set'}"
+        f"  CH5 Insights:{signal_router.get_channel_id(ChannelTier.INSIGHTS) or 'not set'}\n"
+        f"  CH6 AltGems: {signal_router.get_channel_id(ChannelTier.ALTGEMS) or 'not set'}\n"
+        f"  CH7 Whale:   {signal_router.get_channel_id(ChannelTier.WHALE_TRACKER) or 'not set'}\n"
+        f"  CH8 Edu:     {signal_router.get_channel_id(ChannelTier.EDUCATION) or 'not set'}\n"
+        f"  CH9 VIP:     {signal_router.get_channel_id(ChannelTier.VIP_DISCUSSION) or 'not set'}"
     )
     await _reply(update, msg)
 
@@ -651,7 +666,12 @@ async def cmd_regime(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"CH1 Hard Scalp:  {'LONGS SUPPRESSED' if regime == 'BEAR' else 'active'}\n"
         f"CH2 Medium Scalp: {'LONGS SUPPRESSED' if regime == 'BEAR' else 'active'}\n"
         f"CH3 Easy Breakout: always active (regime-independent)\n"
-        f"CH4 Spot Momentum: always active (regime-independent)"
+        f"CH4 Spot Momentum: always active (regime-independent)\n"
+        f"CH5 Insights:      always active (informational)\n"
+        f"CH6 AltGems:       always active (regime-independent)\n"
+        f"CH7 Whale Tracker: always active (regime-independent)\n"
+        f"CH8 Education:     always active (informational)\n"
+        f"CH9 VIP Discussion: always active (informational)"
     )
     await _reply(update, msg)
 
@@ -678,7 +698,11 @@ async def cmd_channels(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"CH2 Medium Scalp:  {_ch_status(ChannelTier.MEDIUM)}\n"
         f"CH3 Easy Breakout: {_ch_status(ChannelTier.EASY)}\n"
         f"CH4 Spot Momentum: {_ch_status(ChannelTier.SPOT)}\n"
-        f"CH5 Insights:      {_ch_status(ChannelTier.INSIGHTS)}"
+        f"CH5 Insights:      {_ch_status(ChannelTier.INSIGHTS)}\n"
+        f"CH6 AltGems:       {_ch_status(ChannelTier.ALTGEMS)}\n"
+        f"CH7 Whale Tracker: {_ch_status(ChannelTier.WHALE_TRACKER)}\n"
+        f"CH8 Education:     {_ch_status(ChannelTier.EDUCATION)}\n"
+        f"CH9 VIP Discussion: {_ch_status(ChannelTier.VIP_DISCUSSION)}"
     )
     await _reply(update, msg)
 
@@ -866,6 +890,19 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
     then runs the full confluence engine if no signal is currently active.
     """
     _candle_close_ts = time.time()  # record when the candle-close event fires
+
+    # Re-run regime detector whenever BTC's daily candle closes
+    if timeframe == "1d" and base_symbol == "BTC":
+        try:
+            from bot.insights.regime_detector import run as _regime_run_1d
+            btc_price = market_data.get_price("BTC")
+            btc_1d_raw = market_data.get_candles("BTC", "1d")
+            if btc_price is not None and len(btc_1d_raw) >= 10:
+                btc_daily_candles = _fallback_to_candles(btc_1d_raw)
+                _regime_run_1d(btc_daily_candles, btc_price, _bot_state)
+                logger.info("1d candle regime re-check complete: %s", _bot_state.market_regime)
+        except Exception as exc:
+            logger.warning("1d candle regime re-check failed: %s", exc)
 
     if not _bot_state.auto_scan_active:
         return
@@ -2171,6 +2208,18 @@ def build_application() -> Application:
 
     # Seed historical candle buffers via REST so signal engine has data on boot
     _seed_historical_candles(_dynamic_pairs)
+
+    # Run regime detector on boot so market_regime is not stuck at UNKNOWN
+    try:
+        from bot.insights.regime_detector import run as _regime_run_boot
+        btc_price = market_data.get_price("BTC")
+        btc_1d_raw = market_data.get_candles("BTC", "1d")
+        if btc_price is not None and len(btc_1d_raw) >= 10:
+            btc_daily_candles = _fallback_to_candles(btc_1d_raw)
+            _regime_run_boot(btc_daily_candles, btc_price, _bot_state)
+            logger.info("Boot regime detection complete: %s", _bot_state.market_regime)
+    except Exception as exc:
+        logger.warning("Boot regime detection failed: %s", exc)
 
     # Wire live news calendar — fetch immediately then refresh every 30 minutes
     fetch_and_reload(news_calendar)   # first fetch at startup (blocking, fast)
