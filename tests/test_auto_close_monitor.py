@@ -241,6 +241,38 @@ async def test_process_close_records_dashboard(monitor):
     monitor._risk_manager.close_signal.assert_called_once_with("BTC", reason="tp2")
 
 
+# ── Invalidation deduplication ───────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_invalidation_alert_sent_only_once(monitor):
+    """Same signal must not receive more than one invalidation alert per open lifecycle."""
+    result = _make_signal_result()
+    signal = _make_active_signal(result)
+
+    broadcast_calls: list[str] = []
+
+    async def fake_broadcast(msg: str) -> None:
+        broadcast_calls.append(msg)
+
+    monitor._market_data.get_candles.return_value = []
+
+    with patch.object(monitor, "_broadcast_close_raw", side_effect=fake_broadcast):
+        with patch("bot.invalidation_detector.InvalidationDetector") as mock_detector_cls:
+            instance = MagicMock()
+            instance.check_invalidation.return_value = "OB breach"
+            instance.format_alert.return_value = "⚠️ INVALIDATION"
+            mock_detector_cls.return_value = instance
+
+            with patch("config.INVALIDATION_CHECK_ENABLED", True):
+                # Simulate three consecutive poll ticks
+                for _ in range(3):
+                    await monitor._check_invalidation(signal, current_price=99.0)
+
+    assert len(broadcast_calls) == 1, (
+        f"Expected 1 invalidation alert but got {len(broadcast_calls)}"
+    )
+
+
 @pytest.mark.asyncio
 async def test_broadcast_close_raw_sends_plain_text(monitor):
     """Regression: _broadcast_close_raw must NOT use parse_mode to avoid Markdown entity errors."""
