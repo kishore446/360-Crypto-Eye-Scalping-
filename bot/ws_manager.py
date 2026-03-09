@@ -100,23 +100,22 @@ class MarketDataStore:
         self._candles: dict[str, dict[str, CandleBuffer]] = {}
         # {symbol: float}
         self._prices: dict[str, float] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def _ensure_buffers(self, symbol: str) -> None:
-        if symbol not in self._candles:
-            if self.market_type == "spot":
-                self._candles[symbol] = {
-                    "1h": CandleBuffer(_BUF_1H),
-                    "4h": CandleBuffer(_BUF_4H),
-                    "1d": CandleBuffer(_BUF_1D),
-                }
-            else:
-                self._candles[symbol] = {
-                    "5m": CandleBuffer(_BUF_5M),
-                    "4h": CandleBuffer(_BUF_4H),
-                    "1d": CandleBuffer(_BUF_1D),
-                    "15m": CandleBuffer(_BUF_15M),
-                }
+        if self.market_type == "spot":
+            self._candles.setdefault(symbol, {
+                "1h": CandleBuffer(_BUF_1H),
+                "4h": CandleBuffer(_BUF_4H),
+                "1d": CandleBuffer(_BUF_1D),
+            })
+        else:
+            self._candles.setdefault(symbol, {
+                "5m": CandleBuffer(_BUF_5M),
+                "4h": CandleBuffer(_BUF_4H),
+                "1d": CandleBuffer(_BUF_1D),
+                "15m": CandleBuffer(_BUF_15M),
+            })
 
     def update_candle(self, symbol: str, timeframe: str, ohlcv: list[float]) -> None:
         """Append (or overwrite) the latest OHLCV row for *symbol*/*timeframe*.

@@ -208,7 +208,7 @@ class AutoCloseMonitor:
 
             from config import TELEGRAM_BOT_TOKEN
             bot = Bot(token=TELEGRAM_BOT_TOKEN)
-            await bot.send_message(chat_id=channel_id, text=message, parse_mode="Markdown")
+            await bot.send_message(chat_id=channel_id, text=message)
         except Exception as exc:
             logger.warning("Failed to broadcast invalidation alert: %s", exc)
 
@@ -384,7 +384,7 @@ class AutoCloseMonitor:
 
             from config import TELEGRAM_BOT_TOKEN
             bot = Bot(token=TELEGRAM_BOT_TOKEN)
-            await bot.send_message(chat_id=channel_id, text=message, parse_mode="Markdown")
+            await bot.send_message(chat_id=channel_id, text=message, parse_mode="HTML")
         except Exception as exc:
             logger.warning("Failed to broadcast close summary for %s: %s", close_result.symbol, exc)
 
@@ -410,7 +410,7 @@ class AutoCloseMonitor:
             exit_breakdown = partial_position.format_exit_breakdown(side=r.side)
             sep = "━" * 21
             return (
-                f"📋 *SIGNAL CLOSED — #{r.symbol}/USDT {r.side}*\n"
+                f"📋 <b>SIGNAL CLOSED — {r.symbol}/USDT {r.side}</b>\n"
                 f"{sep}\n"
                 f"{exit_breakdown}\n"
                 f"{sep}\n"
@@ -419,7 +419,7 @@ class AutoCloseMonitor:
             )
 
         return (
-            f"📋 *SIGNAL CLOSED — #{r.symbol}/USDT {r.side}*\n"
+            f"📋 <b>SIGNAL CLOSED — {r.symbol}/USDT {r.side}</b>\n"
             f"Outcome: {outcome_label} | {pnl_sign}{r.pnl_pct:.2f}%\n"
             f"Entry: {r.entry_price:,.4f} → Exit: {r.exit_price:,.4f}\n"
             f"Duration: {duration}\n"
