@@ -165,3 +165,45 @@ class TestCooldownThreadSafety:
         for t in threads:
             t.join()
         assert errors == []
+
+
+# ── Part H: Win Streak (Hot Streak) ──────────────────────────────────────────
+
+class TestHotStreak:
+    def setup_method(self):
+        self.mgr = CooldownManager()
+
+    def test_no_hot_streak_initially(self):
+        assert self.mgr.is_hot_streak_active() is False
+
+    def test_hot_streak_not_active_before_threshold(self):
+        for _ in range(4):
+            self.mgr.record_outcome("WIN")
+        assert self.mgr.is_hot_streak_active() is False
+
+    def test_hot_streak_activates_at_threshold(self):
+        for _ in range(5):
+            self.mgr.record_outcome("WIN")
+        assert self.mgr.is_hot_streak_active() is True
+
+    def test_hot_streak_bonus_confluence_nonzero(self):
+        for _ in range(5):
+            self.mgr.record_outcome("WIN")
+        assert self.mgr.get_hot_streak_bonus() > 0
+
+    def test_hot_streak_resets_on_loss(self):
+        for _ in range(5):
+            self.mgr.record_outcome("WIN")
+        assert self.mgr.is_hot_streak_active() is True
+        self.mgr.record_outcome("LOSS")
+        assert self.mgr.is_hot_streak_active() is False
+
+    def test_hot_streak_bonus_zero_when_inactive(self):
+        assert self.mgr.get_hot_streak_bonus() == 0
+
+    def test_be_does_not_break_hot_streak(self):
+        for _ in range(5):
+            self.mgr.record_outcome("WIN")
+        assert self.mgr.is_hot_streak_active() is True
+        self.mgr.record_outcome("BE")
+        assert self.mgr.is_hot_streak_active() is True

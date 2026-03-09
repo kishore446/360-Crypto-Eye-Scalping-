@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from bot.signal_engine import Side
 from bot.signal_tracker import SignalTracker
 
@@ -194,3 +196,75 @@ class TestSignalTrackerBEAfterTP1:
         # Even below entry_mid, no SL should fire
         msgs = self.tracker.check_signal(signal, current_price=95.0)
         assert not any("SL" in m for m in msgs)
+
+
+# ── Bug 3: Adaptive ATR fallback ─────────────────────────────────────────────
+
+class TestAdaptiveAtrFallback:
+    """Tests for adaptive ATR fallback in _compute_trail_sl()."""
+
+    def setup_method(self):
+        self.tracker = SignalTracker()
+
+    def _make_signal_for_trail(self, price: float, side: Side = Side.LONG) -> SimpleNamespace:
+        """Make a signal without ATR attribute to trigger fallback."""
+        if side == Side.LONG:
+            tp1, tp2, tp3 = price * 1.015, price * 1.025, price * 1.04
+            sl = price * 0.98
+        else:
+            tp1, tp2, tp3 = price * 0.985, price * 0.975, price * 0.96
+            sl = price * 1.02
+        result = SimpleNamespace(
+            signal_id="trail-test",
+            symbol="TEST",
+            side=side,
+            stop_loss=sl,
+            tp1=tp1,
+            tp2=tp2,
+            tp3=tp3,
+        )
+        return SimpleNamespace(result=result, entry_mid=price)
+
+    def test_btc_price_fallback_tighter(self):
+        """For BTC-price level (~90k), fallback should be 0.5% = 450."""
+        signal = self._make_signal_for_trail(90000.0, Side.LONG)
+        trail_sl = SignalTracker._compute_trail_sl(signal, 90000.0)
+        # 0.5% of 90000 = 450 → trail SL = 90000 - 450 = 89550
+        assert trail_sl is not None
+        assert abs(trail_sl - (90000.0 - 90000.0 * 0.005)) < 1.0
+
+    def test_mid_price_fallback(self):
+        """For mid-price (~500), fallback should be 0.8% = 4.0."""
+        signal = self._make_signal_for_trail(500.0, Side.LONG)
+        trail_sl = SignalTracker._compute_trail_sl(signal, 500.0)
+        assert trail_sl is not None
+        assert abs(trail_sl - (500.0 - 500.0 * 0.008)) < 0.1
+
+    def test_low_price_fallback(self):
+        """For low-price (~5), fallback should be 1.2%."""
+        signal = self._make_signal_for_trail(5.0, Side.LONG)
+        trail_sl = SignalTracker._compute_trail_sl(signal, 5.0)
+        assert trail_sl is not None
+        assert abs(trail_sl - (5.0 - 5.0 * 0.012)) < 0.01
+
+    def test_micro_price_fallback(self):
+        """For micro-price (<1), fallback should be 2%."""
+        signal = self._make_signal_for_trail(0.001, Side.LONG)
+        trail_sl = SignalTracker._compute_trail_sl(signal, 0.001)
+        assert trail_sl is not None
+        assert abs(trail_sl - (0.001 - 0.001 * 0.02)) < 0.0001
+
+    def test_short_trail_above_entry(self):
+        """For SHORT, trail SL should be above current price."""
+        signal = self._make_signal_for_trail(90000.0, Side.SHORT)
+        trail_sl = SignalTracker._compute_trail_sl(signal, 90000.0)
+        assert trail_sl is not None
+        assert trail_sl > 90000.0
+
+    def test_real_atr_takes_precedence(self):
+        """When signal has valid atr attribute, it should be used instead of fallback."""
+        signal = self._make_signal_for_trail(90000.0, Side.LONG)
+        signal.atr = 100.0  # Add real ATR
+        trail_sl = SignalTracker._compute_trail_sl(signal, 90000.0)
+        # Should use ATR=100, not 0.5% fallback (450)
+        assert trail_sl == pytest.approx(90000.0 - 100.0)
