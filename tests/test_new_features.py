@@ -347,33 +347,32 @@ def test_volume_percentile_uses_20_candle_window():
     # If using only last 20: 600 > 19 candles of 500 → rank = 20/20 = 1.0 (pass)
     # Either way it passes here. The key test: using full set vs last 20
 
-    # Build a scenario where full-set rank < 0.70 but last-20 rank >= 0.70
-    # 80 low vol = 1.0, recent 19 = 100.0, last = 50.0
+    # Build a scenario where full-set rank < 0.70 but last-20 rank is very low.
+    # 80 candles with vol=1.0, 19 recent candles with vol=100.0, and 1 special
+    # last candle with vol=50.0.
+    #
+    # Using ALL 100 candles: 80 candles (vol=1) < 50, rank = 80/100 = 0.80 (> 0.70)
+    #   → With full-set, this candle PASSES the volume gate (false positive!)
+    #
+    # Using last 20 candles: 19 candles (vol=100) > 50, rank = 0/20 = 0.0 (< 0.70)
+    #   → With 20-candle window, this candle FAILS the volume gate (correct!)
     candles_full = [
         CandleData(open=100.0, high=101.0, low=99.0, close=100.5, volume=1.0)
         for _ in range(80)
     ]
     candles_recent = [
         CandleData(open=100.0, high=101.0, low=99.0, close=100.5, volume=100.0)
-        for _ in range(18)
+        for _ in range(19)
     ]
-    # Last candle: volume=50, above the last 20 (all=100), but...
-    # Using all 100: 80 candles (vol=1) < 50, 18 candles (vol=100) > 50 
-    # rank = 80/99 ≈ 0.81 (> 0.70)
-    # Using last 20: 0 candles (vol=100) < 50, rank = 0/19 = 0 (< 0.70)
-    # So with last-20 window, this candle FAILS the volume gate
-    # With full-set, it PASSES (false positive!)
     special_last = CandleData(open=102.0, high=105.0, low=101.0, close=104.5, volume=50.0)
     test_candles = candles_full + candles_recent + [special_last]
-    assert len(test_candles) == 99
+    assert len(test_candles) == 100
 
-    # Test that detect_market_structure_shift uses the 20-candle window
-    # (by making a proper swing high breakout with the last candle)
-    # The key assertion is that volume with the 20-candle fix returns False
-    # when the last candle volume is below 70th pct of last 20
+    # Verify: last-20 window gives vol_rank < 0.70 for the special candle
     recent_for_vol = test_candles[-20:]
+    assert len(recent_for_vol) == 20
     vol_rank = sum(1 for c in recent_for_vol if c.volume <= special_last.volume) / len(recent_for_vol)
-    # With 19 candles of vol=100 in the window, vol=50 ranks 0/20 = 0.0
+    # 19 candles have vol=100 > 50, so special_last ranks last: 0/20 = 0.0
     assert vol_rank < 0.70, f"Expected low vol_rank with 20-candle window but got {vol_rank}"
 
 

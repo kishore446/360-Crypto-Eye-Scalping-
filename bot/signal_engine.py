@@ -1234,6 +1234,7 @@ def calculate_cvd(candles: list[CandleData]) -> list[float]:
         if rng > 0:
             buy_vol = (c.close - c.low) / rng * c.volume
         else:
+            # Zero-range doji: split volume evenly — net delta is neutral
             buy_vol = c.volume / 2.0
         sell_vol = c.volume - buy_vol
         delta = buy_vol - sell_vol
