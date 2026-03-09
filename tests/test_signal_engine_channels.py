@@ -240,8 +240,10 @@ class TestCH2Medium:
             news_in_window=False,
             stop_loss=sweep_level - 0.5,
         )
-        # CH2 uses relaxed macro bias — should pass with valid candles
-        assert result is not None or result is None  # pass/fail both acceptable
+        # CH2 uses relaxed macro bias — the function should return without exception
+        # (result may be None if score threshold not met, or a SignalResult if passed)
+        # The important assertion here is that the function runs without raising errors
+        pass  # no assertion: acceptable result is either None or a valid SignalResult
 
     def test_blocked_by_news_in_window(self):
         """CH2 blocks when news_in_window is True."""
@@ -395,8 +397,10 @@ class TestCH3Easy:
             news_in_window=False,
             stop_loss=105.0,
         )
-        # Volume spike may still produce a valid signal even without zone
-        assert result is None or result is not None
+        # Volume spike may produce a valid signal even without a strict discount zone.
+        # Both None (zone-only gate blocks) and a SignalResult are acceptable outcomes.
+        # The critical assertion is that the function does not raise an exception.
+        pass  # no assertion: acceptable result is either None or a valid SignalResult
 
     def test_ch3_returns_signal_result_fields(self):
         """Verify all SignalResult fields are populated for CH3."""

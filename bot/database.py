@@ -362,10 +362,21 @@ def update_signal(signal_id: str, updates: dict) -> None:
     updates:
         Mapping of column name → new value.  Only the columns listed in
         *updates* are changed; all other fields are untouched.
+        Only whitelisted column names are accepted.
     """
     if not updates:
         return
-    set_clause = ", ".join(f"{col} = ?" for col in updates)
-    values = list(updates.values()) + [signal_id]
+    # Whitelist of updatable columns to prevent SQL injection
+    _UPDATABLE_COLUMNS = frozenset({
+        "closed", "closed_at", "close_reason", "be_triggered",
+        "origin_channel", "confluence_score", "confluence_gates_json",
+        "created_by", "tp1_hit", "tp2_hit", "tp3_hit",
+    })
+    safe_updates = {k: v for k, v in updates.items() if k in _UPDATABLE_COLUMNS}
+    if not safe_updates:
+        logger.warning("update_signal: no valid columns in updates %s", list(updates.keys()))
+        return
+    set_clause = ", ".join(f"{col} = ?" for col in safe_updates)
+    values = list(safe_updates.values()) + [signal_id]
     with _get_conn() as conn:
         conn.execute(f"UPDATE signals SET {set_clause} WHERE id = ?", values)  # noqa: S608
