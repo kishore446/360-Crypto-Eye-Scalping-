@@ -425,6 +425,8 @@ async def _job_whale_alert(
     try:
         from bot.insights.oi_heatmap import format_oi_heatmap
 
+        # oi_changes proxies OI sentiment via 24h price change (true OI would require
+        # a separate Coinglass/OI API call, not available on standard exchange tickers).
         oi_changes: dict[str, float] = {}
         price_changes: dict[str, float] = {}
         volumes: dict[str, float] = {}
@@ -433,8 +435,9 @@ async def _job_whale_alert(
             try:
                 ticker = await exchange.fetch_ticker(sym)
                 if ticker:
-                    oi_changes[sym] = float(ticker.get("percentage", 0) or 0)
-                    price_changes[sym] = float(ticker.get("percentage", 0) or 0)
+                    pct = float(ticker.get("percentage", 0) or 0)
+                    oi_changes[sym] = pct
+                    price_changes[sym] = pct
                     volumes[sym] = float(ticker.get("quoteVolume", 0) or 0)
             except Exception:
                 pass

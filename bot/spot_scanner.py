@@ -414,9 +414,9 @@ class SpotScanner:
             near_low = (current_price - low_90d) / low_90d < _near_low_threshold if low_90d > 0 else False
             # Use median volume of each half to avoid single low-volume days killing the signal
             if len(volumes) >= 14:
-                import statistics as _stats
-                first_half_median = _stats.median(volumes[-14:-7])
-                second_half_median = _stats.median(volumes[-7:])
+                first_half_median = statistics.median(volumes[-14:-7])
+                second_half_median = statistics.median(volumes[-7:])
+                # 5% median increase required — forgiving enough to survive one low-volume day
                 rising_vol = second_half_median > first_half_median * 1.05
 
                 if (

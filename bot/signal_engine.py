@@ -1533,7 +1533,10 @@ def run_confluence_check_relaxed(
     fvg_present = detect_fair_value_gap(scoring_candles, side, current_price=current_price)
     ob_present = detect_order_block(scoring_candles, side, atr=atr)
 
-    # Weighted confluence score — mirrors CH1 scoring so CH2 can reach HIGH confidence
+    # Weighted confluence score — mirrors CH1 scoring so CH2 can reach HIGH confidence.
+    # With allowed_gate_failures=1 the minimum mandatory contribution is 75 (one gate may
+    # be skipped). Total without FVG/OB bonuses: all-pass=75, one-skip=55-60 depending on
+    # which gate fails. CH2 minimum threshold (50) is still reachable in both cases.
     score = 0
     score += 20 if gate1_pass else 0            # Gate ① (macro bias)
     score += 15 if gate2_pass else 0            # Gate ② (zone)
