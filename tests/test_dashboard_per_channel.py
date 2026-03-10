@@ -1,6 +1,7 @@
 """Tests for Dashboard per-channel and per-session statistics."""
 from __future__ import annotations
 
+import math
 import time
 
 import pytest
@@ -290,10 +291,11 @@ class TestPerChannelProfitFactor:
         pf = db.per_channel_profit_factor()
         assert pf["CH1_HARD"] == pytest.approx(0.0)
 
-    def test_all_wins_returns_zero_no_loss(self, db):
+    def test_all_wins_returns_inf_no_loss(self, db):
+        """When there are only winning trades, profit factor is infinite (perfect record)."""
         db.record_result(_make_result(channel_tier="CH1_HARD", outcome="WIN", pnl_pct=2.0))
         pf = db.per_channel_profit_factor()
-        assert pf["CH1_HARD"] == pytest.approx(0.0)
+        assert math.isinf(pf["CH1_HARD"])
 
     def test_wins_and_losses(self, db):
         db.record_result(_make_result(channel_tier="CH1_HARD", outcome="WIN", pnl_pct=4.0))

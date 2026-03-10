@@ -108,10 +108,20 @@ class ActiveSignal:
     def entry_mid(self) -> float:
         return (self.result.entry_low + self.result.entry_high) / 2
 
-    def is_stale(self, now: Optional[float] = None) -> bool:
-        """Return True if the signal has been open longer than the stale threshold."""
+    def is_stale(self, now: Optional[float] = None, stale_hours: Optional[int] = None) -> bool:
+        """Return True if the signal has been open longer than the stale threshold.
+
+        Parameters
+        ----------
+        now:
+            Override for current time (Unix timestamp). Defaults to ``time.time()``.
+        stale_hours:
+            Override the global ``STALE_SIGNAL_HOURS`` threshold. Useful for
+            per-channel stale windows (e.g. CH4 Spot signals need 24 h).
+        """
+        threshold = stale_hours if stale_hours is not None else STALE_SIGNAL_HOURS
         elapsed_hours = ((now or time.time()) - self.opened_at) / 3600
-        return elapsed_hours >= STALE_SIGNAL_HOURS
+        return elapsed_hours >= threshold
 
     def should_trigger_be(self, current_price: float) -> bool:
         """Return True when current price has reached the BE trigger level."""
@@ -135,8 +145,11 @@ class ActiveSignal:
         return current_price <= trigger_price
 
     def trigger_be(self) -> None:
-        """Mark the break-even as triggered; SL is now at entry."""
+        """Mark the break-even as triggered; SL is pinned to the entry midpoint."""
         self.be_triggered = True
+        # Update result.stop_loss so all downstream consumers (trailing SL job,
+        # AutoCloseMonitor, SignalTracker) see the correct BE floor immediately.
+        self.result.stop_loss = self.entry_mid
 
     def close(self, reason: str) -> None:
         self.closed = True

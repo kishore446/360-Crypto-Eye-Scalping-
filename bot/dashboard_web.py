@@ -106,6 +106,9 @@ setInterval(() => { loadStats(); loadSignals(); }, 30000);
 </body>
 </html>"""
 
+    # Capped display value for infinite profit factor (all trades are wins)
+    _PROFIT_FACTOR_INF_DISPLAY = 999.99
+
     @app.route("/dashboard")
     def dashboard_page():
         return render_template_string(DASHBOARD_HTML)
@@ -116,11 +119,17 @@ setInterval(() => { loadStats(); loadSignals(); }, 30000);
             dash = get_dashboard_fn()
             trades = dash._results if hasattr(dash, '_results') else []
             total = len(trades)
-            wins = sum(1 for t in trades if getattr(t, 'outcome', '') == 'WIN')
+            # Use protected win rate (BE counted as win) as the primary metric
+            wins = sum(1 for t in trades if getattr(t, 'outcome', '') in ('WIN', 'BE'))
             win_rate = (wins / total * 100) if total > 0 else None
             gross_win = sum(t.pnl_pct for t in trades if getattr(t, 'pnl_pct', 0) > 0)
             gross_loss = abs(sum(t.pnl_pct for t in trades if getattr(t, 'pnl_pct', 0) < 0))
-            profit_factor = (gross_win / gross_loss) if gross_loss > 0 else None
+            if gross_loss > 0:
+                profit_factor = round(gross_win / gross_loss, 4)
+            elif gross_win > 0:
+                profit_factor = _PROFIT_FACTOR_INF_DISPLAY
+            else:
+                profit_factor = None
             active = 0
             if get_risk_manager_fn:
                 rm = get_risk_manager_fn()

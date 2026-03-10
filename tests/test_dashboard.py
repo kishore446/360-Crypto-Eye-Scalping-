@@ -4,6 +4,7 @@ Tests for bot/dashboard.py and bot/news_filter.py
 
 from __future__ import annotations
 
+import math
 import time
 
 import pytest
@@ -65,8 +66,12 @@ class TestDashboard:
         assert self.db.win_rate("15m") == pytest.approx(0.0)
 
     def test_profit_factor_no_loss(self):
-        """Profit factor returns 0.0 when there are no losing trades (avoid division by zero)."""
+        """Profit factor returns inf when there are only winning trades (no losses to divide by)."""
         self.db.record_result(_make_trade(outcome="WIN", pnl_pct=3.0))
+        assert math.isinf(self.db.profit_factor())
+
+    def test_profit_factor_no_trades(self):
+        """Profit factor returns 0.0 when there are no closed trades at all."""
         assert self.db.profit_factor() == 0.0
 
     def test_profit_factor_calculated(self):
