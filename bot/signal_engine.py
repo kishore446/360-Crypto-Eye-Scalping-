@@ -106,6 +106,7 @@ class SignalResult:
     leverage_max: int
     signal_id: str = field(default="")
     confluence_score: int = 0
+    risk_note: str = ""  # e.g., "⚠️ Cooldown active — half position size"
 
     def format_message(self) -> str:
         """Return the standardised Telegram broadcast message."""
@@ -118,6 +119,8 @@ class SignalResult:
         confidence_line = f"Confidence: {self.confidence.value} {stars}"
         if self.confluence_score > 0:
             confidence_line += f" | Score: {self.confluence_score}/100"
+
+        risk_line = f"\n⚠️ {self.risk_note}" if self.risk_note else ""
 
         bybit_copy = (
             f"\n\n👇 CLICK TO COPY FOR BYBIT:\n"
@@ -146,7 +149,7 @@ class SignalResult:
             f"📊 STRATEGY MAP:\n"
             f"- Structure: {self.structure_note}\n"
             f"- Context: {self.context_note}\n"
-            f"- Risk: 1% of Account Balance.\n\n"
+            f"- Risk: 1% of Account Balance.{risk_line}\n\n"
             f"⚡ ENTRY ZONE: {entry_range}\n"
             f"🎯 TARGETS:\n"
             f"- TP 1: {fmt_price(self.tp1)} (Close 50% + Move SL to Entry)\n"

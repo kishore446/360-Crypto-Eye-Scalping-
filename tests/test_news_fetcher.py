@@ -48,18 +48,19 @@ class TestFetchAndReloadNoApiKey:
             fetch_and_reload(calendar)
         assert calendar.last_successful_refresh == 0.0
 
-    def test_previous_bug_mark_fetch_failed_would_freeze_signals(self):
+    def test_stale_does_not_freeze_signals(self):
         """
-        Regression: calling mark_fetch_failed() sets last_successful_refresh = 1.0,
-        which is_stale() treats as old — making is_high_impact_imminent() return True
-        and freezing all signals. Verify this side-effect still exists (so we know
-        why not calling it matters).
+        Regression (fixed): calling mark_fetch_failed() sets last_successful_refresh = 1.0,
+        which is_stale() treats as old. Previously is_high_impact_imminent() returned True
+        (freezing all signals). Now it returns False with a warning — stale data should
+        degrade gracefully, not block everything.
         """
         calendar = NewsCalendar()
         calendar.mark_fetch_failed()
         # is_stale() should return True because last_successful_refresh = 1.0 (very old)
         assert calendar.is_stale() is True
-        assert calendar.is_high_impact_imminent() is True
+        # Fixed: stale data now allows signals through instead of freezing
+        assert calendar.is_high_impact_imminent() is False
 
 
 class TestFetchAndReloadWithApiKey:

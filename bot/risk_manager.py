@@ -94,6 +94,7 @@ class ActiveSignal:
     trailing_sl_price: Optional[float] = None
     highest_since_entry: Optional[float] = None   # for LONG signals
     lowest_since_entry: Optional[float] = None    # for SHORT signals
+    atr: float = 0.0  # ATR at signal creation time for trailing SL
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -371,17 +372,24 @@ class RiskManager:
             return 0.0  # suppressed
         return 0.005
 
-    def can_open_signal(self, side: Side) -> bool:
+    def can_open_signal(self, side: Side, max_override: int | None = None) -> bool:
         """
         Return True only when the "3-Pair" cap allows a new signal on *side*.
+
+        Parameters
+        ----------
+        max_override:
+            If provided, use this limit instead of the global MAX_SAME_SIDE_SIGNALS.
+            Useful for regime-adaptive signal throttling.
         """
+        max_signals = max_override if max_override is not None else MAX_SAME_SIDE_SIGNALS
         with self._lock:
             count = sum(
                 1
                 for s in self._signals
                 if not s.closed and s.result.side == side
             )
-        return count < MAX_SAME_SIDE_SIGNALS
+        return count < max_signals
 
     def add_signal(self, result: SignalResult, origin_channel: int = 0, created_regime: str = "UNKNOWN") -> ActiveSignal:
         """

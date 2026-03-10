@@ -39,7 +39,7 @@ try:
         ch2_news_window_minutes: int = 30         # Medium channel relaxed news window
         ch3_volume_spike_ratio: float = 1.5       # 150% volume spike for easy breakout
         ch4_scan_interval_hours: int = 4          # Spot channel scan frequency
-        ch4_accumulation_threshold: float = 0.15  # Within 15% of 90d low for spot
+        ch4_accumulation_threshold: float = 0.30  # Within 30% of 90d low for spot
 
         # ── Insights ─────────────────────────────────────────────────────────
         btc_fear_greed_url: str = "https://api.alternative.me/fng/"
@@ -61,7 +61,7 @@ try:
         # ── Safety Protocols ─────────────────────────────────────────────────
         max_same_side_signals: int = 3
         stale_signal_hours: int = 4
-        be_trigger_fraction: float = 0.50
+        be_trigger_fraction: float = 0.70
 
         # ── News Filter ──────────────────────────────────────────────────────
         news_skip_window_minutes: int = 60
@@ -477,7 +477,7 @@ except ImportError:
     CH2_NEWS_WINDOW_MINUTES: int = int(os.environ.get("CH2_NEWS_WINDOW_MINUTES", "30"))
     CH3_VOLUME_SPIKE_RATIO: float = float(os.environ.get("CH3_VOLUME_SPIKE_RATIO", "1.5"))
     CH4_SCAN_INTERVAL_HOURS: int = int(os.environ.get("CH4_SCAN_INTERVAL_HOURS", "4"))
-    CH4_ACCUMULATION_THRESHOLD: float = float(os.environ.get("CH4_ACCUMULATION_THRESHOLD", "0.15"))
+    CH4_ACCUMULATION_THRESHOLD: float = float(os.environ.get("CH4_ACCUMULATION_THRESHOLD", "0.30"))
 
     BTC_FEAR_GREED_URL: str = os.environ.get("BTC_FEAR_GREED_URL", "https://api.alternative.me/fng/")
     REGIME_DETECTOR_ENABLED: bool = os.environ.get("REGIME_DETECTOR_ENABLED", "true").lower() in ("true", "1", "yes")
@@ -490,7 +490,7 @@ except ImportError:
     TP3_RR: float = 4.0
     MAX_SAME_SIDE_SIGNALS: int = 3
     STALE_SIGNAL_HOURS: int = int(os.environ.get("STALE_SIGNAL_HOURS", "4"))
-    BE_TRIGGER_FRACTION: float = 0.50
+    BE_TRIGGER_FRACTION: float = 0.70
     NEWS_SKIP_WINDOW_MINUTES: int = 60
     COINMARKETCAL_API_KEY: str = os.environ.get("COINMARKETCAL_API_KEY", "")
     SESSION_FILTER_ENABLED: bool = os.environ.get("SESSION_FILTER_ENABLED", "true").lower() in ("true", "1", "yes")

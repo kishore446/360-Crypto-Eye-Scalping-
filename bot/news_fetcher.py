@@ -147,3 +147,4 @@ def fetch_and_reload(calendar: NewsCalendar) -> None:
             )
     except Exception as exc:  # noqa: BLE001
         logger.error("Unexpected error refreshing NewsCalendar: %s", exc)
+        calendar.mark_fetch_failed()

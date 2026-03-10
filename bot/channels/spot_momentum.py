@@ -25,7 +25,7 @@ from bot.signal_engine import (
 try:
     from config import CH4_ACCUMULATION_THRESHOLD as _ACCUM_THRESHOLD
 except Exception:  # pragma: no cover
-    _ACCUM_THRESHOLD = 0.15
+    _ACCUM_THRESHOLD = 0.30
 
 
 @dataclass
@@ -88,9 +88,12 @@ def run(
     if len(daily_candles) < 70 or len(four_hour_candles) < 4:
         return None
 
-    # Gate 1 — weekly bias: close > 10-week SMA (70 daily candles)
-    sma10w = sum(c.close for c in daily_candles[-70:]) / 70
-    if current_price <= sma10w:
+    # Gate 1 — short-term bias: close > 20-day SMA (showing recovery)
+    if len(daily_candles) >= 20:
+        sma20 = sum(c.close for c in daily_candles[-20:]) / 20
+    else:
+        sma20 = sum(c.close for c in daily_candles) / len(daily_candles)
+    if current_price <= sma20:
         return None
 
     # Gate 2 — accumulation zone: price within threshold above 90-day low
@@ -110,8 +113,17 @@ def run(
     if not (40 <= rsi_1d <= 60):
         return None
 
-    # Gate 5 — 4H higher lows: last two 4H swing lows are ascending
-    swing_lows = [c.low for c in four_hour_candles[-4:]]
+    # Gate 5 — 4H higher lows: detect actual swing lows using pivot pattern
+    def _find_swing_lows(candles: list) -> list[float]:
+        """Find swing lows using 3-bar pivot: low[i] < low[i-1] and low[i] < low[i+1]."""
+        lows = []
+        for i in range(1, len(candles) - 1):
+            if candles[i].low < candles[i - 1].low and candles[i].low < candles[i + 1].low:
+                lows.append(candles[i].low)
+        return lows
+
+    recent_4h = four_hour_candles[-10:] if len(four_hour_candles) >= 10 else four_hour_candles
+    swing_lows = _find_swing_lows(recent_4h)
     if len(swing_lows) < 2 or swing_lows[-1] <= swing_lows[-2]:
         return None
 

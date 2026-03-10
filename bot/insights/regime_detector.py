@@ -89,8 +89,8 @@ def classify_regime(
     above_sma = current_price > sma
 
     if fear_and_greed is None:
-        # Fall back to SMA-only classification
-        return "BULL" if above_sma else "BEAR"
+        logger.warning("Fear & Greed unavailable — classifying regime as UNKNOWN (SMA-only is unreliable).")
+        return "UNKNOWN"
 
     if above_sma and fear_and_greed > 50:
         return "BULL"
@@ -139,6 +139,8 @@ def format_regime_message(
         action = "Action: LONG signals SUSPENDED across all scalp channels.\nShort setups only until regime shifts."
     elif regime == "BULL":
         action = "Action: Full signal generation active. Bias favors LONG setups."
+    elif regime == "UNKNOWN":
+        action = "Action: Regime data unavailable. Both directions active with caution."
     else:
         action = "Action: Both directions active. Trade setups on their own merit."
 

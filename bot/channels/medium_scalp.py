@@ -6,7 +6,6 @@ Runs the relaxed confluence check (4H-only bias, wider sweep/MSS windows,
 """
 from __future__ import annotations
 
-import time
 from typing import Optional
 
 from bot.news_filter import NewsCalendar
@@ -25,17 +24,6 @@ except Exception:  # pragma: no cover
     _CH2_NEWS_WINDOW = 30
 
 
-def _is_news_imminent(news_calendar: NewsCalendar, window_minutes: int) -> bool:
-    """Check if any high-impact news falls within *window_minutes* from now."""
-    now = time.time()
-    cutoff = now + window_minutes * 60
-    events = getattr(news_calendar, "_events", [])
-    return any(
-        getattr(e, "impact", None) == "HIGH" and now <= getattr(e, "timestamp", 0) <= cutoff
-        for e in events
-    )
-
-
 def run(
     symbol: str,
     current_price: float,
@@ -52,6 +40,7 @@ def run(
     market_regime: str = "UNKNOWN",
     fifteen_min_candles: Optional[list[CandleData]] = None,
     funding_rate: Optional[float] = None,
+    cooldown_manager=None,
 ) -> Optional[SignalResult]:
     """
     Run the CH2 Medium Scalp gate stack.
@@ -69,18 +58,22 @@ def run(
         Optional 15m candles for FVG / OB scoring per Blueprint §2.1.
     funding_rate:
         Optional current funding rate for score adjustment.
+    cooldown_manager:
+        Optional LossStreakCooldown instance for hot-streak bonus.
 
     Returns HIGH or MEDIUM confidence signals only.
     """
-    # Regime gate — suppress LONG signals in BEAR regime
+    # Regime gate — suppress counter-trend signals
     if market_regime == "BEAR" and side == Side.LONG:
+        return None
+    if market_regime == "BULL" and side == Side.SHORT:
         return None
 
     if not risk_manager.can_open_signal(side):
         return None
 
-    # Use relaxed 30-min news window
-    news_in_window = _is_news_imminent(news_calendar, _CH2_NEWS_WINDOW)
+    # Use public API instead of private _events — respects the 30-min window
+    news_in_window = news_calendar.is_high_impact_in_window(_CH2_NEWS_WINDOW)
 
     result = run_confluence_check_relaxed(
         symbol=symbol,
@@ -108,5 +101,17 @@ def run(
     # CH2 passes HIGH and MEDIUM confidence signals
     if result.confidence == Confidence.LOW:
         return None
+
+    # Apply session confidence modifier
+    if result.confluence_score > 0:
+        from bot.session_filter import get_session_confidence_modifier
+        session_mod = get_session_confidence_modifier()
+        result.confluence_score = int(result.confluence_score * session_mod)
+
+    # Apply hot streak bonus if cooldown manager is provided
+    if cooldown_manager is not None:
+        bonus = cooldown_manager.get_hot_streak_bonus()
+        if bonus > 0:
+            result.confluence_score += bonus
 
     return result
