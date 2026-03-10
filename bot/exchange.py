@@ -86,9 +86,9 @@ class ResilientExchange:
     def _check_weight(self, cost: int = 10) -> None:
         """Ensure the rolling weight budget has room for a *cost*-weight request.
 
-        If the weight window has expired the counter is reset.  If adding
-        *cost* would exceed ``_WEIGHT_LIMIT - _WEIGHT_BUFFER`` the method
-        sleeps until the window resets, then resets the counter and returns.
+        Reserves *cost* weight upfront under the lock.  If the reservation
+        pushes the counter past the safe threshold the method sleeps until
+        the current 60-second window resets, then adjusts the counter.
 
         Parameters
         ----------
@@ -96,9 +96,6 @@ class ResilientExchange:
             Estimated request weight (default 10, suitable for most OHLCV
             and ticker endpoints).
         """
-        # Determine whether we need to sleep before acquiring the weight counter.
-        # We compute the sleep duration under the lock but perform the actual
-        # sleep *outside* the lock to avoid blocking other threads.
         sleep_time = 0.0
         with self._lock:
             now = time.time()
@@ -110,7 +107,12 @@ class ResilientExchange:
             if now >= self._weight_reset_at:
                 self._weight_used = 0
                 self._weight_reset_at = now + 60
-            if self._weight_used + cost >= _WEIGHT_LIMIT - _WEIGHT_BUFFER:
+
+            # Reserve weight upfront to prevent concurrent threads
+            # from all passing the check before any increments
+            self._weight_used += cost
+
+            if self._weight_used >= _WEIGHT_LIMIT - _WEIGHT_BUFFER:
                 sleep_time = max(0.1, self._weight_reset_at - now)
                 logger.warning(
                     "Rate limit approaching (%d/%d), sleeping %.1fs",
@@ -123,15 +125,11 @@ class ResilientExchange:
         if sleep_time > 0.0:
             time.sleep(sleep_time)
             with self._lock:
-                # Re-check: another thread may have already reset the window
+                # After sleeping, reset the window if it expired
                 now = time.time()
                 if now >= self._weight_reset_at:
-                    self._weight_used = 0
+                    self._weight_used = cost  # start fresh with just our cost
                     self._weight_reset_at = now + 60
-                self._weight_used += cost
-        else:
-            with self._lock:
-                self._weight_used += cost
 
     # ── Caching ───────────────────────────────────────────────────────────────
 
