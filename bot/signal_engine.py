@@ -59,6 +59,9 @@ __all__ = [
     "calculate_cvd",
     "detect_cvd_confirmation",
     "detect_ema_ribbon_alignment",
+    "run_confluence_check_ch1_hard",
+    "run_confluence_check_ch2_medium",
+    "run_confluence_check_ch3_easy",
 ]
 
 
@@ -1548,6 +1551,415 @@ def run_confluence_check_relaxed(
         context_note=context_note or f"{symbol} aligned with 4H bias (medium scalp).",
         leverage_min=leverage_min,
         leverage_max=leverage_max,
+        signal_id=sig_id,
+        confluence_score=score,
+    )
+
+
+# ── 3-Channel dedicated confluence functions ──────────────────────────────────
+
+
+def run_confluence_check_ch1_hard(
+    symbol: str,
+    current_price: float,
+    side: Side,
+    range_low: float,
+    range_high: float,
+    key_liquidity_level: float,
+    five_min_candles: list[CandleData],
+    daily_candles: list[CandleData],
+    four_hour_candles: list[CandleData],
+    news_in_window: bool,
+    stop_loss: float,
+    structure_note: str = "",
+    context_note: str = "",
+    fifteen_min_candles: Optional[list[CandleData]] = None,
+    min_displacement_pct: Optional[float] = None,
+    funding_rate: Optional[float] = None,
+    oi_change: Optional[float] = None,
+    regime: str = "UNKNOWN",
+) -> Optional[SignalResult]:
+    """CH1 Hard Scalp — all 7 gates mandatory, confluence score >= 70/100.
+
+    Gate requirements (all must pass):
+    Gate 1: Macro Bias (1D + 4H alignment)
+    Gate 2: Discount/Premium Zone
+    Gate 3: Liquidity Sweep
+    Gate 4: MSS/ChoCh with volume confirmation
+    Gate 5: Order Block on 15m
+    Gate 6: Fair Value Gap on 15m
+    Gate 7: No high-impact news within 60 minutes
+
+    Leverage: 15x-20x | TP: 1.5R / 2.5R / 4.0R | Min score: 70
+    """
+    try:
+        from config import (
+            CH1_LEVERAGE_MAX,
+            CH1_LEVERAGE_MIN,
+            CH1_MIN_CONFLUENCE,
+            CH1_TP1_RR,
+            CH1_TP2_RR,
+            CH1_TP3_RR,
+        )
+    except ImportError:
+        CH1_LEVERAGE_MIN, CH1_LEVERAGE_MAX = 15, 20
+        CH1_TP1_RR, CH1_TP2_RR, CH1_TP3_RR = 1.5, 2.5, 4.0
+        CH1_MIN_CONFLUENCE = 70
+
+    result = run_confluence_check(
+        symbol=symbol,
+        current_price=current_price,
+        side=side,
+        range_low=range_low,
+        range_high=range_high,
+        key_liquidity_level=key_liquidity_level,
+        five_min_candles=five_min_candles,
+        daily_candles=daily_candles,
+        four_hour_candles=four_hour_candles,
+        news_in_window=news_in_window,
+        stop_loss=stop_loss,
+        structure_note=structure_note,
+        context_note=context_note,
+        leverage_min=CH1_LEVERAGE_MIN,
+        leverage_max=CH1_LEVERAGE_MAX,
+        tp1_rr=CH1_TP1_RR,
+        tp2_rr=CH1_TP2_RR,
+        tp3_rr=CH1_TP3_RR,
+        check_fvg=True,
+        check_order_block=True,
+        fifteen_min_candles=fifteen_min_candles,
+        min_displacement_pct=min_displacement_pct,
+        funding_rate=funding_rate,
+        oi_change=oi_change,
+        regime=regime,
+    )
+    if result is None:
+        return None
+    if result.confluence_score < CH1_MIN_CONFLUENCE:
+        logger.info(
+            "[CH1_FAIL] %s %s: score %d < min %d -- signal suppressed",
+            symbol, side.value, result.confluence_score, CH1_MIN_CONFLUENCE,
+        )
+        return None
+    return result
+
+
+def run_confluence_check_ch2_medium(
+    symbol: str,
+    current_price: float,
+    side: Side,
+    range_low: float,
+    range_high: float,
+    key_liquidity_level: float,
+    five_min_candles: list[CandleData],
+    daily_candles: list[CandleData],
+    four_hour_candles: list[CandleData],
+    news_in_window: bool,
+    stop_loss: float,
+    structure_note: str = "",
+    context_note: str = "",
+    fifteen_min_candles: Optional[list[CandleData]] = None,
+    min_displacement_pct: Optional[float] = None,
+    funding_rate: Optional[float] = None,
+    oi_change: Optional[float] = None,
+    regime: str = "UNKNOWN",
+) -> Optional[SignalResult]:
+    """CH2 Medium Scalp -- 5 mandatory gates, confluence score >= 50/100.
+
+    Mandatory gates:
+    Gate 1: Macro Bias (4H-only allowed when 1D is clear)
+    Gate 2: Discount/Premium Zone
+    Gate 3: Liquidity Sweep
+    Gate 4: MSS/ChoCh (volume threshold at 60th percentile)
+    Gate 7: No high-impact news within 30 minutes
+
+    Optional bonus: OB (+score), FVG (+score), Funding Rate, OI.
+    Leverage: 10x-15x | TP: 1.2R / 2.0R / 3.0R | Min score: 50
+    """
+    try:
+        from config import (
+            CH2_LEVERAGE_MAX,
+            CH2_LEVERAGE_MIN,
+            CH2_MIN_CONFLUENCE,
+            CH2_NEWS_WINDOW_MINUTES,
+            CH2_TP1_RR,
+            CH2_TP2_RR,
+            CH2_TP3_RR,
+        )
+    except ImportError:
+        CH2_LEVERAGE_MIN, CH2_LEVERAGE_MAX = 10, 15
+        CH2_TP1_RR, CH2_TP2_RR, CH2_TP3_RR = 1.2, 2.0, 3.0
+        CH2_MIN_CONFLUENCE = 50
+        CH2_NEWS_WINDOW_MINUTES = 30
+
+    result = run_confluence_check_relaxed(
+        symbol=symbol,
+        current_price=current_price,
+        side=side,
+        range_low=range_low,
+        range_high=range_high,
+        key_liquidity_level=key_liquidity_level,
+        five_min_candles=five_min_candles,
+        daily_candles=daily_candles,
+        four_hour_candles=four_hour_candles,
+        news_in_window=news_in_window,
+        stop_loss=stop_loss,
+        structure_note=structure_note,
+        context_note=context_note,
+        leverage_min=CH2_LEVERAGE_MIN,
+        leverage_max=CH2_LEVERAGE_MAX,
+        tp1_rr=CH2_TP1_RR,
+        tp2_rr=CH2_TP2_RR,
+        tp3_rr=CH2_TP3_RR,
+        news_window_minutes=CH2_NEWS_WINDOW_MINUTES,
+        fifteen_min_candles=fifteen_min_candles,
+        min_displacement_pct=min_displacement_pct,
+        funding_rate=funding_rate,
+        oi_change=oi_change,
+        regime=regime,
+    )
+    if result is None:
+        return None
+    if result.confluence_score < CH2_MIN_CONFLUENCE:
+        logger.info(
+            "[CH2_FAIL] %s %s: score %d < min %d -- signal suppressed",
+            symbol, side.value, result.confluence_score, CH2_MIN_CONFLUENCE,
+        )
+        return None
+    return result
+
+
+def run_confluence_check_ch3_easy(
+    symbol: str,
+    current_price: float,
+    side: Side,
+    range_low: float,
+    range_high: float,
+    key_liquidity_level: float,
+    five_min_candles: list[CandleData],
+    daily_candles: list[CandleData],
+    four_hour_candles: list[CandleData],
+    news_in_window: bool,
+    stop_loss: float,
+    structure_note: str = "",
+    context_note: str = "",
+    fifteen_min_candles: Optional[list[CandleData]] = None,
+    min_displacement_pct: Optional[float] = None,
+    funding_rate: Optional[float] = None,
+    oi_change: Optional[float] = None,
+    regime: str = "UNKNOWN",
+) -> Optional[SignalResult]:
+    """CH3 Easy Breakout -- 3 core gates + momentum signals, score >= 35/100.
+
+    Mandatory gates (3 of 7):
+    Gate 2: Discount/Premium Zone (or volume spike breakout as alternative)
+    Gate 4: MSS/ChoCh (volume threshold at 50th percentile)
+    Gate 7: No high-impact news within 15 minutes (minimal restriction)
+
+    Additional triggers (bonus): Macro bias, Liquidity Sweep, OB, FVG,
+    volume spike (150% avg), Bollinger squeeze, EMA ribbon alignment.
+    Session filter: DISABLED (24/7 trading).
+    Leverage: 5x-10x | TP: 1.0R / 1.5R / 2.5R | Min score: 35
+    """
+    try:
+        from config import (
+            CH3_LEVERAGE_MAX,
+            CH3_LEVERAGE_MIN,
+            CH3_MIN_CONFLUENCE,
+            CH3_TP1_RR,
+            CH3_TP2_RR,
+            CH3_TP3_RR,
+        )
+    except ImportError:
+        CH3_LEVERAGE_MIN, CH3_LEVERAGE_MAX = 5, 10
+        CH3_TP1_RR, CH3_TP2_RR, CH3_TP3_RR = 1.0, 1.5, 2.5
+        CH3_MIN_CONFLUENCE = 35
+
+    try:
+        from config import MIN_DISPLACEMENT_PCT as _cfg_displacement
+    except ImportError:
+        _cfg_displacement = 0.15
+    effective_displacement = (
+        min_displacement_pct if min_displacement_pct is not None else _cfg_displacement
+    )
+
+    # Gate 7 -- minimal news blackout (15-minute window)
+    if news_in_window:
+        logger.info(
+            "[GATE_FAIL][CH3] %s %s: gate=news reason=high_impact_imminent",
+            symbol, side.value,
+        )
+        return None
+
+    # Gate 2 -- Discount/Premium Zone (required) OR volume spike alternative
+    if side == Side.LONG:
+        gate_zone = is_discount_zone(current_price, range_low, range_high)
+    else:
+        gate_zone = is_premium_zone(current_price, range_low, range_high)
+
+    # Volume spike alternative: if not in zone, accept 150%+ volume breakout
+    avg_vol = _average_volume(five_min_candles[:-1]) if len(five_min_candles) > 1 else 0.0
+    current_vol = five_min_candles[-1].volume if five_min_candles else 0.0
+    volume_spike = avg_vol > 0 and current_vol >= avg_vol * 1.5
+
+    if not gate_zone and not volume_spike:
+        logger.info(
+            "[GATE_FAIL][CH3] %s %s: gate=zone reason=price_not_in_zone_and_no_volume_spike",
+            symbol, side.value,
+        )
+        return None
+
+    # Gate 4 -- MSS/ChoCh (50th percentile volume threshold -- very relaxed)
+    if not detect_market_structure_shift(
+        five_min_candles, side, min_displacement_pct=effective_displacement
+    ):
+        logger.info(
+            "[GATE_FAIL][CH3] %s %s: gate=mss reason=no_structure_shift",
+            symbol, side.value,
+        )
+        return None
+
+    # All mandatory gates passed -- build signal with bonus scoring
+    atr = calculate_atr(five_min_candles)
+    entry_spread = atr * 0.5 if atr > 0 else abs(current_price * 0.001)
+    entry_low = current_price - entry_spread
+    entry_high = current_price + entry_spread
+
+    tp1_dyn, tp2_dyn, tp3_dyn = _compute_dynamic_rr(
+        current_price, five_min_candles, CH3_TP1_RR, CH3_TP2_RR, CH3_TP3_RR, regime=regime,
+    )
+    tp1, tp2, tp3 = calculate_targets(current_price, stop_loss, side, tp1_dyn, tp2_dyn, tp3_dyn)
+
+    # Scoring -- bonus gates add points, no hard-fail beyond the 3 mandatory gates
+    score = 0
+    score += 15  # Gate 2 (zone/spike -- passed above)
+    score += 20  # Gate 4 (MSS -- passed above)
+
+    # Optional bonus: macro bias (+15 if aligned, not required)
+    macro_bias = assess_macro_bias(daily_candles, four_hour_candles)
+    if macro_bias == side:
+        score += 15
+
+    # Optional bonus: liquidity sweep (+10)
+    if detect_liquidity_sweep(five_min_candles, key_liquidity_level, side):
+        score += 10
+
+    # Optional bonus: volume spike bonus (+10 if triggered)
+    if volume_spike:
+        score += 10
+
+    # Candles for FVG / OB scoring (prefer 15m)
+    scoring_candles = fifteen_min_candles if fifteen_min_candles else five_min_candles
+
+    fvg_present = detect_fair_value_gap(scoring_candles, side, current_price=current_price)
+    ob_present = detect_order_block(scoring_candles, side, atr=atr)
+    if ob_present:
+        score += 5
+    if fvg_present:
+        score += 5
+
+    # Momentum indicator bonuses
+    if detect_bollinger_squeeze(five_min_candles):
+        score += 10
+    if detect_ema_ribbon_alignment(five_min_candles, side):
+        score += 10
+    if detect_macd_confirmation(five_min_candles, side):
+        score += 10
+
+    # Funding rate and OI adjustments
+    if funding_rate is not None:
+        try:
+            from config import FUNDING_EXTREME_NEGATIVE, FUNDING_EXTREME_POSITIVE
+        except ImportError:
+            FUNDING_EXTREME_NEGATIVE = -0.0001
+            FUNDING_EXTREME_POSITIVE = 0.0005
+        funding_hard_positive = FUNDING_EXTREME_POSITIVE * 3
+        funding_hard_negative = FUNDING_EXTREME_NEGATIVE * 3
+        if side == Side.LONG:
+            if funding_rate > funding_hard_positive:
+                logger.info(
+                    "[GATE_FAIL][CH3] %s %s: gate=funding_rate "
+                    "reason=extreme_long_crowding rate=%.6f",
+                    symbol, side.value, funding_rate,
+                )
+                return None
+            elif funding_rate < FUNDING_EXTREME_NEGATIVE:
+                score += 5
+        else:
+            if funding_rate < funding_hard_negative:
+                logger.info(
+                    "[GATE_FAIL][CH3] %s %s: gate=funding_rate "
+                    "reason=extreme_short_crowding rate=%.6f",
+                    symbol, side.value, funding_rate,
+                )
+                return None
+            elif funding_rate > FUNDING_EXTREME_POSITIVE:
+                score += 5
+
+    if oi_change is not None and len(five_min_candles) >= 2:
+        price_up = five_min_candles[-1].close > five_min_candles[-2].close
+        oi_up = oi_change > 0
+        if side == Side.LONG and price_up and oi_up:
+            score += 5
+        elif side == Side.SHORT and not price_up and oi_up:
+            score += 5
+
+    if score < CH3_MIN_CONFLUENCE:
+        logger.info(
+            "[CH3_FAIL] %s %s: score %d < min %d -- signal suppressed",
+            symbol, side.value, score, CH3_MIN_CONFLUENCE,
+        )
+        return None
+
+    # Confidence tier based on score
+    if score >= 75:
+        confidence = Confidence.HIGH
+    elif score >= 55:
+        confidence = Confidence.MEDIUM
+    else:
+        confidence = Confidence.LOW
+
+    from bot.logging_config import generate_signal_id
+    sig_id = generate_signal_id()
+
+    if not structure_note and not context_note:
+        try:
+            from bot.narrative import generate_signal_narrative
+            gates_fired = ["zone", "mss"]
+            if macro_bias == side:
+                gates_fired.insert(0, "macro_bias")
+            if fvg_present:
+                gates_fired.append("fvg")
+            if ob_present:
+                gates_fired.append("order_block")
+            structure_note, context_note = generate_signal_narrative(
+                symbol=symbol,
+                side=side.value,
+                confidence=confidence.value,
+                gates_fired=gates_fired,
+                confluence_score=score,
+            )
+        except Exception:
+            pass
+
+    return SignalResult(
+        symbol=symbol,
+        side=side,
+        confidence=confidence,
+        entry_low=entry_low,
+        entry_high=entry_high,
+        tp1=tp1,
+        tp2=tp2,
+        tp3=tp3,
+        stop_loss=stop_loss,
+        structure_note=(
+            structure_note
+            or f"{'Bullish' if side == Side.LONG else 'Bearish'} breakout momentum "
+            "-- 3-gate easy entry."
+        ),
+        context_note=context_note or f"{symbol} easy breakout setup (CH3).",
+        leverage_min=CH3_LEVERAGE_MIN,
+        leverage_max=CH3_LEVERAGE_MAX,
         signal_id=sig_id,
         confluence_score=score,
     )

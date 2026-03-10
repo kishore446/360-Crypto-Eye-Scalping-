@@ -12,6 +12,7 @@ regardless of the data-source backing.
 
 from __future__ import annotations
 
+import datetime
 import time
 from dataclasses import dataclass
 from typing import Sequence
@@ -136,7 +137,6 @@ class NewsCalendar:
 
         lines = ["⚠️ HIGH-IMPACT NEWS ALERT — New signals are FROZEN.\n"]
         for e in events:
-            import datetime
             dt = datetime.datetime.fromtimestamp(e.timestamp, tz=datetime.timezone.utc).strftime("%H:%M UTC")
             lines.append(f"  • {e.title} ({e.currency}) @ {dt}")
         lines.append("\nConsider closing partial positions to reduce exposure.")

@@ -14,7 +14,10 @@ from typing import Generator
 
 logger = logging.getLogger(__name__)
 
-_DB_PATH: str = "360eye.db"
+try:
+    from config import DB_PATH as _DB_PATH
+except ImportError:
+    _DB_PATH: str = "data/360eye.db"
 
 
 def get_db_path() -> str:
@@ -110,6 +113,35 @@ def init_db() -> None:
                 timeframe TEXT NOT NULL
             );
         """)
+
+        # Add new columns if they don't already exist (safe migration)
+        for col_def in (
+            "ALTER TABLE signals ADD COLUMN origin_channel INTEGER DEFAULT 0",
+            "ALTER TABLE signals ADD COLUMN confluence_score INTEGER DEFAULT 0",
+            "ALTER TABLE signals_archived ADD COLUMN origin_channel INTEGER DEFAULT 0",
+            "ALTER TABLE signals_archived ADD COLUMN confluence_score INTEGER DEFAULT 0",
+        ):
+            try:
+                conn.execute(col_def)
+            except Exception:
+                pass  # Column already exists — ignore
+
+        # Performance indexes
+        conn.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_signals_closed
+                ON signals(closed, closed_at);
+            CREATE INDEX IF NOT EXISTS idx_signals_symbol
+                ON signals(symbol);
+            CREATE INDEX IF NOT EXISTS idx_signals_side
+                ON signals(side, closed);
+            CREATE INDEX IF NOT EXISTS idx_trade_results_outcome
+                ON trade_results(outcome, closed_at);
+            CREATE INDEX IF NOT EXISTS idx_trade_results_symbol
+                ON trade_results(symbol);
+            CREATE INDEX IF NOT EXISTS idx_signals_opened_at
+                ON signals(opened_at);
+        """)
+
     logger.info("Database initialised at %s", _DB_PATH)
 
 
@@ -248,3 +280,89 @@ def archive_old_signals(days: int = 90) -> int:
                 pass
     logger.info("Archived %d signals older than %d days.", archived_count, days)
     return archived_count
+
+
+# ── Signal CRUD helpers ────────────────────────────────────────────────────
+
+
+def save_signal(signal_data: dict) -> None:
+    """Upsert a signal into the signals table."""
+    with _get_conn() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO signals
+                (id, symbol, side, confidence, entry_low, entry_high,
+                 tp1, tp2, tp3, stop_loss, structure_note, context_note,
+                 leverage_min, leverage_max, opened_at, closed_at,
+                 be_triggered, closed, close_reason, created_by,
+                 confluence_gates_json, origin_channel, confluence_score)
+            VALUES
+                (:id, :symbol, :side, :confidence, :entry_low, :entry_high,
+                 :tp1, :tp2, :tp3, :stop_loss, :structure_note, :context_note,
+                 :leverage_min, :leverage_max, :opened_at, :closed_at,
+                 :be_triggered, :closed, :close_reason, :created_by,
+                 :confluence_gates_json, :origin_channel, :confluence_score)
+            """,
+            {
+                "id": signal_data.get("id", ""),
+                "symbol": signal_data.get("symbol", ""),
+                "side": signal_data.get("side", ""),
+                "confidence": signal_data.get("confidence", ""),
+                "entry_low": signal_data.get("entry_low", 0.0),
+                "entry_high": signal_data.get("entry_high", 0.0),
+                "tp1": signal_data.get("tp1", 0.0),
+                "tp2": signal_data.get("tp2", 0.0),
+                "tp3": signal_data.get("tp3", 0.0),
+                "stop_loss": signal_data.get("stop_loss", 0.0),
+                "structure_note": signal_data.get("structure_note"),
+                "context_note": signal_data.get("context_note"),
+                "leverage_min": signal_data.get("leverage_min"),
+                "leverage_max": signal_data.get("leverage_max"),
+                "opened_at": signal_data.get("opened_at", time.time()),
+                "closed_at": signal_data.get("closed_at"),
+                "be_triggered": int(signal_data.get("be_triggered", False)),
+                "closed": int(signal_data.get("closed", False)),
+                "close_reason": signal_data.get("close_reason"),
+                "created_by": signal_data.get("created_by", "scanner"),
+                "confluence_gates_json": signal_data.get("confluence_gates_json"),
+                "origin_channel": signal_data.get("origin_channel", 0),
+                "confluence_score": signal_data.get("confluence_score", 0),
+            },
+        )
+
+
+def load_active_signals() -> list[dict]:
+    """Load all non-closed signals from the signals table."""
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM signals WHERE closed = 0 ORDER BY opened_at ASC"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def update_signal(signal_id: str, updates: dict) -> None:
+    """Update one or more fields on an existing signal row.
+
+    Parameters
+    ----------
+    signal_id:
+        The ``id`` of the signal to update.
+    updates:
+        Mapping of column name → new value. Only whitelisted column names are accepted.
+    """
+    if not updates:
+        return
+    # Whitelist of updatable columns to prevent SQL injection
+    _UPDATABLE_COLUMNS = frozenset({
+        "closed", "closed_at", "close_reason", "be_triggered",
+        "origin_channel", "confluence_score", "confluence_gates_json",
+        "created_by", "tp1_hit", "tp2_hit", "tp3_hit",
+    })
+    safe_updates = {k: v for k, v in updates.items() if k in _UPDATABLE_COLUMNS}
+    if not safe_updates:
+        logger.warning("update_signal: no valid columns in updates %s", list(updates.keys()))
+        return
+    set_clause = ", ".join(f"{col} = ?" for col in safe_updates)
+    values = list(safe_updates.values()) + [signal_id]
+    with _get_conn() as conn:
+        conn.execute(f"UPDATE signals SET {set_clause} WHERE id = ?", values)  # noqa: S608

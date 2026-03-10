@@ -10,7 +10,10 @@ import bot.database as db_module
 from bot.database import (
     _get_conn,
     init_db,
+    load_active_signals,
     migrate_from_json,
+    save_signal,
+    update_signal,
 )
 
 
@@ -42,6 +45,32 @@ class TestInitDb:
     def test_idempotent_multiple_calls(self):
         init_db()
         init_db()  # should not raise
+
+    def test_creates_indexes(self):
+        init_db()
+        with _get_conn() as conn:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'"
+            ).fetchall()
+        index_names = {r[0] for r in rows}
+        assert "idx_signals_closed" in index_names
+        assert "idx_signals_symbol" in index_names
+
+    def test_creates_origin_channel_column(self):
+        init_db()
+        with _get_conn() as conn:
+            info = conn.execute("PRAGMA table_info(signals)").fetchall()
+        col_names = {row[1] for row in info}
+        assert "origin_channel" in col_names
+        assert "confluence_score" in col_names
+
+    def test_db_path_reads_from_config(self, monkeypatch, tmp_path):
+        import bot.database as db_mod
+        custom_path = str(tmp_path / "custom.db")
+        monkeypatch.setattr(db_mod, "_DB_PATH", custom_path)
+        init_db()
+        import os
+        assert os.path.exists(custom_path)
 
 
 class TestCRUD:
@@ -173,3 +202,92 @@ class TestMigrateFromJson:
             str(tmp_path / "no_signals.json"),
             str(tmp_path / "no_dashboard.json"),
         )
+
+
+class TestSignalCRUD:
+    def _make_signal_data(self, sig_id: str = "CRUD-001") -> dict:
+        return {
+            "id": sig_id,
+            "symbol": "BTC",
+            "side": "LONG",
+            "confidence": "High",
+            "entry_low": 64900.0,
+            "entry_high": 65000.0,
+            "tp1": 65750.0,
+            "tp2": 66500.0,
+            "tp3": 68000.0,
+            "stop_loss": 64400.0,
+            "structure_note": "Test structure",
+            "context_note": "Test context",
+            "leverage_min": 10,
+            "leverage_max": 20,
+            "opened_at": time.time(),
+            "closed_at": None,
+            "be_triggered": False,
+            "closed": False,
+            "close_reason": None,
+            "created_by": "test",
+            "confluence_gates_json": None,
+            "origin_channel": 0,
+            "confluence_score": 75,
+        }
+
+    def test_save_and_load_active(self):
+        init_db()
+        sig_data = self._make_signal_data()
+        save_signal(sig_data)
+        rows = load_active_signals()
+        assert len(rows) == 1
+        assert rows[0]["symbol"] == "BTC"
+        assert rows[0]["confluence_score"] == 75
+
+    def test_save_upsert(self):
+        init_db()
+        sig_data = self._make_signal_data()
+        save_signal(sig_data)
+        # Update via upsert
+        sig_data["confluence_score"] = 85
+        save_signal(sig_data)
+        rows = load_active_signals()
+        assert len(rows) == 1
+        assert rows[0]["confluence_score"] == 85
+
+    def test_load_active_excludes_closed(self):
+        init_db()
+        sig_data = self._make_signal_data("OPEN-001")
+        save_signal(sig_data)
+        closed_data = self._make_signal_data("CLOSED-001")
+        closed_data["closed"] = True
+        closed_data["closed_at"] = time.time()
+        save_signal(closed_data)
+        rows = load_active_signals()
+        assert len(rows) == 1
+        assert rows[0]["id"] == "OPEN-001"
+
+    def test_update_signal(self):
+        init_db()
+        sig_data = self._make_signal_data()
+        save_signal(sig_data)
+        update_signal("CRUD-001", {"closed": 1, "close_reason": "tp1"})
+        with _get_conn() as conn:
+            row = conn.execute("SELECT * FROM signals WHERE id='CRUD-001'").fetchone()
+        assert row["closed"] == 1
+        assert row["close_reason"] == "tp1"
+
+    def test_update_signal_invalid_column_ignored(self):
+        init_db()
+        sig_data = self._make_signal_data()
+        save_signal(sig_data)
+        # Should not raise, but should not update invalid column
+        update_signal("CRUD-001", {"nonexistent_col": "bad"})
+        rows = load_active_signals()
+        assert len(rows) == 1  # signal unchanged
+
+    def test_update_signal_empty_updates(self):
+        init_db()
+        sig_data = self._make_signal_data()
+        save_signal(sig_data)
+        # Empty updates should be a no-op
+        update_signal("CRUD-001", {})
+        rows = load_active_signals()
+        assert len(rows) == 1

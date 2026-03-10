@@ -20,6 +20,9 @@ env/
 
 # Dashboard persistence (runtime data — not source)
 dashboard.json
+# SQLite databases (runtime data — not source)
+*.db
+data/*.db
 
 # pytest
 .pytest_cache/
