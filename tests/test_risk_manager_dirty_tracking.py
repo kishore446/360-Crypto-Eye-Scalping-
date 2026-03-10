@@ -126,10 +126,12 @@ class TestDirtyTracking:
 
         assert len(saved_ids) == 2
 
-    def test_stale_close_marks_dirty(self):
-        """Stale-close in update_prices must mark the signal dirty."""
+    def test_stale_close_does_not_happen_in_update_prices(self):
+        """BUG #3 fix: update_prices() must NOT perform stale-close.
+        Stale detection is exclusively owned by AutoCloseMonitor so that
+        per-channel stale-hour overrides (CH4 Spot = 24 h, etc.) are respected."""
         sig = self.rm.add_signal(_make_signal("BTC", Side.LONG))
-        # Make it stale
+        # Make it stale per the global threshold
         sig.opened_at = time.time() - (4 + 1) * 3600  # >4h ago
 
         saved_ids = []
@@ -142,5 +144,5 @@ class TestDirtyTracking:
         with patch("bot.database.save_signal", side_effect=capture_save):
             self.rm.update_prices({"BTC": 100.0})
 
-        assert len(saved_ids) >= 1
-        assert sig.closed
+        # Signal must remain open — AutoCloseMonitor owns stale-close logic
+        assert not sig.closed

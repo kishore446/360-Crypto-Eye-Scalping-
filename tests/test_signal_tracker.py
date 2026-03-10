@@ -268,3 +268,56 @@ class TestAdaptiveAtrFallback:
         trail_sl = SignalTracker._compute_trail_sl(signal, 90000.0)
         # Should use ATR=100, not 0.5% fallback (450)
         assert trail_sl == pytest.approx(90000.0 - 100.0)
+
+
+# ── BUG #1: auto_close_active flag skips TP/SL detection ─────────────────────
+
+class TestAutoCloseActiveFlag:
+    """When auto_close_active=True, SignalTracker must skip TP/SL detection."""
+
+    def setup_method(self):
+        self.tracker = SignalTracker()
+        self.tracker.auto_close_active = True
+
+    def test_tp1_suppressed_when_auto_close_active(self):
+        """TP1 must NOT be emitted when AutoCloseMonitor is the sole TP/SL owner."""
+        signal = _make_signal(side=Side.LONG)
+        msgs = self.tracker.check_signal(signal, current_price=107.5)
+        assert not any("TP1" in m for m in msgs), (
+            "TP1 should not fire from SignalTracker when auto_close_active=True"
+        )
+
+    def test_sl_suppressed_when_auto_close_active(self):
+        """SL must NOT be emitted when AutoCloseMonitor is the sole TP/SL owner."""
+        signal = _make_signal(side=Side.LONG)
+        msgs = self.tracker.check_signal(signal, current_price=95.0)  # at SL level
+        assert not any("SL" in m for m in msgs), (
+            "SL should not fire from SignalTracker when auto_close_active=True"
+        )
+
+    def test_short_tp_suppressed_when_auto_close_active(self):
+        """SHORT TP must NOT be emitted when auto_close_active=True."""
+        signal = _make_signal(
+            side=Side.SHORT,
+            entry_mid=100.0,
+            stop_loss=105.0,
+            tp1=92.5,
+            tp2=87.5,
+            tp3=80.0,
+        )
+        msgs = self.tracker.check_signal(signal, current_price=92.5)
+        assert not any("TP1" in m for m in msgs)
+
+    def test_flag_default_false(self):
+        """auto_close_active should default to False on a new SignalTracker."""
+        tracker = SignalTracker()
+        assert tracker.auto_close_active is False
+
+    def test_tp_sl_fires_normally_when_flag_false(self):
+        """When auto_close_active is False (default), TP/SL detection is active."""
+        tracker = SignalTracker()
+        signal = _make_signal(side=Side.LONG)
+        msgs = tracker.check_signal(signal, current_price=107.5)
+        assert any("TP1" in m for m in msgs)
+
+
