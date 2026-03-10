@@ -1827,8 +1827,8 @@ def _seed_historical_candles(symbols: list[str]) -> None:
         with concurrent.futures.ThreadPoolExecutor(max_workers=BATCH_SIZE) as executor:
             list(executor.map(_seed_one, batch))
         if i + BATCH_SIZE < total:
-            time.sleep(5.0)  # inter-batch pause to stay within rate limits
-        if (i + BATCH_SIZE) % 50 == 0:
+            time.sleep(12.0)  # ~600 weight/min (3×4×10=120/batch), safely under 1,200 limit
+        if (i + BATCH_SIZE) % 25 == 0:
             logger.info("Seeded ~%d/%d pairs…", min(i + BATCH_SIZE, total), total)
 
     logger.info("Historical candle seeding complete.")
@@ -1865,8 +1865,8 @@ def _seed_spot_historical_candles(pairs: list[dict]) -> None:
         with concurrent.futures.ThreadPoolExecutor(max_workers=BATCH_SIZE) as executor:
             list(executor.map(_seed_one_spot, batch))
         if i + BATCH_SIZE < total:
-            time.sleep(5.0)  # inter-batch pause to stay within rate limits
-        if (i + BATCH_SIZE) % 50 == 0:
+            time.sleep(12.0)  # ~600 weight/min (3×4×10=120/batch), safely under 1,200 limit
+        if (i + BATCH_SIZE) % 25 == 0:
             logger.info("Seeded ~%d/%d spot pairs…", min(i + BATCH_SIZE, total), total)
 
     logger.info("Spot historical candle seeding complete.")
