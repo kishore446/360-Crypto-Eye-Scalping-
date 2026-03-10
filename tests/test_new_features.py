@@ -246,7 +246,13 @@ def test_tp_sequential_tracking_tp2_gap(monitor):
 
 
 def test_tp_sequential_tracking_tp3_gap(monitor):
-    """When price jumps to TP3, TP1 → TP2 → TP3 are returned in order."""
+    """When price gaps past TP3 with no prior partial hits, close directly at TP3.
+
+    BUG #2 fix: a single-tick gap past TP3 (no prior tp_hit entries) should
+    produce one TP3 close immediately rather than a slow sequential TP1→TP2→TP3
+    spread over multiple 10-second polling ticks.  This avoids reporting wrong
+    exit prices (TP1 price when actual fill is far beyond TP3).
+    """
     result = _make_signal_result(tp1=110.0, tp2=115.0, tp3=120.0)
     signal = _make_active_signal(result)
 
@@ -257,7 +263,8 @@ def test_tp_sequential_tracking_tp3_gap(monitor):
             break
         outcomes.append(close.outcome)
 
-    assert outcomes == ["TP1", "TP2", "TP3"]
+    # Gap past TP3 with no prior hits → single TP3 close (not sequential TP1→TP2→TP3)
+    assert outcomes == ["TP3"]
 
 
 def test_tp_tracking_cleared_on_close(monitor):

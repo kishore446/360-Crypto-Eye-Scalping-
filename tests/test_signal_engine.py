@@ -910,6 +910,9 @@ class TestScoreNormalisation:
         assert "Score: 100/100" in msg
 
     def test_mid_raw_score_normalised(self):
+        # confluence_score is now already normalised to 0-100 by compute_confluence_score().
+        # Setting confluence_score=50 means "50% quality signal" and format_message()
+        # should display it directly as Score: 50/100 (no further division needed).
         sig = SignalResult(
             symbol="ETH",
             side=Side.SHORT,
@@ -925,10 +928,9 @@ class TestScoreNormalisation:
             leverage_min=10,
             leverage_max=20,
             signal_id="SIG-TEST",
-            confluence_score=75,
+            confluence_score=50,  # 50/100 normalised score (was: raw 75 out of 150)
         )
         msg = sig.format_message()
-        # Normalised: round(75/150*100) = 50
         assert "Score: 50/100" in msg
 
     def test_zero_score_omitted(self):
