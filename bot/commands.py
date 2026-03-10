@@ -117,15 +117,15 @@ def format_learn_command(term: str) -> str:
 
     Looks up *term* in the education module's GLOSSARY.
     """
-    from bot.channels.education import lookup_glossary
+    from bot.channels.education import GLOSSARY, lookup_glossary
 
     definition = lookup_glossary(term)
     if definition is None:
-        available = ", ".join(sorted(["FVG", "OB", "MSS", "BOS", "RSI", "OI", "FR", "ATR", "RR"]))
+        available = ", ".join(sorted(GLOSSARY.keys()))
         return (
             f"❓ Unknown term: '{term}'\n\n"
             f"Try: /learn FVG, /learn OB, /learn RSI, etc.\n"
-            f"Common terms: {available}"
+            f"Available terms: {available}"
         )
     term_upper = term.strip().upper()
     return f"📖 {term_upper}\n──────────────────────────\n{definition}"

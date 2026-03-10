@@ -593,19 +593,22 @@ def detect_pattern_btc_4h(candles: list[dict]) -> PatternResult:
 
 # Module-level counter persisted across calls (rotates through lessons)
 _lesson_index: int = 0
+_lesson_lock = __import__("threading").Lock()
 
 
-def get_next_lesson() -> dict[str, str]:
-    """Return the next lesson in the rotation, cycling back to start."""
+def get_next_lesson() -> tuple[dict[str, str], int]:
+    """Return the next (lesson, lesson_number) in the rotation, cycling back to start."""
     global _lesson_index
-    lesson = LESSONS[_lesson_index % len(LESSONS)]
-    _lesson_index = (_lesson_index + 1) % len(LESSONS)
-    return lesson
+    with _lesson_lock:
+        idx = _lesson_index % len(LESSONS)
+        lesson = LESSONS[idx]
+        _lesson_index = (_lesson_index + 1) % len(LESSONS)
+    return lesson, idx + 1  # 1-based lesson number
 
 
 def format_lesson_message(lesson: dict[str, str], lesson_number: Optional[int] = None) -> str:
     """Return a Telegram-formatted lesson message."""
-    num = lesson_number if lesson_number is not None else (_lesson_index % len(LESSONS))
+    num = lesson_number if lesson_number is not None else 1
     pro_tip = lesson.get("pro_tip", "")
     related = lesson.get("related", "")
     lines = [

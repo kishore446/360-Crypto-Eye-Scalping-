@@ -1,7 +1,7 @@
 """Tests for bot/channels/vip.py"""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -253,7 +253,7 @@ class TestSignalReplay:
         trade.symbol = symbol
         trade.pnl_pct = pnl
         trade.side = side
-        trade.closed_at = datetime.utcnow() - timedelta(days=days_ago)
+        trade.closed_at = datetime.now(timezone.utc) - timedelta(days=days_ago)
         return trade
 
     def test_empty_dashboard(self):

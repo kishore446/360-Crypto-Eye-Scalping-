@@ -46,10 +46,17 @@ class TestFormatOiHeatmap:
         # 15 symbols, only top 10 by absolute value should appear
         oi = {f"TOKEN{i}USDT": float(i) for i in range(1, 16)}
         msg = format_oi_heatmap(oi)
-        # The lowest value token (TOKEN1 with value 1.0) should NOT appear
-        # while the highest ones should
-        assert "TOKEN15" in msg  # top by abs value
-        assert "TOKEN1USDT".replace("USDT", "") not in msg or msg.count("TOKEN") <= 11
+        # Count data lines (lines with emoji indicators)
+        data_lines = [
+            line for line in msg.split("\n")
+            if line.strip() and any(e in line for e in ("🔥", "⚡", "📊", "➡️"))
+            and "Highest" not in line
+        ]
+        assert len(data_lines) == 10
+        # Top token by absolute value should be present
+        assert "TOKEN15" in msg
+        # TOKEN5 (value 5.0) should NOT appear — it's the 11th by abs value
+        assert "TOKEN5 " not in msg
 
     def test_sorted_by_absolute_change(self):
         oi = {"BTCUSDT": 3.0, "ETHUSDT": -15.0, "SOLUSDT": 8.0}

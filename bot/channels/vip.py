@@ -5,8 +5,9 @@ and signal performance replay for premium subscribers.
 """
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 try:
@@ -30,11 +31,12 @@ class PortfolioEntry:
     symbol: str
     quantity: float
     entry_price: float
-    added_at: datetime = field(default_factory=datetime.utcnow)
+    added_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 # In-memory storage keyed by user chat_id
 _portfolios: dict[int, list[PortfolioEntry]] = {}
+_portfolio_lock = threading.Lock()
 
 
 def add_position(
@@ -45,20 +47,21 @@ def add_position(
 ) -> None:
     """Add or update a portfolio position for *chat_id*."""
     symbol = symbol.upper()
-    entries = _portfolios.setdefault(chat_id, [])
-    # Update existing symbol if present
-    for entry in entries:
-        if entry.symbol == symbol:
-            entry.quantity = quantity
-            entry.entry_price = entry_price
-            entry.added_at = datetime.utcnow()
-            return
-    if len(entries) >= VIP_MAX_PORTFOLIO_ENTRIES:
-        raise ValueError(
-            f"Portfolio limit reached ({VIP_MAX_PORTFOLIO_ENTRIES} positions). "
-            "Remove a position first."
-        )
-    entries.append(PortfolioEntry(symbol=symbol, quantity=quantity, entry_price=entry_price))
+    with _portfolio_lock:
+        entries = _portfolios.setdefault(chat_id, [])
+        # Update existing symbol if present
+        for entry in entries:
+            if entry.symbol == symbol:
+                entry.quantity = quantity
+                entry.entry_price = entry_price
+                entry.added_at = datetime.now(timezone.utc)
+                return
+        if len(entries) >= VIP_MAX_PORTFOLIO_ENTRIES:
+            raise ValueError(
+                f"Portfolio limit reached ({VIP_MAX_PORTFOLIO_ENTRIES} positions). "
+                "Remove a position first."
+            )
+        entries.append(PortfolioEntry(symbol=symbol, quantity=quantity, entry_price=entry_price))
 
 
 def remove_position(chat_id: int, symbol: str) -> bool:
@@ -68,10 +71,11 @@ def remove_position(chat_id: int, symbol: str) -> bool:
     Returns True if removed, False if not found.
     """
     symbol = symbol.upper()
-    entries = _portfolios.get(chat_id, [])
-    before = len(entries)
-    _portfolios[chat_id] = [e for e in entries if e.symbol != symbol]
-    return len(_portfolios[chat_id]) < before
+    with _portfolio_lock:
+        entries = _portfolios.get(chat_id, [])
+        before = len(entries)
+        _portfolios[chat_id] = [e for e in entries if e.symbol != symbol]
+        return len(_portfolios[chat_id]) < before
 
 
 def get_portfolio_summary(chat_id: int, current_prices: dict[str, float]) -> str:
@@ -202,7 +206,7 @@ class PriceAlert:
     symbol: str
     direction: str  # "above" or "below"
     target_price: float
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
@@ -216,6 +220,7 @@ class TriggeredAlert:
 
 # In-memory storage keyed by user chat_id
 _alerts: dict[int, list[PriceAlert]] = {}
+_alerts_lock = threading.Lock()
 
 
 def add_alert(
@@ -229,13 +234,14 @@ def add_alert(
     if direction not in ("above", "below"):
         raise ValueError("direction must be 'above' or 'below'")
     symbol = symbol.upper()
-    alerts = _alerts.setdefault(chat_id, [])
-    if len(alerts) >= VIP_MAX_ALERTS_PER_USER:
-        raise ValueError(
-            f"Alert limit reached ({VIP_MAX_ALERTS_PER_USER} alerts). "
-            "Remove an alert first with /alert remove <SYMBOL>."
-        )
-    alerts.append(PriceAlert(symbol=symbol, direction=direction, target_price=target_price))
+    with _alerts_lock:
+        alerts = _alerts.setdefault(chat_id, [])
+        if len(alerts) >= VIP_MAX_ALERTS_PER_USER:
+            raise ValueError(
+                f"Alert limit reached ({VIP_MAX_ALERTS_PER_USER} alerts). "
+                "Remove an alert first with /alert remove <SYMBOL>."
+            )
+        alerts.append(PriceAlert(symbol=symbol, direction=direction, target_price=target_price))
 
 
 def remove_alert(chat_id: int, symbol: str) -> bool:
@@ -245,10 +251,11 @@ def remove_alert(chat_id: int, symbol: str) -> bool:
     Returns True if any were removed.
     """
     symbol = symbol.upper()
-    alerts = _alerts.get(chat_id, [])
-    before = len(alerts)
-    _alerts[chat_id] = [a for a in alerts if a.symbol != symbol]
-    return len(_alerts[chat_id]) < before
+    with _alerts_lock:
+        alerts = _alerts.get(chat_id, [])
+        before = len(alerts)
+        _alerts[chat_id] = [a for a in alerts if a.symbol != symbol]
+        return len(_alerts[chat_id]) < before
 
 
 def check_alerts(current_prices: dict[str, float]) -> list[TriggeredAlert]:
@@ -259,22 +266,27 @@ def check_alerts(current_prices: dict[str, float]) -> list[TriggeredAlert]:
     *current_prices* maps symbol (e.g. "BTCUSDT" or "BTC") → price.
     """
     triggered: list[TriggeredAlert] = []
-    for chat_id, alerts in list(_alerts.items()):
-        still_pending: list[PriceAlert] = []
-        for alert in alerts:
-            symbol_key = alert.symbol if alert.symbol.endswith("USDT") else alert.symbol + "USDT"
-            price = current_prices.get(symbol_key, current_prices.get(alert.symbol))
-            if price is None:
-                still_pending.append(alert)
-                continue
-            hit = (alert.direction == "above" and price >= alert.target_price) or (
-                alert.direction == "below" and price <= alert.target_price
-            )
-            if hit:
-                triggered.append(TriggeredAlert(chat_id=chat_id, alert=alert, current_price=price))
-            else:
-                still_pending.append(alert)
-        _alerts[chat_id] = still_pending
+    with _alerts_lock:
+        for chat_id, alerts in list(_alerts.items()):
+            still_pending: list[PriceAlert] = []
+            for alert in alerts:
+                symbol_key = (
+                    alert.symbol if alert.symbol.endswith("USDT") else alert.symbol + "USDT"
+                )
+                price = current_prices.get(symbol_key, current_prices.get(alert.symbol))
+                if price is None:
+                    still_pending.append(alert)
+                    continue
+                hit = (alert.direction == "above" and price >= alert.target_price) or (
+                    alert.direction == "below" and price <= alert.target_price
+                )
+                if hit:
+                    triggered.append(
+                        TriggeredAlert(chat_id=chat_id, alert=alert, current_price=price)
+                    )
+                else:
+                    still_pending.append(alert)
+            _alerts[chat_id] = still_pending
     return triggered
 
 
@@ -296,7 +308,7 @@ def format_signal_replay(dashboard: object, days: int = 7) -> str:
     if not trades:
         return "📈 No signals in the replay window."
 
-    cutoff = datetime.utcnow()
+    cutoff = datetime.now(timezone.utc)
     recent = []
     for trade in trades:
         closed_at = getattr(trade, "closed_at", None)
@@ -307,6 +319,9 @@ def format_signal_replay(dashboard: object, days: int = 7) -> str:
                 closed_at = datetime.fromisoformat(closed_at)
             except ValueError:
                 continue
+        # Handle both naive and aware datetimes for compatibility
+        if closed_at.tzinfo is None:
+            closed_at = closed_at.replace(tzinfo=timezone.utc)
         if (cutoff - closed_at).days <= days:
             recent.append(trade)
 

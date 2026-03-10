@@ -26,10 +26,12 @@ class TestLessonRotation:
             assert "content" in lesson
             assert "category" in lesson
 
-    def test_get_next_lesson_returns_dict(self):
-        lesson = get_next_lesson()
+    def test_get_next_lesson_returns_tuple(self):
+        lesson, num = get_next_lesson()
         assert isinstance(lesson, dict)
         assert "title" in lesson
+        assert isinstance(num, int)
+        assert num >= 1
 
     def test_lesson_rotation_cycles(self):
         """After iterating all lessons, it wraps back to the start."""
@@ -38,9 +40,11 @@ class TestLessonRotation:
         # Reset index to a known position near end
         start_index = len(LESSONS) - 1
         edu_mod._lesson_index = start_index
-        _last = get_next_lesson()
-        _first_again = get_next_lesson()
+        _last, last_num = get_next_lesson()
+        _first_again, first_num = get_next_lesson()
         assert edu_mod._lesson_index == 1  # wrapped
+        assert last_num == len(LESSONS)  # last lesson is 1-based
+        assert first_num == 1  # first lesson again
 
     def test_format_lesson_message_structure(self):
         lesson = LESSONS[0]

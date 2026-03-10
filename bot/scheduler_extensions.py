@@ -44,6 +44,15 @@ except Exception:  # pragma: no cover
     TELEGRAM_CHANNEL_ID_VIP = 0
     TELEGRAM_CHANNEL_ID_WHALE = 0
 
+# ── Shared symbol lists for scheduler jobs ────────────────────────────────────
+# Used by altseason index and OI heatmap jobs. Extracted here to avoid
+# duplication and make maintenance easier.
+ALT_PROXY_SYMBOLS: list[str] = ["ETHUSDT", "BNBUSDT", "SOLUSDT", "ADAUSDT", "XRPUSDT"]
+OI_HEATMAP_SYMBOLS: list[str] = [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+    "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT",
+]
+
 
 def register_new_schedulers(
     scheduler: Any,
@@ -215,8 +224,8 @@ async def _job_education_lesson(bot_instance: Any, channel_id: int) -> None:
     try:
         from bot.channels.education import format_lesson_message, get_next_lesson
 
-        lesson = get_next_lesson()
-        msg = format_lesson_message(lesson)
+        lesson, lesson_num = get_next_lesson()
+        msg = format_lesson_message(lesson, lesson_number=lesson_num)
         await bot_instance.send_message(chat_id=channel_id, text=msg)
     except Exception as exc:
         logger.warning("CH8 education lesson job failed: %s", exc)
@@ -256,9 +265,8 @@ async def _job_altseason_index(
         btc_7d = float(btc_ticker.get("percentage", 0) or 0) if btc_ticker else 0.0
 
         # Sample alt returns from a small proxy set
-        _ALT_PROXY = ["ETHUSDT", "BNBUSDT", "SOLUSDT", "ADAUSDT", "XRPUSDT"]
         alt_returns = []
-        for sym in _ALT_PROXY:
+        for sym in ALT_PROXY_SYMBOLS:
             try:
                 t = await exchange.fetch_ticker(sym)
                 if t:
@@ -313,12 +321,8 @@ async def _job_oi_heatmap(
         from bot.insights.oi_heatmap import format_oi_heatmap
 
         # Fetch OI change proxy using 24h volume change
-        _OI_SYMBOLS = [
-            "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
-            "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT",
-        ]
         oi_changes: dict[str, float] = {}
-        for sym in _OI_SYMBOLS:
+        for sym in OI_HEATMAP_SYMBOLS:
             try:
                 ticker = await exchange.fetch_ticker(sym)
                 if ticker:
