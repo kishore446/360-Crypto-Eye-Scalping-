@@ -150,13 +150,17 @@ class Dashboard:
     def profit_factor(self) -> float:
         """
         Return the Profit Factor = Gross Profit / Gross Loss.
-        Returns 0.0 (undefined) when there are no closed losing trades to divide by.
+
+        Returns ``float('inf')`` when there are no losing trades (i.e. a perfect
+        record — every signal closed as a win or break-even).  Display callers
+        should format infinity as ``"999.99"`` or ``"∞"`` rather than showing the
+        raw Python ``inf`` representation.
         """
         closed = [r for r in self._results if r.outcome in ("WIN", "LOSS")]
         gross_profit = sum(r.pnl_pct for r in closed if r.pnl_pct > 0)
         gross_loss = abs(sum(r.pnl_pct for r in closed if r.pnl_pct < 0))
         if gross_loss == 0:
-            return 0.0
+            return float("inf") if gross_profit > 0 else 0.0
         return round(gross_profit / gross_loss, 4)
 
     def avg_risk_reward(self) -> float:
@@ -360,18 +364,20 @@ class Dashboard:
         hold_time = self.average_holding_time()
         w_streak = self.win_streak()
         l_streak = self.loss_streak()
+        pf = self.profit_factor()
+        pf_str = "∞" if math.isinf(pf) else f"{pf:.2f}"
         lines = [
             "📊 360 EYE SCALP — LIVE DASHBOARD",
             "─────────────────────────────────",
             f"Total Closed Trades : {self.total_trades()}",
             f"  → Stale Closed    : {self.stale_count()}",
-            f"Win Rate (strict)    : {self.win_rate():.2f}%",
-            f"Win Rate (protected) : {self.protected_win_rate():.2f}%  (BE counted as win)",
+            f"Win Rate             : {self.protected_win_rate():.2f}%  (BE counted as win)",
+            f"  → Strict Win Rate  : {self.win_rate():.2f}%  (BE excluded)",
             f"  → 5m entries       : {self.win_rate('5m'):.2f}%",
             f"  → 15m entries      : {self.win_rate('15m'):.2f}%",
             f"  → 1h entries       : {self.win_rate('1h'):.2f}%",
             f"Avg R:R Realised     : {self.avg_risk_reward():.2f}R",
-            f"Profit Factor        : {self.profit_factor():.2f}",
+            f"Profit Factor        : {pf_str}",
             f"Sharpe Ratio         : {sharpe:.4f}",
             f"Max Drawdown         : {drawdown:.2f}%",
             f"Avg Holding Time     : {hold_time:.2f}h",
@@ -519,7 +525,10 @@ class Dashboard:
             # Add rolling profit factor
             wins_pnl = sum(r.pnl_pct for r in subset if r.pnl_pct > 0 and r.outcome in ("WIN", "LOSS", "BE"))
             loss_pnl = abs(sum(r.pnl_pct for r in subset if r.pnl_pct < 0 and r.outcome in ("WIN", "LOSS", "BE")))
-            stats["profit_factor"] = round(wins_pnl / loss_pnl, 4) if loss_pnl > 0 else 0.0
+            if loss_pnl == 0:
+                stats["profit_factor"] = float("inf") if wins_pnl > 0 else 0.0
+            else:
+                stats["profit_factor"] = round(wins_pnl / loss_pnl, 4)
             result[tier] = stats
         return result
 
@@ -527,7 +536,8 @@ class Dashboard:
         """
         Return gross profit / gross loss (Profit Factor) per channel tier.
 
-        Returns 0.0 for channels with no losing trades.
+        Returns ``float('inf')`` for channels where all trades are wins (no losses),
+        and ``0.0`` for channels with no closed trades at all.
         """
         closed = [r for r in self._results if r.outcome in ("WIN", "LOSS", "BE")]
         tiers = ["CH1_HARD", "CH2_MEDIUM", "CH3_EASY", "CH4_SPOT", "AGGREGATE"]
@@ -536,7 +546,10 @@ class Dashboard:
             subset = [r for r in closed if r.channel_tier == tier]
             gross_profit = sum(r.pnl_pct for r in subset if r.pnl_pct > 0)
             gross_loss = abs(sum(r.pnl_pct for r in subset if r.pnl_pct < 0))
-            result[tier] = round(gross_profit / gross_loss, 4) if gross_loss > 0 else 0.0
+            if gross_loss == 0:
+                result[tier] = float("inf") if gross_profit > 0 else 0.0
+            else:
+                result[tier] = round(gross_profit / gross_loss, 4)
         return result
 
     def per_channel_tp_distribution(self) -> dict[str, dict]:

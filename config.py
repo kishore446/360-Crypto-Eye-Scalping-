@@ -63,6 +63,15 @@ try:
         stale_signal_hours: int = 4
         be_trigger_fraction: float = 0.70
 
+        # Per-channel stale thresholds (override stale_signal_hours per channel type)
+        ch1_stale_hours: int = 4    # Hard scalp — 5m execution, 4 h is enough
+        ch2_stale_hours: int = 6    # Medium scalp — slightly longer horizon
+        ch3_stale_hours: int = 8    # Easy breakout — may need time to develop
+        ch4_stale_hours: int = 24   # Spot signals — intended for multi-hour holds
+
+        # AutoCloseMonitor poll interval (seconds); minimum 5
+        auto_close_poll_seconds: int = 10
+
         # ── News Filter ──────────────────────────────────────────────────────
         news_skip_window_minutes: int = 60
         coinmarketcal_api_key: str = ""
@@ -103,22 +112,22 @@ try:
         # ── Channel-specific settings ─────────────────────────────────────────
         ch1_leverage_min: int = 15
         ch1_leverage_max: int = 20
-        ch1_tp1_rr: float = 1.5
-        ch1_tp2_rr: float = 2.5
-        ch1_tp3_rr: float = 4.0
+        ch1_tp1_rr: float = 1.2
+        ch1_tp2_rr: float = 2.0
+        ch1_tp3_rr: float = 3.0
         ch1_min_confluence: int = 70
         ch2_leverage_min: int = 10
         ch2_leverage_max: int = 15
-        ch2_tp1_rr: float = 1.2
-        ch2_tp2_rr: float = 2.0
-        ch2_tp3_rr: float = 3.0
+        ch2_tp1_rr: float = 1.5
+        ch2_tp2_rr: float = 2.5
+        ch2_tp3_rr: float = 3.5
         ch2_min_confluence: int = 50
         ch2_news_window_minutes: int = 30
         ch3_leverage_min: int = 5
         ch3_leverage_max: int = 10
-        ch3_tp1_rr: float = 1.0
-        ch3_tp2_rr: float = 1.5
-        ch3_tp3_rr: float = 2.5
+        ch3_tp1_rr: float = 1.5
+        ch3_tp2_rr: float = 2.5
+        ch3_tp3_rr: float = 4.0
         ch3_min_confluence: int = 35
 
         # ── RSI Divergence ────────────────────────────────────────────────────
@@ -304,6 +313,11 @@ try:
     MAX_SAME_SIDE_SIGNALS: int = settings.max_same_side_signals
     STALE_SIGNAL_HOURS: int = settings.stale_signal_hours
     BE_TRIGGER_FRACTION: float = settings.be_trigger_fraction
+    CH1_STALE_HOURS: int = settings.ch1_stale_hours
+    CH2_STALE_HOURS: int = settings.ch2_stale_hours
+    CH3_STALE_HOURS: int = settings.ch3_stale_hours
+    CH4_STALE_HOURS: int = settings.ch4_stale_hours
+    AUTO_CLOSE_POLL_SECONDS: int = settings.auto_close_poll_seconds
 
     NEWS_SKIP_WINDOW_MINUTES: int = settings.news_skip_window_minutes
     COINMARKETCAL_API_KEY: str = settings.coinmarketcal_api_key
@@ -493,6 +507,11 @@ except ImportError:
     MAX_SAME_SIDE_SIGNALS: int = 3
     STALE_SIGNAL_HOURS: int = int(os.environ.get("STALE_SIGNAL_HOURS", "4"))
     BE_TRIGGER_FRACTION: float = 0.70
+    CH1_STALE_HOURS: int = int(os.environ.get("CH1_STALE_HOURS", "4"))
+    CH2_STALE_HOURS: int = int(os.environ.get("CH2_STALE_HOURS", "6"))
+    CH3_STALE_HOURS: int = int(os.environ.get("CH3_STALE_HOURS", "8"))
+    CH4_STALE_HOURS: int = int(os.environ.get("CH4_STALE_HOURS", "24"))
+    AUTO_CLOSE_POLL_SECONDS: int = max(5, int(os.environ.get("AUTO_CLOSE_POLL_SECONDS", "10")))
     NEWS_SKIP_WINDOW_MINUTES: int = 60
     COINMARKETCAL_API_KEY: str = os.environ.get("COINMARKETCAL_API_KEY", "")
     SESSION_FILTER_ENABLED: bool = os.environ.get("SESSION_FILTER_ENABLED", "true").lower() in ("true", "1", "yes")
@@ -522,22 +541,22 @@ except ImportError:
     NEWS_FAIL_SAFE_WINDOW_MINUTES: int = int(os.environ.get("NEWS_FAIL_SAFE_WINDOW_MINUTES", "60"))
     CH1_LEVERAGE_MIN: int = int(os.environ.get("CH1_LEVERAGE_MIN", "15"))
     CH1_LEVERAGE_MAX: int = int(os.environ.get("CH1_LEVERAGE_MAX", "20"))
-    CH1_TP1_RR: float = float(os.environ.get("CH1_TP1_RR", "1.5"))
-    CH1_TP2_RR: float = float(os.environ.get("CH1_TP2_RR", "2.5"))
-    CH1_TP3_RR: float = float(os.environ.get("CH1_TP3_RR", "4.0"))
+    CH1_TP1_RR: float = float(os.environ.get("CH1_TP1_RR", "1.2"))
+    CH1_TP2_RR: float = float(os.environ.get("CH1_TP2_RR", "2.0"))
+    CH1_TP3_RR: float = float(os.environ.get("CH1_TP3_RR", "3.0"))
     CH1_MIN_CONFLUENCE: int = int(os.environ.get("CH1_MIN_CONFLUENCE", "70"))
     CH2_LEVERAGE_MIN: int = int(os.environ.get("CH2_LEVERAGE_MIN", "10"))
     CH2_LEVERAGE_MAX: int = int(os.environ.get("CH2_LEVERAGE_MAX", "15"))
-    CH2_TP1_RR: float = float(os.environ.get("CH2_TP1_RR", "1.2"))
-    CH2_TP2_RR: float = float(os.environ.get("CH2_TP2_RR", "2.0"))
-    CH2_TP3_RR: float = float(os.environ.get("CH2_TP3_RR", "3.0"))
+    CH2_TP1_RR: float = float(os.environ.get("CH2_TP1_RR", "1.5"))
+    CH2_TP2_RR: float = float(os.environ.get("CH2_TP2_RR", "2.5"))
+    CH2_TP3_RR: float = float(os.environ.get("CH2_TP3_RR", "3.5"))
     CH2_MIN_CONFLUENCE: int = int(os.environ.get("CH2_MIN_CONFLUENCE", "50"))
     CH2_NEWS_WINDOW_MINUTES: int = int(os.environ.get("CH2_NEWS_WINDOW_MINUTES", "30"))
     CH3_LEVERAGE_MIN: int = int(os.environ.get("CH3_LEVERAGE_MIN", "5"))
     CH3_LEVERAGE_MAX: int = int(os.environ.get("CH3_LEVERAGE_MAX", "10"))
-    CH3_TP1_RR: float = float(os.environ.get("CH3_TP1_RR", "1.0"))
-    CH3_TP2_RR: float = float(os.environ.get("CH3_TP2_RR", "1.5"))
-    CH3_TP3_RR: float = float(os.environ.get("CH3_TP3_RR", "2.5"))
+    CH3_TP1_RR: float = float(os.environ.get("CH3_TP1_RR", "1.5"))
+    CH3_TP2_RR: float = float(os.environ.get("CH3_TP2_RR", "2.5"))
+    CH3_TP3_RR: float = float(os.environ.get("CH3_TP3_RR", "4.0"))
     CH3_MIN_CONFLUENCE: int = int(os.environ.get("CH3_MIN_CONFLUENCE", "35"))
 
     RSI_DIVERGENCE_PERIOD: int = int(os.environ.get("RSI_DIVERGENCE_PERIOD", "14"))

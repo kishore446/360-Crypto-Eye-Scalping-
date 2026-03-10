@@ -90,7 +90,7 @@ class AutoCloseMonitor:
         cooldown_manager: "CooldownManager",
         market_data_store: "MarketDataStore",
         signal_router: "SignalRouter",
-        poll_interval: float = 30.0,
+        poll_interval: float = 10.0,
         bot_state: "object | None" = None,
         telegram_bot: "object | None" = None,
     ) -> None:
@@ -143,12 +143,39 @@ class AutoCloseMonitor:
 
     async def _check_signals(self) -> None:
         """Main monitoring tick — check all open signals against current prices."""
+        # Load per-channel stale hours once per tick (avoids repeated imports)
+        try:
+            from config import (
+                CH1_STALE_HOURS,
+                CH2_STALE_HOURS,
+                CH3_STALE_HOURS,
+                CH4_STALE_HOURS,
+            )
+        except ImportError:
+            CH1_STALE_HOURS = CH2_STALE_HOURS = CH3_STALE_HOURS = CH4_STALE_HOURS = None
+
         for signal in list(self._risk_manager.active_signals):
             symbol = signal.result.symbol
             current_price = self._market_data.get_price(symbol)
 
+            # ── per-channel stale threshold ───────────────────────────────────
+            tier = None
+            if signal.origin_channel:
+                tier_obj = self._router.get_tier_for_channel_id(signal.origin_channel)
+                if tier_obj is not None:
+                    tier = tier_obj.value.upper()
+            stale_hours_override: Optional[int] = None
+            if tier == "CH1_HARD":
+                stale_hours_override = CH1_STALE_HOURS
+            elif tier == "CH2_MEDIUM":
+                stale_hours_override = CH2_STALE_HOURS
+            elif tier == "CH3_EASY":
+                stale_hours_override = CH3_STALE_HOURS
+            elif tier == "CH4_SPOT":
+                stale_hours_override = CH4_STALE_HOURS
+
             # ── stale check ──────────────────────────────────────────────────
-            if signal.is_stale():
+            if signal.is_stale(stale_hours=stale_hours_override):
                 # If we have a live price and it is within the entry zone, the
                 # subscriber may already be in a position — skip the stale close
                 # this tick and let the next natural tick decide.
@@ -353,8 +380,16 @@ class AutoCloseMonitor:
     # ── close processing ──────────────────────────────────────────────────────
 
     async def _process_close(self, signal: "ActiveSignal", close_result: CloseResult) -> None:
-        """Close signal, record result, update cooldown, and broadcast."""
+        """
+        Process a TP/SL/STALE close event.
+
+        For TP1 and TP2 outcomes the signal is **not** fully closed — instead a
+        partial WIN is recorded in the dashboard and the signal continues to be
+        monitored.  On TP1 the SL is moved to break-even.  Only TP3, SL, and
+        STALE outcomes trigger a full close.
+        """
         sig_id = signal.result.signal_id
+        outcome = close_result.outcome
 
         # ── Partial position tracking ─────────────────────────────────────────
         pp = self._partial_positions.get(sig_id)
@@ -367,30 +402,66 @@ class AutoCloseMonitor:
             self._partial_positions[sig_id] = pp
 
         pp.add_exit(
-            level=close_result.outcome,
+            level=outcome,
             exit_price=close_result.exit_price,
         )
 
-        # Compute composite PnL when partial exits are present
         partial_exits_json = pp.to_json() if pp.has_exits() else ""
         composite_pnl = pp.composite_pnl() if pp.has_exits() else close_result.pnl_pct
 
-        # Clean up partial position tracker and TP level tracker
+        # ── Partial close: TP1 or TP2 — keep signal alive ────────────────────
+        if outcome in ("TP1", "TP2"):
+            if outcome == "TP1":
+                # Move SL to break-even so the remaining position is risk-free.
+                # trigger_be() also sets signal.result.stop_loss = entry_mid so
+                # all downstream consumers (trailing SL job, next tick check)
+                # see the updated floor immediately.
+                signal.trigger_be()
+
+            # Record partial WIN in dashboard
+            from bot.dashboard import TradeResult
+            partial_result = TradeResult(
+                symbol=close_result.symbol,
+                side=close_result.side,
+                entry_price=close_result.entry_price,
+                exit_price=close_result.exit_price,
+                stop_loss=signal.result.stop_loss,
+                tp1=signal.result.tp1,
+                tp2=signal.result.tp2,
+                tp3=signal.result.tp3,
+                opened_at=close_result.opened_at,
+                closed_at=close_result.closed_at,
+                outcome="WIN",
+                pnl_pct=close_result.pnl_pct,
+                timeframe="5m",
+                channel_tier=close_result.channel_tier,
+                session=close_result.session,
+                partial_exits=partial_exits_json,
+                composite_pnl_pct=composite_pnl,
+            )
+            self._dashboard.record_result(partial_result)
+            self._cooldown.record_outcome("WIN")
+
+            # Broadcast partial-close summary; signal state is preserved
+            await self._broadcast_close(close_result, signal=signal, partial_position=pp)
+            return  # Signal stays in active_signals — monitoring continues
+
+        # ── Full close: TP3, SL, or STALE ────────────────────────────────────
         self._partial_positions.pop(sig_id, None)
         self._tp_levels_hit.pop(sig_id, None)
         self._alerted_invalidations.discard(sig_id)
 
-        self._risk_manager.close_signal(signal.result.symbol, reason=close_result.outcome.lower())
+        self._risk_manager.close_signal(signal.result.symbol, reason=outcome.lower())
 
         # Map outcome to dashboard WIN/LOSS/BE/STALE.
         # When SL is hit but break-even was already triggered, the remaining
         # position closed at entry (0% PnL on that portion) — record as "BE"
         # so the win-rate excludes it from true losses.
-        if close_result.outcome.startswith("TP"):
+        if outcome.startswith("TP"):
             dashboard_outcome = "WIN"
-        elif close_result.outcome == "SL":
+        elif outcome == "SL":
             dashboard_outcome = "BE" if signal.be_triggered else "LOSS"
-        elif close_result.outcome == "STALE":
+        elif outcome == "STALE":
             dashboard_outcome = "STALE"
         else:
             dashboard_outcome = "BE"
@@ -421,7 +492,7 @@ class AutoCloseMonitor:
         if dashboard_outcome != "STALE":
             self._cooldown.record_outcome(dashboard_outcome)
 
-        # Broadcast close summary — route to origin channel (BUG #1 fix)
+        # Broadcast close summary — route to origin channel
         await self._broadcast_close(close_result, signal=signal, partial_position=pp)
 
     # ── broadcast ─────────────────────────────────────────────────────────────

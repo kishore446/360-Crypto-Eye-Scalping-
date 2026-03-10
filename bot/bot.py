@@ -815,6 +815,12 @@ def _run_trailing_sl_job(context_or_bot=None) -> None:
             # Per the spec: "Higher Low" = min low of the last 3 candles.
             # SL only moves up (never down) for LONG.
             new_sl = min(row[3] for row in last_3)
+            # Enforce break-even floor: never move SL below entry once BE triggered
+            if sig.be_triggered:
+                new_sl = max(new_sl, sig.entry_mid)
+            # Never move SL backwards (only ratchet upward)
+            if sig.trailing_sl_price is not None:
+                new_sl = max(new_sl, sig.trailing_sl_price)
             if new_sl > current_sl:
                 sig.result.stop_loss = new_sl
                 updates.append((
@@ -827,6 +833,12 @@ def _run_trailing_sl_job(context_or_bot=None) -> None:
             # Per the spec: "Lower High" = max high of the last 3 candles.
             # SL only moves down (never up) for SHORT.
             new_sl = max(row[2] for row in last_3)
+            # Enforce break-even floor: never move SL above entry once BE triggered
+            if sig.be_triggered:
+                new_sl = min(new_sl, sig.entry_mid)
+            # Never move SL backwards (only ratchet downward)
+            if sig.trailing_sl_price is not None:
+                new_sl = min(new_sl, sig.trailing_sl_price)
             if new_sl < current_sl:
                 sig.result.stop_loss = new_sl
                 updates.append((

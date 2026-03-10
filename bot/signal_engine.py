@@ -505,6 +505,11 @@ def _compute_dynamic_rr(
     _ATR_LOW_THRESHOLD_PCT = 0.3     # ATR < 0.3% of price → tighten targets
     _ATR_HIGH_BASELINE_PCT = 1.0     # Baseline divisor for high-vol multiplier
     _MIN_TARGET_MULTIPLIER = 0.7     # Floor multiplier to avoid over-tightening
+    # Hard caps for TP ratios after combined ATR + regime adjustments
+    _TP1_MAX = 2.0
+    _TP2_MAX = 3.5
+    _TP3_MAX = 5.0
+    _MIN_TP_SPACING = 0.1            # Minimum gap between consecutive TP levels
 
     atr = calculate_atr(five_min_candles)
     if atr <= 0 or entry <= 0:
@@ -541,6 +546,16 @@ def _compute_dynamic_rr(
         atr_tp2 *= 1.2
         atr_tp3 *= 1.4
     # "UNKNOWN" / "SIDEWAYS" / others: no regime adjustment
+
+    # Hard caps — prevent unrealistic targets after combined ATR+regime scaling.
+    # Combined ATR (1.5×) × regime HIGH_VOL (1.4×) can produce TP3 up to 8.4R
+    # on a 4.0 base, which is unachievable on any scalp timeframe.
+    atr_tp1 = min(atr_tp1, _TP1_MAX)
+    atr_tp2 = min(atr_tp2, _TP2_MAX)
+    atr_tp3 = min(atr_tp3, _TP3_MAX)
+    # Ensure ordering is maintained after independent caps
+    atr_tp2 = max(atr_tp2, atr_tp1 + _MIN_TP_SPACING)
+    atr_tp3 = max(atr_tp3, atr_tp2 + _MIN_TP_SPACING)
 
     return atr_tp1, atr_tp2, atr_tp3
 

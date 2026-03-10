@@ -230,6 +230,7 @@ class TestDurationStr:
 
 @pytest.mark.asyncio
 async def test_process_close_records_dashboard(monitor):
+    """TP2 is a partial close: dashboard records WIN but signal stays alive (no close_signal)."""
     result = _make_signal_result()
     signal = _make_active_signal(result)
 
@@ -248,12 +249,95 @@ async def test_process_close_records_dashboard(monitor):
     with patch.object(monitor, "_broadcast_close", new=AsyncMock()):
         await monitor._process_close(signal, close_result)
 
+    # Dashboard must be updated with the partial WIN result
     monitor._dashboard.record_result.assert_called_once()
     call_args = monitor._dashboard.record_result.call_args[0][0]
     assert call_args.outcome == "WIN"
     assert call_args.symbol == "BTC"
     monitor._cooldown.record_outcome.assert_called_once_with("WIN")
-    monitor._risk_manager.close_signal.assert_called_once_with("BTC", reason="tp2")
+    # Signal must NOT be closed — it should continue to be monitored for TP3 / SL
+    monitor._risk_manager.close_signal.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_process_close_tp3_fully_closes_signal(monitor):
+    """TP3 is a full close: close_signal IS called and state is cleaned up."""
+    result = _make_signal_result()
+    signal = _make_active_signal(result)
+
+    close_result = CloseResult(
+        signal_id="test-id-1",
+        symbol="BTC",
+        side="LONG",
+        outcome="TP3",
+        entry_price=101.0,
+        exit_price=120.5,
+        pnl_pct=19.3,
+        opened_at=time.time() - 3600,
+        closed_at=time.time(),
+    )
+
+    with patch.object(monitor, "_broadcast_close", new=AsyncMock()):
+        await monitor._process_close(signal, close_result)
+
+    monitor._dashboard.record_result.assert_called_once()
+    call_args = monitor._dashboard.record_result.call_args[0][0]
+    assert call_args.outcome == "WIN"
+    monitor._risk_manager.close_signal.assert_called_once_with("BTC", reason="tp3")
+
+
+@pytest.mark.asyncio
+async def test_process_close_tp1_triggers_be(monitor):
+    """TP1 partial close must call trigger_be() on the signal and NOT close it."""
+    result = _make_signal_result()
+    signal = _make_active_signal(result)
+    signal.trigger_be = MagicMock()
+
+    close_result = CloseResult(
+        signal_id="test-id-1",
+        symbol="BTC",
+        side="LONG",
+        outcome="TP1",
+        entry_price=101.0,
+        exit_price=110.5,
+        pnl_pct=9.4,
+        opened_at=time.time() - 3600,
+        closed_at=time.time(),
+    )
+
+    with patch.object(monitor, "_broadcast_close", new=AsyncMock()):
+        await monitor._process_close(signal, close_result)
+
+    signal.trigger_be.assert_called_once()
+    monitor._risk_manager.close_signal.assert_not_called()
+    monitor._dashboard.record_result.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_process_close_sl_fully_closes_signal(monitor):
+    """SL hit is a full close: close_signal IS called."""
+    result = _make_signal_result()
+    signal = _make_active_signal(result)
+
+    close_result = CloseResult(
+        signal_id="test-id-1",
+        symbol="BTC",
+        side="LONG",
+        outcome="SL",
+        entry_price=101.0,
+        exit_price=95.0,
+        pnl_pct=-5.9,
+        opened_at=time.time() - 3600,
+        closed_at=time.time(),
+    )
+
+    with patch.object(monitor, "_broadcast_close", new=AsyncMock()):
+        await monitor._process_close(signal, close_result)
+
+    monitor._risk_manager.close_signal.assert_called_once_with("BTC", reason="sl")
+    monitor._dashboard.record_result.assert_called_once()
+    call_args = monitor._dashboard.record_result.call_args[0][0]
+    assert call_args.outcome == "LOSS"
 
 
 # ── Invalidation deduplication ───────────────────────────────────────────────
