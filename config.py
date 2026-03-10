@@ -228,6 +228,28 @@ try:
         backtester_enabled: bool = False
         backtester_lookback_days: int = 30
 
+        # ── CH6 Altcoin Gems ──────────────────────────────────────────────────
+        altgem_scan_interval_hours: int = 2
+        altgem_min_volume_spike: float = 3.0
+        altgem_max_24h_volume_usdt: int = 5_000_000
+
+        # ── CH8 Education ─────────────────────────────────────────────────────
+        education_lesson_hour_utc: int = 10
+        education_pattern_hour_utc: int = 16
+
+        # ── CH9 VIP ───────────────────────────────────────────────────────────
+        vip_max_portfolio_entries: int = 50
+        vip_max_alerts_per_user: int = 20
+
+        # ── Altseason Index ───────────────────────────────────────────────────
+        altseason_post_interval_hours: int = 6
+
+        # ── Sector Dashboard ──────────────────────────────────────────────────
+        sector_dashboard_hour_utc: int = 12
+
+        # ── OI Heatmap ────────────────────────────────────────────────────────
+        oi_heatmap_interval_hours: int = 4
+
         @field_validator("telegram_bot_token")
         @classmethod
         def token_not_placeholder(cls, v: str) -> str:
@@ -407,6 +429,28 @@ try:
     BACKTESTER_ENABLED: bool = settings.backtester_enabled
     BACKTESTER_LOOKBACK_DAYS: int = settings.backtester_lookback_days
 
+    # ── CH6 Altcoin Gems ──────────────────────────────────────────────────────
+    ALTGEM_SCAN_INTERVAL_HOURS: int = settings.altgem_scan_interval_hours
+    ALTGEM_MIN_VOLUME_SPIKE: float = settings.altgem_min_volume_spike
+    ALTGEM_MAX_24H_VOLUME_USDT: int = settings.altgem_max_24h_volume_usdt
+
+    # ── CH8 Education ─────────────────────────────────────────────────────────
+    EDUCATION_LESSON_HOUR_UTC: int = settings.education_lesson_hour_utc
+    EDUCATION_PATTERN_HOUR_UTC: int = settings.education_pattern_hour_utc
+
+    # ── CH9 VIP ───────────────────────────────────────────────────────────────
+    VIP_MAX_PORTFOLIO_ENTRIES: int = settings.vip_max_portfolio_entries
+    VIP_MAX_ALERTS_PER_USER: int = settings.vip_max_alerts_per_user
+
+    # ── Altseason Index ───────────────────────────────────────────────────────
+    ALTSEASON_POST_INTERVAL_HOURS: int = settings.altseason_post_interval_hours
+
+    # ── Sector Dashboard ──────────────────────────────────────────────────────
+    SECTOR_DASHBOARD_HOUR_UTC: int = settings.sector_dashboard_hour_utc
+
+    # ── OI Heatmap ────────────────────────────────────────────────────────────
+    OI_HEATMAP_INTERVAL_HOURS: int = settings.oi_heatmap_interval_hours
+
     TIMEFRAMES: dict[str, int] = {
         "1D": 1440,
         "4H": 240,
@@ -562,6 +606,28 @@ except ImportError:
     # ── Backtester Pipeline ───────────────────────────────────────────────────
     BACKTESTER_ENABLED: bool = os.environ.get("BACKTESTER_ENABLED", "false").lower() in ("true", "1", "yes")
     BACKTESTER_LOOKBACK_DAYS: int = int(os.environ.get("BACKTESTER_LOOKBACK_DAYS", "30"))
+
+    # ── CH6 Altcoin Gems ──────────────────────────────────────────────────────
+    ALTGEM_SCAN_INTERVAL_HOURS: int = int(os.environ.get("ALTGEM_SCAN_INTERVAL_HOURS", "2"))
+    ALTGEM_MIN_VOLUME_SPIKE: float = float(os.environ.get("ALTGEM_MIN_VOLUME_SPIKE", "3.0"))
+    ALTGEM_MAX_24H_VOLUME_USDT: int = int(os.environ.get("ALTGEM_MAX_24H_VOLUME_USDT", "5000000"))
+
+    # ── CH8 Education ─────────────────────────────────────────────────────────
+    EDUCATION_LESSON_HOUR_UTC: int = int(os.environ.get("EDUCATION_LESSON_HOUR_UTC", "10"))
+    EDUCATION_PATTERN_HOUR_UTC: int = int(os.environ.get("EDUCATION_PATTERN_HOUR_UTC", "16"))
+
+    # ── CH9 VIP ───────────────────────────────────────────────────────────────
+    VIP_MAX_PORTFOLIO_ENTRIES: int = int(os.environ.get("VIP_MAX_PORTFOLIO_ENTRIES", "50"))
+    VIP_MAX_ALERTS_PER_USER: int = int(os.environ.get("VIP_MAX_ALERTS_PER_USER", "20"))
+
+    # ── Altseason Index ───────────────────────────────────────────────────────
+    ALTSEASON_POST_INTERVAL_HOURS: int = int(os.environ.get("ALTSEASON_POST_INTERVAL_HOURS", "6"))
+
+    # ── Sector Dashboard ──────────────────────────────────────────────────────
+    SECTOR_DASHBOARD_HOUR_UTC: int = int(os.environ.get("SECTOR_DASHBOARD_HOUR_UTC", "12"))
+
+    # ── OI Heatmap ────────────────────────────────────────────────────────────
+    OI_HEATMAP_INTERVAL_HOURS: int = int(os.environ.get("OI_HEATMAP_INTERVAL_HOURS", "4"))
 
     TIMEFRAMES: dict[str, int] = {"1D": 1440, "4H": 240, "15m": 15, "5m": 5}
 
