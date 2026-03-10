@@ -45,12 +45,18 @@ from telegram.ext import (
 
 from bot.auto_close_monitor import AutoCloseMonitor
 from bot.backtester import Backtester, HistoricalDataFetcher
+from bot.channels import easy_breakout as _easy_breakout
+from bot.channels import hard_scalp as _hard_scalp
+from bot.channels import medium_scalp as _medium_scalp
+from bot.correlation_guard import check_correlation_risk
 from bot.dashboard import Dashboard, TradeResult
 from bot.exchange import _resilient_exchange, _spot_resilient_exchange
+from bot.funding_rate import fetch_funding_rate
 from bot.loss_streak_cooldown import CooldownManager
 from bot.news_fetcher import fetch_and_reload
 from bot.news_filter import NewsCalendar
-from bot.risk_manager import RiskManager, calculate_position_size
+from bot.risk_manager import MAX_SAME_SIDE_SIGNALS, RiskManager, calculate_position_size
+from bot.session_filter import get_current_session as _get_session
 from bot.signal_engine import (
     CandleData,
     Confidence,
@@ -153,6 +159,10 @@ auto_close_monitor = AutoCloseMonitor(
 # Reference to the main asyncio event loop (set in build_application)
 _main_loop: Optional[asyncio.AbstractEventLoop] = None
 
+# Reference to the running Application — used for shared bot instance to avoid
+# creating a new HTTP session per Telegram message.
+_application: Optional[Application] = None
+
 # Boot time — used by /status and /health to compute uptime
 _boot_time: float = time.time()
 
@@ -182,16 +192,29 @@ async def _broadcast(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
 
 
 async def _broadcast_to_channel(text: str, channel_id: int) -> None:
-    """Send *text* to a specific Telegram channel ID using a fresh bot instance."""
+    """Send *text* to a specific Telegram channel ID.
+
+    Reuses the shared Application bot instance when available to avoid
+    creating a new HTTP session per message.  Falls back to a fresh Bot
+    context manager on the rare code-path where the Application has not
+    been initialised yet (e.g. during unit tests).
+    """
     if channel_id == 0:
         logger.debug("Skipping broadcast — channel_id is 0 (not configured).")
         return
-    async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
-        await bot.send_message(
+    if _application is not None:
+        await _application.bot.send_message(
             chat_id=channel_id,
             text=text,
             parse_mode="Markdown",
         )
+    else:
+        async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
+            await bot.send_message(
+                chat_id=channel_id,
+                text=text,
+                parse_mode="Markdown",
+            )
 
 
 # ── Command handlers ──────────────────────────────────────────────────────────
@@ -910,11 +933,6 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
     if _bot_state.news_freeze or news_calendar.is_high_impact_imminent():
         return
 
-    # Loss streak cooldown gate — skip signal generation during active cooldown
-    if cooldown_manager.is_cooldown_active():
-        logger.debug("on_candle_close: skipping %s — loss streak cooldown active.", base_symbol)
-        return
-
     price = market_data.get_price(base_symbol)
     if price is None:
         return
@@ -925,12 +943,9 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
         messages = signal_tracker.check_signal(sig, price)
         for msg in messages:
             try:
-                async with Bot(token=TELEGRAM_BOT_TOKEN) as bot:
-                    await bot.send_message(
-                        chat_id=sig.origin_channel or TELEGRAM_CHANNEL_ID,
-                        text=msg,
-                        parse_mode="Markdown",
-                    )
+                await _broadcast_to_channel(
+                    msg, sig.origin_channel or TELEGRAM_CHANNEL_ID
+                )
             except Exception as exc:
                 logger.error("Signal tracker broadcast error for %s: %s", base_symbol, exc)
 
@@ -1034,7 +1049,6 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
 
     # Fetch funding rate for score adjustment (best-effort; None on failure)
     try:
-        from bot.funding_rate import fetch_funding_rate
         funding_rate = fetch_funding_rate(base_symbol)
     except Exception:
         funding_rate = None
@@ -1046,9 +1060,16 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
 
     atr_proxy = (range_high - range_low) * 0.01
 
+    # ── Cooldown gate — CH1/CH2 skipped during loss streak; CH3 always runs ──
+    _in_cooldown = cooldown_manager.is_cooldown_active()
+    if _in_cooldown:
+        logger.warning(
+            "on_candle_close: loss streak cooldown active — CH1/CH2 signals skipped for %s.",
+            base_symbol,
+        )
+
     # ── Session-aware signal quality gate ────────────────────────────────────
     try:
-        from bot.session_filter import get_current_session as _get_session
         _current_session = _get_session()
         _session_map = {
             "LONDON": "LONDON",
@@ -1067,6 +1088,12 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
 
     for side in (Side.LONG, Side.SHORT):
         if not risk_manager.can_open_signal(side):
+            # MAX_SAME_SIDE_SIGNALS is imported from risk_manager and is the
+            # same constant used inside can_open_signal(), so the log is accurate.
+            logger.warning(
+                "Signal cap reached for %s %s — skipping (max %d active same-side signals).",
+                base_symbol, side.value, MAX_SAME_SIDE_SIGNALS,
+            )
             continue
 
         recent_5m = five_m_candles[-10:] if len(five_m_candles) >= 10 else five_m_candles
@@ -1082,28 +1109,31 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
         regime = _bot_state.market_regime
 
         # ── CH1 Hard Scalp ─────────────────────────────────────────────────
-        try:
-            from bot.channels import hard_scalp as _hard_scalp
-            ch1_result = _hard_scalp.run(
-                symbol=base_symbol,
-                current_price=price,
-                side=side,
-                five_min_candles=five_m_candles,
-                daily_candles=daily_candles,
-                four_hour_candles=four_h_candles,
-                news_calendar=news_calendar,
-                risk_manager=risk_manager,
-                range_low=range_low,
-                range_high=range_high,
-                key_liquidity_level=key_level,
-                stop_loss=stop_loss,
-                market_regime=regime,
-                fifteen_min_candles=fifteen_m_candles,
-                funding_rate=funding_rate,
-            )
-        except Exception as exc:
-            logger.error("CH1 confluence error for %s %s: %s", base_symbol, side.value, exc)
+        # Skip CH1 when loss-streak cooldown is active.
+        if _in_cooldown:
             ch1_result = None
+        else:
+            try:
+                ch1_result = _hard_scalp.run(
+                    symbol=base_symbol,
+                    current_price=price,
+                    side=side,
+                    five_min_candles=five_m_candles,
+                    daily_candles=daily_candles,
+                    four_hour_candles=four_h_candles,
+                    news_calendar=news_calendar,
+                    risk_manager=risk_manager,
+                    range_low=range_low,
+                    range_high=range_high,
+                    key_liquidity_level=key_level,
+                    stop_loss=stop_loss,
+                    market_regime=regime,
+                    fifteen_min_candles=fifteen_m_candles,
+                    funding_rate=funding_rate,
+                )
+            except Exception as exc:
+                logger.error("CH1 confluence error for %s %s: %s", base_symbol, side.value, exc)
+                ch1_result = None
 
         # Session-aware quality gate: suppress LOW confidence signals during weak sessions
         if (
@@ -1123,14 +1153,10 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
             signal_router.record_signal(base_symbol, ChannelTier.HARD)
             # ── Correlation guard check ──────────────────────────────────────
             if CORRELATION_ALERT_ENABLED:
-                from bot.correlation_guard import check_correlation_risk
                 corr_warn = check_correlation_risk(risk_manager.active_signals, max_same_group=CORRELATION_MAX_SAME_GROUP)
                 if corr_warn and ADMIN_CHAT_ID:
                     try:
-                        async def _send_corr_alert(msg: str = corr_warn) -> None:
-                            async with Bot(token=TELEGRAM_BOT_TOKEN) as _b:
-                                await _b.send_message(chat_id=ADMIN_CHAT_ID, text=msg)
-                        await _send_corr_alert()
+                        await _broadcast_to_channel(corr_warn, ADMIN_CHAT_ID)
                     except Exception as _corr_exc:
                         logger.warning("Correlation alert DM failed: %s", _corr_exc)
             logger.info("CH1 signal: %s %s", base_symbol, side.value)
@@ -1156,17 +1182,14 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                                 f"⚠️ Signal delivery latency {_delivery_latency_ms}ms "
                                 f"for {base_symbol} (CH1) — exceeds 10s threshold."
                             )
-                            async def _send_latency_alert() -> None:
-                                async with Bot(token=TELEGRAM_BOT_TOKEN) as _b:
-                                    await _b.send_message(chat_id=ADMIN_CHAT_ID, text=_lat_msg)
-                            await _send_latency_alert()
+                            await _broadcast_to_channel(_lat_msg, ADMIN_CHAT_ID)
                         except Exception as _lat_exc:
                             logger.warning("Latency alert DM failed: %s", _lat_exc)
                     _bot_state.record_signal_generated()
                 except Exception as exc:
                     logger.error("CH1 broadcast error for %s: %s", base_symbol, exc)
             else:
-                logger.debug(
+                logger.warning(
                     "CH1 signal rate-limited for %s — %ds since last broadcast (min gap %ds).",
                     base_symbol,
                     int(_now - _last_broadcast),
@@ -1176,28 +1199,31 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
 
         # ── CH2 Medium Scalp ───────────────────────────────────────────────
         if signal_router.is_channel_enabled(ChannelTier.MEDIUM):
-            try:
-                from bot.channels import medium_scalp as _medium_scalp
-                ch2_result = _medium_scalp.run(
-                    symbol=base_symbol,
-                    current_price=price,
-                    side=side,
-                    five_min_candles=five_m_candles,
-                    daily_candles=daily_candles,
-                    four_hour_candles=four_h_candles,
-                    news_calendar=news_calendar,
-                    risk_manager=risk_manager,
-                    range_low=range_low,
-                    range_high=range_high,
-                    key_liquidity_level=key_level,
-                    stop_loss=stop_loss,
-                    market_regime=regime,
-                    fifteen_min_candles=fifteen_m_candles,
-                    funding_rate=funding_rate,
-                )
-            except Exception as exc:
-                logger.error("CH2 confluence error for %s %s: %s", base_symbol, side.value, exc)
+            # Skip CH2 when loss-streak cooldown is active.
+            if _in_cooldown:
                 ch2_result = None
+            else:
+                try:
+                    ch2_result = _medium_scalp.run(
+                        symbol=base_symbol,
+                        current_price=price,
+                        side=side,
+                        five_min_candles=five_m_candles,
+                        daily_candles=daily_candles,
+                        four_hour_candles=four_h_candles,
+                        news_calendar=news_calendar,
+                        risk_manager=risk_manager,
+                        range_low=range_low,
+                        range_high=range_high,
+                        key_liquidity_level=key_level,
+                        stop_loss=stop_loss,
+                        market_regime=regime,
+                        fifteen_min_candles=fifteen_m_candles,
+                        funding_rate=funding_rate,
+                    )
+                except Exception as exc:
+                    logger.error("CH2 confluence error for %s %s: %s", base_symbol, side.value, exc)
+                    ch2_result = None
 
             if ch2_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.MEDIUM):
                 risk_manager.add_signal(ch2_result, origin_channel=signal_router.get_channel_id(ChannelTier.MEDIUM), created_regime=regime)
@@ -1220,16 +1246,16 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                     except Exception as exc:
                         logger.error("CH2 broadcast error for %s: %s", base_symbol, exc)
                 else:
-                    logger.debug(
+                    logger.warning(
                         "CH2 signal rate-limited for %s — %ds since last broadcast.",
                         base_symbol,
                         int(_now - _last_broadcast),
                     )
 
         # ── CH3 Easy Breakout ──────────────────────────────────────────────
+        # CH3 runs regardless of cooldown (conservative channel, 24/7 trading).
         if signal_router.is_channel_enabled(ChannelTier.EASY):
             try:
-                from bot.channels import easy_breakout as _easy_breakout
                 ch3_result = _easy_breakout.run(
                     symbol=base_symbol,
                     current_price=price,
@@ -1292,7 +1318,7 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                     except Exception as exc:
                         logger.error("CH3 broadcast error for %s: %s", base_symbol, exc)
                 else:
-                    logger.debug(
+                    logger.warning(
                         "CH3 signal rate-limited for %s — %ds since last broadcast.",
                         base_symbol,
                         int(_now - _last_broadcast),
@@ -1822,14 +1848,14 @@ def _seed_historical_candles(symbols: list[str]) -> None:
             logger.warning("Seed failed for %s: %s", base, exc)
 
     BATCH_SIZE = 3          # Reduce to 3 concurrent workers (~120 weight/batch)
-    for i in range(0, total, BATCH_SIZE):
-        batch = symbols[i:i + BATCH_SIZE]
-        with concurrent.futures.ThreadPoolExecutor(max_workers=BATCH_SIZE) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=BATCH_SIZE) as executor:
+        for i in range(0, total, BATCH_SIZE):
+            batch = symbols[i:i + BATCH_SIZE]
             list(executor.map(_seed_one, batch))
-        if i + BATCH_SIZE < total:
-            time.sleep(12.0)  # ~600 weight/min (3×4×10=120/batch), safely under 1,200 limit
-        if (i + BATCH_SIZE) % 25 == 0:
-            logger.info("Seeded ~%d/%d pairs…", min(i + BATCH_SIZE, total), total)
+            if i + BATCH_SIZE < total:
+                time.sleep(12.0)  # ~600 weight/min (3×4×10=120/batch), safely under 1,200 limit
+            if (i + BATCH_SIZE) % 25 == 0:
+                logger.info("Seeded ~%d/%d pairs…", min(i + BATCH_SIZE, total), total)
 
     logger.info("Historical candle seeding complete.")
 
@@ -1860,14 +1886,14 @@ def _seed_spot_historical_candles(pairs: list[dict]) -> None:
             logger.warning("Spot seed failed for %s: %s", base, exc)
 
     BATCH_SIZE = 3          # Reduce to 3 concurrent workers (~90 weight/batch)
-    for i in range(0, total, BATCH_SIZE):
-        batch = pairs[i:i + BATCH_SIZE]
-        with concurrent.futures.ThreadPoolExecutor(max_workers=BATCH_SIZE) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=BATCH_SIZE) as executor:
+        for i in range(0, total, BATCH_SIZE):
+            batch = pairs[i:i + BATCH_SIZE]
             list(executor.map(_seed_one_spot, batch))
-        if i + BATCH_SIZE < total:
-            time.sleep(12.0)  # ~600 weight/min (3×4×10=120/batch), safely under 1,200 limit
-        if (i + BATCH_SIZE) % 25 == 0:
-            logger.info("Seeded ~%d/%d spot pairs…", min(i + BATCH_SIZE, total), total)
+            if i + BATCH_SIZE < total:
+                time.sleep(12.0)  # ~600 weight/min (3×4×10=120/batch), safely under 1,200 limit
+            if (i + BATCH_SIZE) % 25 == 0:
+                logger.info("Seeded ~%d/%d spot pairs…", min(i + BATCH_SIZE, total), total)
 
     logger.info("Spot historical candle seeding complete.")
 
@@ -2145,7 +2171,7 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> 
 
 def build_application() -> Application:
     """Create and configure the Telegram bot application."""
-    global _dynamic_pairs, _main_loop
+    global _dynamic_pairs, _main_loop, _application
     if not TELEGRAM_BOT_TOKEN:
         raise EnvironmentError(
             "TELEGRAM_BOT_TOKEN environment variable is not set."
@@ -2158,6 +2184,8 @@ def build_application() -> Application:
         await ws_manager.start(_dynamic_pairs, on_candle_close)
         spot_symbols = [p["symbol"] for p in spot_scanner._pairs]
         if spot_symbols:
+            # Spot WebSocket ingests price data only; signals come from the
+            # scheduled _run_spot_scan_job, not from a candle-close callback.
             await spot_ws.start(spot_symbols, None)
             logger.info(
                 "Spot WebSocket manager started for %d pairs.",
@@ -2182,6 +2210,9 @@ def build_application() -> Application:
         .post_shutdown(_post_shutdown)
         .build()
     )
+    # Store the shared application reference so _broadcast_to_channel can reuse
+    # the bot's HTTP session instead of creating a new one per message.
+    _application = app
     app.add_handler(CommandHandler("signal_gen", cmd_signal_gen))
     app.add_handler(CommandHandler("move_be", cmd_move_be))
     app.add_handler(CommandHandler("trail_sl", cmd_trail_sl))
