@@ -165,11 +165,11 @@ class AutoCloseMonitor:
                 if tier_obj is not None:
                     tier = tier_obj.value.upper()
             stale_hours_override: Optional[int] = None
-            if tier == "CH1_HARD":
+            if tier == "CH1_SCALPING":
                 stale_hours_override = CH1_STALE_HOURS
-            elif tier == "CH2_MEDIUM":
+            elif tier == "CH2_INTRADAY":
                 stale_hours_override = CH2_STALE_HOURS
-            elif tier == "CH3_EASY":
+            elif tier == "CH3_TREND":
                 stale_hours_override = CH3_STALE_HOURS
             elif tier == "CH4_SPOT":
                 stale_hours_override = CH4_STALE_HOURS

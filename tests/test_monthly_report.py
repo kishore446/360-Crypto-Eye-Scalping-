@@ -14,7 +14,7 @@ def _make_result(
     side: str = "LONG",
     outcome: str = "WIN",
     pnl_pct: float = 2.0,
-    channel_tier: str = "CH1_HARD",
+    channel_tier: str = "CH1_SCALPING",
     month: int = 2,
     year: int = 2026,
 ) -> TradeResult:
@@ -79,9 +79,9 @@ class TestFormatMonthlyReport:
         assert "-2.1%" in report
 
     def test_per_channel_breakdown(self, db):
-        db.record_result(_make_result(channel_tier="CH1_HARD", outcome="WIN", pnl_pct=3.0))
-        db.record_result(_make_result(channel_tier="CH2_MEDIUM", outcome="WIN", pnl_pct=1.5))
-        db.record_result(_make_result(channel_tier="CH2_MEDIUM", outcome="LOSS", pnl_pct=-1.0))
+        db.record_result(_make_result(channel_tier="CH1_SCALPING", outcome="WIN", pnl_pct=3.0))
+        db.record_result(_make_result(channel_tier="CH2_INTRADAY", outcome="WIN", pnl_pct=1.5))
+        db.record_result(_make_result(channel_tier="CH2_INTRADAY", outcome="LOSS", pnl_pct=-1.0))
         report = format_monthly_report(db, month=2, year=2026)
         assert "CH1" in report
         assert "CH2" in report

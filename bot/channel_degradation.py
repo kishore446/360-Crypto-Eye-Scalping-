@@ -64,7 +64,7 @@ class ChannelDegradationManager:
             logger.warning("ChannelDegradationManager: failed to get rolling stats: %s", exc)
             return alerts
 
-        tiers = ["CH1_HARD", "CH2_MEDIUM", "CH3_EASY", "CH4_SPOT"]
+        tiers = ["CH1_SCALPING", "CH2_INTRADAY", "CH3_TREND", "CH4_SPOT"]
         for tier in tiers:
             stats = rolling.get(tier, {})
             total = stats.get("total_signals", 0)

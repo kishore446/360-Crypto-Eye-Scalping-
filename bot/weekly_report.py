@@ -84,9 +84,9 @@ def generate_weekly_report(dashboard: "Dashboard", days: int = 7) -> str:
 
     # Per-channel breakdown
     channel_configs = [
-        ("CH1_HARD", "🔴 CH1 Hard"),
-        ("CH2_MEDIUM", "🟡 CH2 Medium"),
-        ("CH3_EASY", "🔵 CH3 Easy"),
+        ("CH1_SCALPING", "🔴 CH1 Scalping"),
+        ("CH2_INTRADAY", "🟡 CH2 Intraday"),
+        ("CH3_TREND", "🔵 CH3 Trend"),
         ("CH4_SPOT", "💰 CH4 Spot"),
     ]
     channel_lines: list[str] = []

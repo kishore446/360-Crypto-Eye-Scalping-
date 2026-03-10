@@ -41,7 +41,7 @@ class TradeResult:
     outcome: str        # "WIN" | "LOSS" | "BE" | "STALE" | "OPEN"
     pnl_pct: float      # % PnL relative to entry
     timeframe: str      # "5m" | "15m" | "1h" — identifies which TF triggered entry
-    channel_tier: str = "AGGREGATE"  # "CH1_HARD" | "CH2_MEDIUM" | "CH3_EASY" | "CH4_SPOT" | "AGGREGATE"
+    channel_tier: str = "AGGREGATE"  # "CH1_SCALPING" | "CH2_INTRADAY" | "CH3_TREND" | "CH4_SPOT" | "AGGREGATE"
     session: str = "UNKNOWN"         # "LONDON" | "NYC" | "ASIA" | "OVERLAP" | "UNKNOWN"
     partial_exits: str = ""          # JSON-encoded list of {"level": "TP1", "pct": 50, "pnl": 1.5}
     composite_pnl_pct: float = 0.0   # weighted composite PnL across partial exits
@@ -433,7 +433,7 @@ class Dashboard:
         wins, losses, avg_pnl, best_trade, worst_trade, and sharpe.
         """
         closed = [r for r in self._results if r.outcome in ("WIN", "LOSS", "BE", "STALE")]
-        tiers = ["CH1_HARD", "CH2_MEDIUM", "CH3_EASY", "CH4_SPOT", "AGGREGATE"]
+        tiers = ["CH1_SCALPING", "CH2_INTRADAY", "CH3_TREND", "CH4_SPOT", "AGGREGATE"]
         result: dict[str, dict] = {}
         for tier in tiers:
             subset = [r for r in closed if r.channel_tier == tier]
@@ -474,9 +474,9 @@ class Dashboard:
         ]
 
         channel_configs = [
-            ("CH1_HARD", "🔴 CH1 Hard Scalp"),
-            ("CH2_MEDIUM", "🟡 CH2 Medium"),
-            ("CH3_EASY", "🔵 CH3 Easy Breakout"),
+            ("CH1_SCALPING", "🔴 CH1 Scalping"),
+            ("CH2_INTRADAY", "🟡 CH2 Intraday"),
+            ("CH3_TREND", "🔵 CH3 Trend/Positional"),
             ("CH4_SPOT", "💰 CH4 Spot"),
         ]
 
@@ -517,7 +517,7 @@ class Dashboard:
             and r.closed_at is not None
             and r.closed_at >= cutoff
         ]
-        tiers = ["CH1_HARD", "CH2_MEDIUM", "CH3_EASY", "CH4_SPOT", "AGGREGATE"]
+        tiers = ["CH1_SCALPING", "CH2_INTRADAY", "CH3_TREND", "CH4_SPOT", "AGGREGATE"]
         result: dict[str, dict] = {}
         for tier in tiers:
             subset = [r for r in closed if r.channel_tier == tier]
@@ -540,7 +540,7 @@ class Dashboard:
         and ``0.0`` for channels with no closed trades at all.
         """
         closed = [r for r in self._results if r.outcome in ("WIN", "LOSS", "BE")]
-        tiers = ["CH1_HARD", "CH2_MEDIUM", "CH3_EASY", "CH4_SPOT", "AGGREGATE"]
+        tiers = ["CH1_SCALPING", "CH2_INTRADAY", "CH3_TREND", "CH4_SPOT", "AGGREGATE"]
         result: dict[str, float] = {}
         for tier in tiers:
             subset = [r for r in closed if r.channel_tier == tier]
@@ -561,7 +561,7 @@ class Dashboard:
         so this method uses the raw outcome field stored in TradeResult.
         """
         all_closed = [r for r in self._results if r.outcome in ("WIN", "LOSS", "BE", "STALE")]
-        tiers = ["CH1_HARD", "CH2_MEDIUM", "CH3_EASY", "CH4_SPOT", "AGGREGATE"]
+        tiers = ["CH1_SCALPING", "CH2_INTRADAY", "CH3_TREND", "CH4_SPOT", "AGGREGATE"]
         result: dict[str, dict] = {}
         for tier in tiers:
             subset = [r for r in all_closed if r.channel_tier == tier]
@@ -587,7 +587,7 @@ class Dashboard:
             (r for r in closed if r.closed_at is not None),
             key=lambda r: r.closed_at,  # type: ignore[arg-type]
         )
-        tiers = ["CH1_HARD", "CH2_MEDIUM", "CH3_EASY", "CH4_SPOT", "AGGREGATE"]
+        tiers = ["CH1_SCALPING", "CH2_INTRADAY", "CH3_TREND", "CH4_SPOT", "AGGREGATE"]
         result: dict[str, list[float]] = {}
         for tier in tiers:
             subset = [r for r in closed_sorted if r.channel_tier == tier]

@@ -14,7 +14,7 @@ def _make_result(
     side: str = "LONG",
     outcome: str = "WIN",
     pnl_pct: float = 2.0,
-    channel_tier: str = "CH1_HARD",
+    channel_tier: str = "CH1_SCALPING",
     days_ago: float = 1.0,
 ) -> TradeResult:
     ts = time.time() - days_ago * 86400
@@ -61,7 +61,7 @@ class TestGenerateWeeklyReport:
         assert "Total Signals  : 0" in report
 
     def test_report_includes_channel_breakdown(self):
-        self.db.record_result(_make_result(outcome="WIN", channel_tier="CH1_HARD"))
+        self.db.record_result(_make_result(outcome="WIN", channel_tier="CH1_SCALPING"))
         report = generate_weekly_report(self.db)
         assert "CH1" in report
 
