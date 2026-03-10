@@ -1821,13 +1821,13 @@ def _seed_historical_candles(symbols: list[str]) -> None:
         except Exception as exc:
             logger.warning("Seed failed for %s: %s", base, exc)
 
-    BATCH_SIZE = 10
+    BATCH_SIZE = 5
     for i in range(0, total, BATCH_SIZE):
         batch = symbols[i:i + BATCH_SIZE]
         with concurrent.futures.ThreadPoolExecutor(max_workers=BATCH_SIZE) as executor:
             list(executor.map(_seed_one, batch))
         if i + BATCH_SIZE < total:
-            time.sleep(1.0)  # inter-batch pause to stay within rate limits
+            time.sleep(3.0)  # inter-batch pause to stay within rate limits
         if (i + BATCH_SIZE) % 50 == 0:
             logger.info("Seeded ~%d/%d pairs…", min(i + BATCH_SIZE, total), total)
 

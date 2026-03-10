@@ -123,8 +123,11 @@ class ResilientExchange:
         if sleep_time > 0.0:
             time.sleep(sleep_time)
             with self._lock:
-                self._weight_used = 0
-                self._weight_reset_at = time.time() + 60
+                # Re-check: another thread may have already reset the window
+                now = time.time()
+                if now >= self._weight_reset_at:
+                    self._weight_used = 0
+                    self._weight_reset_at = now + 60
                 self._weight_used += cost
         else:
             with self._lock:
