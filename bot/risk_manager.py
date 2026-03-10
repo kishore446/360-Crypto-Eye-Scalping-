@@ -449,7 +449,7 @@ class RiskManager:
         sym = signal.result.symbol
         side = signal.result.side
         entry = signal.entry_mid
-        trail_distance = (atr * cfg.atr_multiplier) if atr else (cfg.trail_step_pct * entry)
+        trail_distance = (atr * cfg.atr_multiplier) if atr is not None else (cfg.trail_step_pct * entry)
 
         if side == Side.LONG:
             # Initialise the high-water mark and set an initial trailing SL

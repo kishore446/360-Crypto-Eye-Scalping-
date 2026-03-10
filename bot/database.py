@@ -68,8 +68,8 @@ def _get_conn_pooled() -> sqlite3.Connection:
         if old_conn is not None:
             try:
                 old_conn.close()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Error closing stale pooled connection: %s", exc)
         _local.conn = None
     if not hasattr(_local, "conn") or _local.conn is None:
         _local.conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
@@ -92,8 +92,8 @@ def close_all_connections() -> None:
     if conn is not None:
         try:
             conn.close()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Error closing pooled connection: %s", exc)
         _local.conn = None
 
 

@@ -96,6 +96,10 @@ class ResilientExchange:
             Estimated request weight (default 10, suitable for most OHLCV
             and ticker endpoints).
         """
+        # Determine whether we need to sleep before acquiring the weight counter.
+        # We compute the sleep duration under the lock but perform the actual
+        # sleep *outside* the lock to avoid blocking other threads.
+        sleep_time = 0.0
         with self._lock:
             now = time.time()
             # Lazily initialise weight-tracking attributes (supports __new__-based tests)
@@ -114,15 +118,17 @@ class ResilientExchange:
                     _WEIGHT_LIMIT,
                     sleep_time,
                 )
-                # Release lock while sleeping to avoid blocking other threads
-                self._lock.release()
-                try:
-                    time.sleep(sleep_time)
-                finally:
-                    self._lock.acquire()
+
+        # Sleep outside the lock so other threads are not blocked
+        if sleep_time > 0.0:
+            time.sleep(sleep_time)
+            with self._lock:
                 self._weight_used = 0
                 self._weight_reset_at = time.time() + 60
-            self._weight_used += cost
+                self._weight_used += cost
+        else:
+            with self._lock:
+                self._weight_used += cost
 
     # ── Caching ───────────────────────────────────────────────────────────────
 
