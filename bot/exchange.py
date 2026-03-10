@@ -5,7 +5,7 @@ Wraps CCXT with:
   - Exponential backoff with jitter (3 retries, base 2s)
   - Circuit breaker (5 consecutive failures → 120s cooldown)
   - Candle caching (1D: 4h TTL, 4H: 30min TTL, 5m: no cache)
-  - Request weight tracking
+  - Request weight tracking (prevents hitting Binance's 1200 weight/min limit)
 """
 from __future__ import annotations
 
@@ -24,6 +24,10 @@ _RETRY_BASE_SECONDS = 2.0
 _CIRCUIT_BREAKER_THRESHOLD = 5
 _CIRCUIT_BREAKER_COOLDOWN = 120.0
 
+# Rate-limit guard: stop at LIMIT - BUFFER to leave headroom for other callers
+_WEIGHT_LIMIT = 1200
+_WEIGHT_BUFFER = 100
+
 # Cache TTLs in seconds
 _CACHE_TTL: dict[str, float] = {
     "1d": 4 * 3600,
@@ -38,7 +42,7 @@ class CircuitBreakerOpen(Exception):
 
 
 class ResilientExchange:
-    """CCXT exchange wrapper with retry, circuit breaker, and caching."""
+    """CCXT exchange wrapper with retry, circuit breaker, caching, and rate-limit tracking."""
 
     def __init__(self, exchange_id: str = "binanceusdm") -> None:
         self._exchange = getattr(ccxt, exchange_id)({"enableRateLimit": True})
@@ -46,6 +50,9 @@ class ResilientExchange:
         self._failure_count = 0
         self._circuit_open_until: float = 0.0
         self._cache: dict[str, tuple[float, Any]] = {}  # key → (expires_at, data)
+        # Request weight tracking
+        self._weight_used: int = 0
+        self._weight_reset_at: float = time.time() + 60
 
     # ── Circuit breaker ───────────────────────────────────────────────────────
 
@@ -73,6 +80,55 @@ class ResilientExchange:
                     _CIRCUIT_BREAKER_COOLDOWN,
                 )
                 self._failure_count = 0
+
+    # ── Request weight tracking ────────────────────────────────────────────────
+
+    def _check_weight(self, cost: int = 10) -> None:
+        """Ensure the rolling weight budget has room for a *cost*-weight request.
+
+        If the weight window has expired the counter is reset.  If adding
+        *cost* would exceed ``_WEIGHT_LIMIT - _WEIGHT_BUFFER`` the method
+        sleeps until the window resets, then resets the counter and returns.
+
+        Parameters
+        ----------
+        cost:
+            Estimated request weight (default 10, suitable for most OHLCV
+            and ticker endpoints).
+        """
+        # Determine whether we need to sleep before acquiring the weight counter.
+        # We compute the sleep duration under the lock but perform the actual
+        # sleep *outside* the lock to avoid blocking other threads.
+        sleep_time = 0.0
+        with self._lock:
+            now = time.time()
+            # Lazily initialise weight-tracking attributes (supports __new__-based tests)
+            if not hasattr(self, "_weight_reset_at"):
+                self._weight_reset_at = now + 60
+            if not hasattr(self, "_weight_used"):
+                self._weight_used = 0
+            if now >= self._weight_reset_at:
+                self._weight_used = 0
+                self._weight_reset_at = now + 60
+            if self._weight_used + cost >= _WEIGHT_LIMIT - _WEIGHT_BUFFER:
+                sleep_time = max(0.1, self._weight_reset_at - now)
+                logger.warning(
+                    "Rate limit approaching (%d/%d), sleeping %.1fs",
+                    self._weight_used,
+                    _WEIGHT_LIMIT,
+                    sleep_time,
+                )
+
+        # Sleep outside the lock so other threads are not blocked
+        if sleep_time > 0.0:
+            time.sleep(sleep_time)
+            with self._lock:
+                self._weight_used = 0
+                self._weight_reset_at = time.time() + 60
+                self._weight_used += cost
+        else:
+            with self._lock:
+                self._weight_used += cost
 
     # ── Caching ───────────────────────────────────────────────────────────────
 
@@ -122,6 +178,7 @@ class ResilientExchange:
             in an async context.
         """
         self._check_circuit()
+        self._check_weight(cost=10)
 
         for attempt in range(1, _RETRY_COUNT + 1):
             try:
@@ -164,6 +221,7 @@ class ResilientExchange:
     def load_markets(self):
         """Load exchange markets with retry."""
         self._check_circuit()
+        self._check_weight(cost=10)
         for attempt in range(1, _RETRY_COUNT + 1):
             try:
                 self._exchange.load_markets()
@@ -187,6 +245,7 @@ class ResilientExchange:
     def fetch_ticker(self, symbol: str) -> dict:
         """Fetch current ticker (no caching)."""
         self._check_circuit()
+        self._check_weight(cost=2)
         for attempt in range(1, _RETRY_COUNT + 1):
             try:
                 ticker = self._exchange.fetch_ticker(symbol)

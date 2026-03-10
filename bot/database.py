@@ -1,12 +1,17 @@
 """
 Database layer — SQLite with WAL mode for concurrent-safe persistence.
 Replaces flat JSON files (signals.json, dashboard.json) with proper tables.
+
+Connection pooling uses thread-local storage so each OS thread gets its own
+persistent ``sqlite3.Connection``, avoiding the overhead of opening and closing
+a new connection on every operation while remaining thread-safe.
 """
 from __future__ import annotations
 
 import json
 import logging
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,33 +24,110 @@ try:
 except ImportError:
     _DB_PATH: str = "data/360eye.db"
 
+# Thread-local storage for per-thread connection pooling
+_local = threading.local()
+
+# Guard so init_db() only runs the heavy DDL once per process lifetime.
+# _last_initialized_path tracks which DB path was last initialized so that
+# switching databases (e.g. in tests via monkeypatch) triggers re-initialization.
+_db_initialized: bool = False
+_last_initialized_path: str = ""
+_init_lock = threading.Lock()
+
 
 def get_db_path() -> str:
     return _DB_PATH
 
 
 def set_db_path(path: str) -> None:
-    global _DB_PATH
+    """Update the database path and invalidate the process-level init flag."""
+    global _DB_PATH, _db_initialized, _last_initialized_path
     _DB_PATH = path
+    # Reset so init_db() will re-create tables in the new database
+    _db_initialized = False
+    _last_initialized_path = ""
+    # Discard any cached connections pointing at the old path
+    close_all_connections()
+
+
+def _get_conn_pooled() -> sqlite3.Connection:
+    """Return the thread-local persistent connection, creating it if necessary.
+
+    If the module-level ``_DB_PATH`` has changed since the connection was
+    opened (e.g. during tests or after ``set_db_path()``), the stale
+    connection is closed and a new one is created pointing at the current path.
+
+    The connection is configured once with WAL mode, NORMAL synchronous writes,
+    a 64 MB page cache, and ``sqlite3.Row`` as the row factory so callers can
+    access columns by name.
+    """
+    conn_path = getattr(_local, "conn_path", None)
+    if conn_path != _DB_PATH:
+        # Path changed — discard the stale connection and open a fresh one
+        old_conn = getattr(_local, "conn", None)
+        if old_conn is not None:
+            try:
+                old_conn.close()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Error closing stale pooled connection: %s", exc)
+        _local.conn = None
+    if not hasattr(_local, "conn") or _local.conn is None:
+        _local.conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
+        _local.conn.execute("PRAGMA journal_mode=WAL")
+        _local.conn.execute("PRAGMA synchronous=NORMAL")
+        _local.conn.execute("PRAGMA cache_size=-64000")  # 64 MB cache
+        _local.conn.row_factory = sqlite3.Row
+        _local.conn_path = _DB_PATH
+    return _local.conn
+
+
+def close_all_connections() -> None:
+    """Close and discard the current thread's pooled connection.
+
+    Call this at process shutdown or after ``set_db_path()`` to ensure clean
+    resource release.  Other threads' connections are not affected; each
+    thread is responsible for its own connection lifecycle.
+    """
+    conn = getattr(_local, "conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Error closing pooled connection: %s", exc)
+        _local.conn = None
 
 
 @contextmanager
 def _get_conn() -> Generator[sqlite3.Connection, None, None]:
-    conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.row_factory = sqlite3.Row
+    """Context manager that wraps the pooled connection in a savepoint transaction.
+
+    On exit the transaction is committed; on exception it is rolled back.  The
+    underlying connection is *not* closed — it is returned to the pool.
+    """
+    conn = _get_conn_pooled()
     try:
         yield conn
         conn.commit()
     except Exception:
         conn.rollback()
         raise
-    finally:
-        conn.close()
 
 
 def init_db() -> None:
-    """Create tables if they don't exist. Safe to call on every startup."""
+    """Create tables if they don't exist.  Safe to call multiple times — after
+    the first successful run the function returns immediately without touching
+    the database."""
+    global _db_initialized, _last_initialized_path
+    with _init_lock:
+        if _db_initialized and _last_initialized_path == _DB_PATH:
+            return
+        _do_init_db()
+        _db_initialized = True
+        _last_initialized_path = _DB_PATH
+
+
+def _do_init_db() -> None:
+    """Internal: actually execute the DDL statements.  Must be called under ``_init_lock``."""
     with _get_conn() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS signals (

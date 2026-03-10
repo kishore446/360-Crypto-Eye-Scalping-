@@ -244,12 +244,36 @@ class WebSocketManager:
         self._symbols: list[str] = []
         self._tasks: list[asyncio.Task] = []
         self._running = False
-        # Health tracking — updated on every received message
+        # Per-connection health tracking (conn_idx → last message monotonic time).
+        # Using a dict instead of a single bool / timestamp eliminates the race
+        # condition that arises when multiple connections update a shared field.
+        self._connection_health: dict[int, float] = {}
+        # Legacy public attributes kept for backward compatibility
         self.last_message_at: float = 0.0
         self.is_connected: bool = False
 
     def is_healthy(self) -> bool:
-        """Return True when the stream is connected and recently active."""
+        """Return True when at least one connection is recently active.
+
+        For multi-connection managers the per-connection ``_connection_health``
+        dict is checked first.  A connection is considered healthy when the
+        elapsed time since its last received message is below
+        ``_STALE_THRESHOLD``.  Using the per-connection dict avoids the race
+        condition that existed when any connection could overwrite a single
+        shared ``is_connected`` flag.
+
+        Falls back to the legacy ``is_connected`` / ``last_message_at``
+        attributes when the health dict is empty (e.g. in single-connection
+        scenarios or tests that set those attributes directly).
+        """
+        # Preferred: per-connection health dict populated by _receive_loop
+        if self._connection_health:
+            now = time.monotonic()
+            return any(
+                (now - last_msg) < _STALE_THRESHOLD
+                for last_msg in self._connection_health.values()
+            )
+        # Legacy fallback: single-connection / test mode
         if not self.is_connected:
             return False
         if self.last_message_at == 0.0:
@@ -288,6 +312,7 @@ class WebSocketManager:
         """Cancel all WebSocket connection tasks."""
         self._running = False
         self.is_connected = False
+        self._connection_health.clear()
         for task in self._tasks:
             task.cancel()
         if self._tasks:
@@ -315,13 +340,16 @@ class WebSocketManager:
                     await self._receive_loop(conn_idx, ws)
             except asyncio.CancelledError:
                 logger.info("WS[%d][%s] cancelled.", conn_idx, self._market_type)
+                self._connection_health.pop(conn_idx, None)
                 self.is_connected = False
                 return
             except ConnectionClosed as exc:
                 logger.warning("WS[%d][%s] connection closed: %s", conn_idx, self._market_type, exc)
+                self._connection_health.pop(conn_idx, None)
                 self.is_connected = False
             except Exception as exc:
                 logger.error("WS[%d][%s] unexpected error: %s", conn_idx, self._market_type, exc)
+                self._connection_health.pop(conn_idx, None)
                 self.is_connected = False
 
             if not self._running:
@@ -347,7 +375,10 @@ class WebSocketManager:
                 return
             try:
                 msg = json.loads(raw)
-                self.last_message_at = time.monotonic()
+                now = time.monotonic()
+                # Update per-connection health timestamp and the legacy shared attribute
+                self._connection_health[conn_idx] = now
+                self.last_message_at = now
                 await self._handle_message(msg)
             except Exception as exc:
                 logger.debug("WS[%d] message parse error: %s", conn_idx, exc)
