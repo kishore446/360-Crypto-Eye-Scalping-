@@ -206,6 +206,28 @@ try:
         # ── DB Archiving ──────────────────────────────────────────────────────
         db_archive_days: int = 90
 
+        # ── Trailing Stop-Loss ────────────────────────────────────────────────
+        trailing_sl_enabled: bool = True
+        trailing_sl_atr_multiplier: float = 1.5
+        trailing_sl_step_pct: float = 0.1
+
+        # ── Copy-Trade REST API ───────────────────────────────────────────────
+        api_enabled: bool = False
+        api_key: str = ""
+        api_port: int = 8080
+
+        # ── Prometheus Metrics ────────────────────────────────────────────────
+        metrics_enabled: bool = False
+        metrics_port: int = 9090
+
+        # ── Exchange ──────────────────────────────────────────────────────────
+        exchange_id: str = "binance"
+        exchange_weight_limit: int = 1200
+
+        # ── Backtester Pipeline ───────────────────────────────────────────────
+        backtester_enabled: bool = False
+        backtester_lookback_days: int = 30
+
         @field_validator("telegram_bot_token")
         @classmethod
         def token_not_placeholder(cls, v: str) -> str:
@@ -363,6 +385,28 @@ try:
     CORRELATION_MAX_SAME_GROUP: int = settings.correlation_max_same_group
     DB_ARCHIVE_DAYS: int = settings.db_archive_days
 
+    # ── Trailing Stop-Loss ────────────────────────────────────────────────────
+    TRAILING_SL_ENABLED: bool = settings.trailing_sl_enabled
+    TRAILING_SL_ATR_MULTIPLIER: float = settings.trailing_sl_atr_multiplier
+    TRAILING_SL_STEP_PCT: float = settings.trailing_sl_step_pct
+
+    # ── Copy-Trade REST API ───────────────────────────────────────────────────
+    API_ENABLED: bool = settings.api_enabled
+    API_KEY: str = settings.api_key
+    API_PORT: int = settings.api_port
+
+    # ── Prometheus Metrics ────────────────────────────────────────────────────
+    METRICS_ENABLED: bool = settings.metrics_enabled
+    METRICS_PORT: int = settings.metrics_port
+
+    # ── Exchange ──────────────────────────────────────────────────────────────
+    EXCHANGE_ID: str = settings.exchange_id
+    EXCHANGE_WEIGHT_LIMIT: int = settings.exchange_weight_limit
+
+    # ── Backtester Pipeline ───────────────────────────────────────────────────
+    BACKTESTER_ENABLED: bool = settings.backtester_enabled
+    BACKTESTER_LOOKBACK_DAYS: int = settings.backtester_lookback_days
+
     TIMEFRAMES: dict[str, int] = {
         "1D": 1440,
         "4H": 240,
@@ -496,6 +540,29 @@ except ImportError:
     CORRELATION_ALERT_ENABLED: bool = os.environ.get("CORRELATION_ALERT_ENABLED", "true").lower() in ("true", "1", "yes")
     CORRELATION_MAX_SAME_GROUP: int = int(os.environ.get("CORRELATION_MAX_SAME_GROUP", "3"))
     DB_ARCHIVE_DAYS: int = int(os.environ.get("DB_ARCHIVE_DAYS", "90"))
+
+    # ── Trailing Stop-Loss ────────────────────────────────────────────────────
+    TRAILING_SL_ENABLED: bool = os.environ.get("TRAILING_SL_ENABLED", "true").lower() in ("true", "1", "yes")
+    TRAILING_SL_ATR_MULTIPLIER: float = float(os.environ.get("TRAILING_SL_ATR_MULTIPLIER", "1.5"))
+    TRAILING_SL_STEP_PCT: float = float(os.environ.get("TRAILING_SL_STEP_PCT", "0.1"))
+
+    # ── Copy-Trade REST API ───────────────────────────────────────────────────
+    API_ENABLED: bool = os.environ.get("API_ENABLED", "false").lower() in ("true", "1", "yes")
+    API_KEY: str = os.environ.get("API_KEY", "")
+    API_PORT: int = int(os.environ.get("API_PORT", "8080"))
+
+    # ── Prometheus Metrics ────────────────────────────────────────────────────
+    METRICS_ENABLED: bool = os.environ.get("METRICS_ENABLED", "false").lower() in ("true", "1", "yes")
+    METRICS_PORT: int = int(os.environ.get("METRICS_PORT", "9090"))
+
+    # ── Exchange ──────────────────────────────────────────────────────────────
+    EXCHANGE_ID: str = os.environ.get("EXCHANGE_ID", "binance")
+    EXCHANGE_WEIGHT_LIMIT: int = int(os.environ.get("EXCHANGE_WEIGHT_LIMIT", "1200"))
+
+    # ── Backtester Pipeline ───────────────────────────────────────────────────
+    BACKTESTER_ENABLED: bool = os.environ.get("BACKTESTER_ENABLED", "false").lower() in ("true", "1", "yes")
+    BACKTESTER_LOOKBACK_DAYS: int = int(os.environ.get("BACKTESTER_LOOKBACK_DAYS", "30"))
+
     TIMEFRAMES: dict[str, int] = {"1D": 1440, "4H": 240, "15m": 15, "5m": 5}
 
 # Ensure the data directory exists so that dashboard.json, signals.json,

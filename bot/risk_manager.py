@@ -7,6 +7,8 @@ Implements all safety protocols from Section V of the master blueprint:
   2. The "3-Pair" Cap — max 3 active signals on the same side.
   3. Stale Close — alert/close if entry zone is untouched for > 4 hours.
   4. Position-size calculator (/risk_calc command).
+  5. Trailing Stop-Loss — tracks price extremes after BE trigger and closes
+     signals when the trailing SL level is breached.
 """
 
 from __future__ import annotations
@@ -33,8 +35,47 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "ActiveSignal",
     "RiskManager",
+    "TrailingStopConfig",
     "calculate_position_size",
 ]
+
+# ── Trailing stop configuration ───────────────────────────────────────────────
+
+try:
+    from config import (
+        TRAILING_SL_ATR_MULTIPLIER,
+        TRAILING_SL_ENABLED,
+        TRAILING_SL_STEP_PCT,
+    )
+except ImportError:
+    TRAILING_SL_ENABLED: bool = True
+    TRAILING_SL_ATR_MULTIPLIER: float = 1.5
+    TRAILING_SL_STEP_PCT: float = 0.1
+
+
+@dataclass
+class TrailingStopConfig:
+    """Configuration for the trailing stop-loss mechanism.
+
+    Attributes
+    ----------
+    enabled:
+        Whether trailing SL is active.
+    atr_multiplier:
+        Multiplier applied to the current ATR estimate to set the trailing
+        distance from the running extreme.
+    activation_after_be:
+        When ``True`` the trailing SL only activates once break-even has been
+        triggered; if ``False`` it activates immediately on signal open.
+    trail_step_pct:
+        Minimum price move (as a fraction of entry price) required before the
+        trailing SL level is updated.  Prevents excessive micro-adjustments.
+    """
+
+    enabled: bool = True
+    atr_multiplier: float = 1.5
+    activation_after_be: bool = True
+    trail_step_pct: float = 0.1  # minimum move before trail updates
 
 
 @dataclass
@@ -48,6 +89,11 @@ class ActiveSignal:
     close_reason: Optional[str] = None
     origin_channel: int = 0  # Telegram channel ID where this signal was broadcast
     created_regime: str = "UNKNOWN"  # Market regime at signal creation
+
+    # ── Trailing stop-loss state ──────────────────────────────────────────────
+    trailing_sl_price: Optional[float] = None
+    highest_since_entry: Optional[float] = None   # for LONG signals
+    lowest_since_entry: Optional[float] = None    # for SHORT signals
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -86,23 +132,63 @@ class ActiveSignal:
 class RiskManager:
     """
     Central registry of active signals with built-in safety enforcement.
+
+    Dirty-tracking
+    --------------
+    ``_dirty_ids`` is a ``set[str]`` that records the ``signal_id`` of every
+    signal that has been mutated since the last ``_save()`` call.  Only those
+    signals are written to SQLite, avoiding a full-table re-insert on every
+    price tick.
+
+    Trailing Stop-Loss
+    ------------------
+    After break-even is triggered, ``update_prices()`` tracks the running
+    price extreme (``highest_since_entry`` for LONG, ``lowest_since_entry``
+    for SHORT) and recalculates ``trailing_sl_price`` each time the extreme
+    advances by at least ``trail_step_pct`` of the entry price.  If the live
+    price crosses the trailing SL the signal is closed with reason
+    ``"trailing_sl"``.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        trailing_config: Optional[TrailingStopConfig] = None,
+    ) -> None:
         self._signals: list[ActiveSignal] = []
         self._lock = threading.Lock()
+        self._dirty_ids: set[str] = set()
+        self._trailing_cfg = trailing_config or TrailingStopConfig(
+            enabled=TRAILING_SL_ENABLED,
+            atr_multiplier=TRAILING_SL_ATR_MULTIPLIER,
+            trail_step_pct=TRAILING_SL_STEP_PCT,
+        )
         self._load()
 
     # ── persistence ───────────────────────────────────────────────────────────
 
+    def _mark_dirty(self, sig: ActiveSignal) -> None:
+        """Record that *sig* needs to be persisted on the next ``_save()`` call."""
+        sid = sig.result.signal_id or f"sig_{int(sig.opened_at)}"
+        self._dirty_ids.add(sid)
+
     def _save(self) -> None:
-        """Persist ``_signals`` to SQLite database (primary) and JSON (legacy backup)."""
+        """Persist only dirty (mutated) signals to SQLite.
+
+        On the first call after a signal is *added* the full row is written via
+        ``save_signal()`` (INSERT OR REPLACE).  Subsequent mutations only update
+        the mutable columns via ``update_signal()`` to minimise I/O.
+        """
+        if not self._dirty_ids:
+            return
         try:
-            from bot.database import init_db, save_signal
-            init_db()
+            from bot.database import save_signal
+            dirty = list(self._dirty_ids)
             for sig in self._signals:
+                sid = sig.result.signal_id or f"sig_{int(sig.opened_at)}"
+                if sid not in dirty:
+                    continue
                 signal_data = {
-                    "id": sig.result.signal_id or f"sig_{int(sig.opened_at)}",
+                    "id": sid,
                     "symbol": sig.result.symbol,
                     "side": sig.result.side.value,
                     "confidence": sig.result.confidence.value,
@@ -127,6 +213,7 @@ class RiskManager:
                     "confluence_score": sig.result.confluence_score,
                 }
                 save_signal(signal_data)
+            self._dirty_ids.clear()
         except Exception as exc:
             logger.error("Failed to persist signals to SQLite: %s", exc)
 
@@ -238,8 +325,15 @@ class RiskManager:
             self._signals = []
 
     def save(self) -> None:
-        """Public alias for ``_save`` — persist current signals to disk."""
-        self._save()
+        """Public alias for ``_save`` — persist all dirty signals to disk.
+
+        Marks *all* signals as dirty before calling ``_save()`` so a forced
+        full-flush is possible (e.g. at shutdown).
+        """
+        with self._lock:
+            for sig in self._signals:
+                self._mark_dirty(sig)
+            self._save()
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -317,19 +411,104 @@ class RiskManager:
         active = ActiveSignal(result=result, origin_channel=origin_channel, created_regime=created_regime)
         with self._lock:
             self._signals.append(active)
+            self._mark_dirty(active)
             self._save()
         return active
 
-    def update_prices(self, prices: dict[str, float]) -> list[str]:
+    def _update_trailing_sl(
+        self,
+        signal: ActiveSignal,
+        price: float,
+        atr: Optional[float] = None,
+    ) -> Optional[str]:
+        """Update the trailing stop-loss for *signal* given the current *price*.
+
+        Parameters
+        ----------
+        signal:
+            The active signal to update.
+        price:
+            The current market price.
+        atr:
+            Optional ATR value used to set the trailing distance.  When
+            ``None`` a simple percentage-based trail is used instead
+            (``trail_step_pct * entry_price``).
+
+        Returns
+        -------
+        str | None
+            A broadcast message when the trailing SL is crossed (signal is
+            closed), or ``None`` otherwise.
+        """
+        cfg = self._trailing_cfg
+        if not cfg.enabled:
+            return None
+        if cfg.activation_after_be and not signal.be_triggered:
+            return None
+
+        sym = signal.result.symbol
+        side = signal.result.side
+        entry = signal.entry_mid
+        trail_distance = (atr * cfg.atr_multiplier) if atr else (cfg.trail_step_pct * entry)
+
+        if side == Side.LONG:
+            # Initialise the high-water mark and set an initial trailing SL
+            if signal.highest_since_entry is None:
+                signal.highest_since_entry = price
+                signal.trailing_sl_price = signal.highest_since_entry - trail_distance
+            # Advance the high-water mark
+            if price > signal.highest_since_entry:
+                advance = price - signal.highest_since_entry
+                if advance >= cfg.trail_step_pct * entry:
+                    signal.highest_since_entry = price
+                    signal.trailing_sl_price = signal.highest_since_entry - trail_distance
+            # Check for breach
+            trail = signal.trailing_sl_price
+            if trail is not None and price <= trail:
+                signal.close("trailing_sl")
+                return (
+                    f"🔴 #{sym}/USDT LONG closed — trailing SL hit at {trail:.4f} "
+                    f"(high was {signal.highest_since_entry:.4f})."
+                )
+        else:  # SHORT
+            # Initialise the low-water mark and set an initial trailing SL
+            if signal.lowest_since_entry is None:
+                signal.lowest_since_entry = price
+                signal.trailing_sl_price = signal.lowest_since_entry + trail_distance
+            # Advance the low-water mark
+            if price < signal.lowest_since_entry:
+                advance = signal.lowest_since_entry - price
+                if advance >= cfg.trail_step_pct * entry:
+                    signal.lowest_since_entry = price
+                    signal.trailing_sl_price = signal.lowest_since_entry + trail_distance
+            # Check for breach
+            trail = signal.trailing_sl_price
+            if trail is not None and price >= trail:
+                signal.close("trailing_sl")
+                return (
+                    f"🔴 #{sym}/USDT SHORT closed — trailing SL hit at {trail:.4f} "
+                    f"(low was {signal.lowest_since_entry:.4f})."
+                )
+        return None
+
+    def update_prices(self, prices: dict[str, float], atrs: Optional[dict[str, float]] = None) -> list[str]:
         """
         Feed the latest prices into the risk manager.
 
+        Parameters
+        ----------
+        prices:
+            Mapping of base symbol (e.g. "BTC") to current price.
+        atrs:
+            Optional mapping of base symbol to current ATR value.  When
+            provided the trailing SL uses ATR-based distances; otherwise a
+            percentage fallback is used.
+
         Returns a list of human-readable broadcast messages for any events
-        that were triggered (BE, stale-close, etc.).
+        that were triggered (BE, trailing SL close, stale-close, etc.).
         """
         messages: list[str] = []
         now = time.time()
-        mutated = False
 
         with self._lock:
             for signal in self._signals:
@@ -341,7 +520,7 @@ class RiskManager:
                 # ── stale check ──────────────────────────────────────────────────
                 if signal.is_stale(now):
                     signal.close("stale")
-                    mutated = True
+                    self._mark_dirty(signal)
                     messages.append(
                         f"⚠️ #{sym}/USDT {signal.result.side.value} signal CLOSED "
                         f"(stale — no activity for >{STALE_SIGNAL_HOURS}h)."
@@ -354,14 +533,20 @@ class RiskManager:
                 # ── BE trigger ───────────────────────────────────────────────────
                 if signal.should_trigger_be(price):
                     signal.trigger_be()
-                    mutated = True
+                    self._mark_dirty(signal)
                     messages.append(
                         f"🔒 #{sym}/USDT {signal.result.side.value}: "
                         f"Move SL to Entry {signal.entry_mid:.4f} (Risk-Free Mode ON)."
                     )
 
-            if mutated:
-                self._save()
+                # ── Trailing SL ──────────────────────────────────────────────────
+                atr = (atrs or {}).get(sym)
+                trail_msg = self._update_trailing_sl(signal, price, atr)
+                if trail_msg:
+                    self._mark_dirty(signal)
+                    messages.append(trail_msg)
+
+            self._save()
 
         return messages
 
@@ -371,6 +556,7 @@ class RiskManager:
             for signal in self._signals:
                 if not signal.closed and signal.result.symbol == symbol:
                     signal.close(reason)
+                    self._mark_dirty(signal)
                     self._save()
                     return True
         return False
