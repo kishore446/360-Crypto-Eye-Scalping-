@@ -151,8 +151,10 @@ try:
         # ── Auto-Scanner ─────────────────────────────────────────────────────
         # Empty string = scan ALL Binance Futures USDT-M pairs (recommended).
         # Set to a comma-separated list to use as a whitelist override.
+        # NOTE: WebSocket (ws_manager.py) should always be the primary feed.
+        # This interval governs the REST fallback; 30 s ≈ one 5m-candle tick.
         auto_scan_pairs: str = ""
-        auto_scan_interval_seconds: int = 60
+        auto_scan_interval_seconds: int = 30
         auto_scan_enabled_on_boot: bool = True
 
         # ── Futures Scanner Tuning ────────────────────────────────────────────
@@ -555,7 +557,7 @@ except ImportError:
     WEBHOOK_RATE_LIMIT_MAX: int = int(os.environ.get("WEBHOOK_RATE_LIMIT_MAX", "30"))
     _raw_pairs = os.environ.get("AUTO_SCAN_PAIRS", "")
     AUTO_SCAN_PAIRS: list[str] = [p.strip().upper() for p in _raw_pairs.split(",") if p.strip()]
-    AUTO_SCAN_INTERVAL_SECONDS: int = int(os.environ.get("AUTO_SCAN_INTERVAL_SECONDS", "60"))
+    AUTO_SCAN_INTERVAL_SECONDS: int = int(os.environ.get("AUTO_SCAN_INTERVAL_SECONDS", "30"))
     AUTO_SCAN_ENABLED_ON_BOOT: bool = os.environ.get("AUTO_SCAN_ENABLED_ON_BOOT", "true").lower() in ("true", "1", "yes")
     FUTURES_MIN_24H_VOLUME_USDT: int = int(os.environ.get("FUTURES_MIN_24H_VOLUME_USDT", "0"))
     FUTURES_SCAN_BATCH_SIZE: int = int(os.environ.get("FUTURES_SCAN_BATCH_SIZE", "20"))

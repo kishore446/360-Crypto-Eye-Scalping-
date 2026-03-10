@@ -149,6 +149,19 @@ class AutoCloseMonitor:
 
             # ── stale check ──────────────────────────────────────────────────
             if signal.is_stale():
+                # If we have a live price and it is within the entry zone, the
+                # subscriber may already be in a position — skip the stale close
+                # this tick and let the next natural tick decide.
+                if current_price is not None and (
+                    signal.result.entry_low <= current_price <= signal.result.entry_high
+                ):
+                    logger.info(
+                        "[STALE_SKIP] %s %s: price %.4f is within entry zone "
+                        "[%.4f - %.4f]; deferring stale close.",
+                        symbol, signal.result.side.value, current_price,
+                        signal.result.entry_low, signal.result.entry_high,
+                    )
+                    continue
                 close_result = self._build_stale_result(signal)
                 await self._process_close(signal, close_result)
                 continue
@@ -369,11 +382,14 @@ class AutoCloseMonitor:
 
         self._risk_manager.close_signal(signal.result.symbol, reason=close_result.outcome.lower())
 
-        # Map outcome to dashboard WIN/LOSS/BE/STALE
+        # Map outcome to dashboard WIN/LOSS/BE/STALE.
+        # When SL is hit but break-even was already triggered, the remaining
+        # position closed at entry (0% PnL on that portion) — record as "BE"
+        # so the win-rate excludes it from true losses.
         if close_result.outcome.startswith("TP"):
             dashboard_outcome = "WIN"
         elif close_result.outcome == "SL":
-            dashboard_outcome = "LOSS"
+            dashboard_outcome = "BE" if signal.be_triggered else "LOSS"
         elif close_result.outcome == "STALE":
             dashboard_outcome = "STALE"
         else:

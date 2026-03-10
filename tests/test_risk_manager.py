@@ -207,3 +207,103 @@ class TestCalculatePositionSize:
             stop_loss_price=102.0,  # SL above entry for short
         )
         assert result["sl_distance_pct"] == pytest.approx(2.0, rel=1e-2)
+
+
+# ── BUG 6: BE trigger uses entry edge, not midpoint ───────────────────────────
+
+class TestBETriggerEntryEdge:
+    """should_trigger_be() references entry_low (LONG) or entry_high (SHORT)."""
+
+    def test_long_be_uses_entry_low(self):
+        """LONG: BE trigger is calculated from entry_low, not entry_mid.
+
+        entry_low=98, tp1=110: distance=12, BE_TRIGGER_FRACTION=0.70
+        trigger = 98 + 0.70*12 = 106.4
+        Midpoint-based trigger would be: 100 + 0.70*10 = 107.0 (different!)
+        """
+        sig = SignalResult(
+            symbol="BTC",
+            side=Side.LONG,
+            confidence=Confidence.HIGH,
+            entry_low=98.0,
+            entry_high=102.0,  # midpoint = 100.0
+            tp1=110.0,
+            tp2=115.0,
+            tp3=120.0,
+            stop_loss=95.0,
+            structure_note="",
+            context_note="",
+            leverage_min=10,
+            leverage_max=20,
+        )
+        active = ActiveSignal(result=sig)
+        # entry_low-based trigger = 98 + 0.70*(110-98) = 98 + 8.4 = 106.4
+        # Price at 106.5 should trigger BE
+        assert active.should_trigger_be(106.5) is True
+        # Price at 106.0 should NOT trigger yet (below 106.4)
+        assert active.should_trigger_be(106.0) is False
+
+    def test_short_be_uses_entry_high(self):
+        """SHORT: BE trigger is calculated from entry_high, not entry_mid.
+
+        entry_high=102, tp1=90: distance=12, BE_TRIGGER_FRACTION=0.70
+        trigger = 102 - 0.70*12 = 93.6
+        Midpoint-based trigger would be: 100 - 0.70*10 = 93.0 (different!)
+        """
+        sig = SignalResult(
+            symbol="ETH",
+            side=Side.SHORT,
+            confidence=Confidence.HIGH,
+            entry_low=98.0,
+            entry_high=102.0,  # midpoint = 100.0
+            tp1=90.0,
+            tp2=85.0,
+            tp3=80.0,
+            stop_loss=105.0,
+            structure_note="",
+            context_note="",
+            leverage_min=10,
+            leverage_max=20,
+        )
+        active = ActiveSignal(result=sig)
+        # entry_high-based trigger = 102 - 0.70*(102-90) = 102 - 8.4 = 93.6
+        # Price at 93.5 should trigger BE
+        assert active.should_trigger_be(93.5) is True
+        # Price at 94.0 should NOT trigger yet (above 93.6)
+        assert active.should_trigger_be(94.0) is False
+
+
+# ── BUG 8: Trailing SL ATR floor ─────────────────────────────────────────────
+
+class TestTrailingSlAtrFloor:
+    """TrailingStopConfig.min_trail_distance_atr_mult enforces a minimum trail distance."""
+
+    def test_default_min_trail_distance_is_1_0(self):
+        from bot.risk_manager import TrailingStopConfig
+        cfg = TrailingStopConfig()
+        assert cfg.min_trail_distance_atr_mult == pytest.approx(1.0)
+
+    def test_atr_floor_overrides_multiplier_when_larger(self):
+        """When ATR floor > atr_multiplier * atr, trail distance is raised to the floor."""
+        from bot.risk_manager import RiskManager, TrailingStopConfig
+        # atr_multiplier=0.5 would give trail of 0.5*1.0=0.5
+        # min_trail_distance_atr_mult=2.0 gives floor of 2.0*1.0=2.0
+        # So effective trail_distance should be 2.0
+        cfg = TrailingStopConfig(
+            enabled=True,
+            atr_multiplier=0.5,
+            activation_after_be=False,
+            trail_step_pct=0.001,
+            min_trail_distance_atr_mult=2.0,
+        )
+        rm = RiskManager(trailing_config=cfg)
+        result = _make_signal(side=Side.LONG)
+        active = rm.add_signal(result)
+        active.be_triggered = True  # activation_after_be=False but set explicitly
+
+        atr = 1.0
+        # Advance price well above entry to set high-water mark and trailing SL
+        rm._update_trailing_sl(active, price=110.0, atr=atr)
+        # Expected trail_distance = max(0.5*1.0, 2.0*1.0) = 2.0
+        # trailing_sl_price = 110.0 - 2.0 = 108.0
+        assert active.trailing_sl_price == pytest.approx(108.0)

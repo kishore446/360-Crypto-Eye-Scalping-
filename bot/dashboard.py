@@ -226,22 +226,41 @@ class Dashboard:
 
     def sharpe_ratio(self, risk_free_rate: float = 0.0) -> float:
         """
-        Return the Sharpe Ratio = (mean_return - risk_free) / std_return.
-        Returns 0.0 when there are fewer than 3 closed trades or std is 0.
-        Requires n >= 3 because Bessel's correction (n-1) needs at least 2
-        degrees of freedom to produce a meaningful standard deviation.
+        Return the annualised Sharpe Ratio for closed trades.
+
+        Aggregates per-trade PnL into daily buckets, then computes:
+        ``Sharpe = (mean_daily_return - risk_free) / std_daily_return * sqrt(365)``
+
+        Using 365 (not 252) because crypto markets trade 24/7.
+
+        Returns 0.0 when there are fewer than 3 daily observations or std is 0.
         Uses Bessel's correction (n-1) for an unbiased sample variance.
         """
-        closed = [r for r in self._results if r.outcome in ("WIN", "LOSS", "BE")]
+        closed = [
+            r for r in self._results
+            if r.outcome in ("WIN", "LOSS", "BE") and r.closed_at is not None
+        ]
         if len(closed) < 3:
             return 0.0
-        returns = [r.pnl_pct for r in closed]
+
+        # Group PnL by calendar day (UTC)
+        daily: dict[int, float] = {}
+        for r in closed:
+            day_key = int(r.closed_at // 86400)  # floor to day
+            daily[day_key] = daily.get(day_key, 0.0) + r.pnl_pct
+
+        returns = list(daily.values())
+        if len(returns) < 3:
+            return 0.0
+
         mean_r = sum(returns) / len(returns)
         variance = sum((r - mean_r) ** 2 for r in returns) / (len(returns) - 1)
         std_r = math.sqrt(variance)
         if std_r == 0:
             return 0.0
-        return round((mean_r - risk_free_rate) / std_r, 4)
+        # Annualise using 365 trading days (crypto is 24/7)
+        annualised = (mean_r - risk_free_rate) / std_r * math.sqrt(365)
+        return round(annualised, 4)
 
     def max_drawdown(self) -> float:
         """

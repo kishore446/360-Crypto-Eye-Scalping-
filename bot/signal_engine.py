@@ -26,6 +26,17 @@ from bot.price_fmt import fmt_price
 
 logger = logging.getLogger(__name__)
 
+# ── Module-level EMA series helper (avoids duplication in MACD functions) ─────
+
+
+def _ema_series(values: list[float], period: int) -> list[float]:
+    """Compute an exponential moving average series using smoothing k=2/(period+1)."""
+    k = 2.0 / (period + 1)
+    ema = [values[0]]
+    for v in values[1:]:
+        ema.append(v * k + ema[-1] * (1 - k))
+    return ema
+
 try:
     from config import RSI_DIVERGENCE_PERIOD as _RSI_DIVERGENCE_PERIOD
 except ImportError:
@@ -118,7 +129,9 @@ class SignalResult:
         stars = {"High": "⭐⭐⭐", "Medium": "⭐⭐", "Low": "⭐"}.get(self.confidence.value, "⭐")
         confidence_line = f"Confidence: {self.confidence.value} {stars}"
         if self.confluence_score > 0:
-            confidence_line += f" | Score: {self.confluence_score}/100"
+            # Normalise raw score to a 0-100 scale (max raw score ≈ 150)
+            normalised = min(round(self.confluence_score / 150 * 100), 100)
+            confidence_line += f" | Score: {normalised}/100"
 
         risk_line = f"\n⚠️ {self.risk_note}" if self.risk_note else ""
 
@@ -145,6 +158,7 @@ class SignalResult:
 
         return (
             f"🚀 #{self.symbol}/USDT ({self.side.value}) | 360 EYE SCALP\n"
+            f"Signal ID: {self.signal_id}\n"
             f"{confidence_line}\n\n"
             f"📊 STRATEGY MAP:\n"
             f"- Structure: {self.structure_note}\n"
@@ -278,6 +292,7 @@ def detect_market_structure_shift(
     side: Side,
     min_displacement_pct: float = 0.15,
     atr: float = 0.0,
+    vol_threshold: float = 0.70,
 ) -> bool:
     """
     Detect a 5m Market Structure Shift (MSS) / Change of Character (ChoCh).
@@ -301,6 +316,10 @@ def detect_market_structure_shift(
         When > 0, use an ATR-adaptive displacement threshold of ``0.3 * atr``
         instead of the fixed percentage.  This avoids over-filtering altcoins
         with tight price ranges relative to the fixed percentage.
+    vol_threshold:
+        Volume percentile required to confirm the MSS candle.  Default 0.70
+        (70th percentile) for CH1.  Pass 0.60 for CH2 or 0.50 for CH3 to
+        relax the volume gate and allow more signals on those channels.
     """
     if len(candles) < 3:
         return False
@@ -308,11 +327,11 @@ def detect_market_structure_shift(
     last = candles[-1]
     prior_candles = candles[:-1]
 
-    # Volume percentile check: require at least 70th percentile for MSS confirmation
-    # Use only the last 20 candles for relevant volume context (BUG #6 fix)
+    # Volume percentile check: require at least vol_threshold percentile for MSS confirmation
+    # Use only the last 20 candles for relevant volume context
     recent_for_vol = candles[-20:] if len(candles) > 20 else candles
     vol_rank = sum(1 for c in recent_for_vol if c.volume <= last.volume) / len(recent_for_vol) if recent_for_vol else 0
-    if vol_rank < 0.70:
+    if vol_rank < vol_threshold:
         return False
 
     if side == Side.LONG:
@@ -670,6 +689,7 @@ def run_confluence_check(
     funding_rate: Optional[float] = None,
     oi_change: Optional[float] = None,
     regime: str = "UNKNOWN",
+    on_near_miss: Optional[object] = None,
 ) -> Optional[SignalResult]:
     """
     Run all four confluence gates and return a :class:`SignalResult` when
@@ -699,6 +719,11 @@ def run_confluence_check(
     oi_change:
         Optional OI percentage change (positive = OI rising).  When provided,
         adjusts the score by ±5 based on OI / price divergence signals.
+    on_near_miss:
+        Optional callable invoked with a ``str`` "WATCHING" alert message when
+        exactly one required gate fails.  Callers can use this to broadcast a
+        preparation alert to subscribers before the final gate triggers.
+        Signature: ``on_near_miss(message: str) -> None``.
     """
     try:
         from config import MIN_DISPLACEMENT_PCT as _cfg_displacement
@@ -748,10 +773,22 @@ def run_confluence_check(
     # Near-miss warning: all required gates except one passed
     failed_required = [name for name, v in required_gates.items() if not v]
     if len(failed_required) == 1:
+        _failed_gate = failed_required[0]
         logger.warning(
             "[NEAR_MISS] %s %s: only gate '%s' failed — consider relaxing for CH2/CH3",
-            symbol, side.value, failed_required[0],
+            symbol, side.value, _failed_gate,
         )
+        # Broadcast preparation alert when a callback is provided
+        if on_near_miss is not None:
+            _watching_msg = (
+                f"🔍 WATCHING: #{symbol}/USDT {side.value}\n"
+                f"4/5 gates confirmed — waiting for <b>{_failed_gate}</b> confirmation.\n"
+                f"Prepare your orders now."
+            )
+            try:
+                on_near_miss(_watching_msg)
+            except Exception:
+                logger.debug("on_near_miss callback raised an exception", exc_info=True)
 
     # Gate ⑤ — news blackout
     if not gate_news:
@@ -796,11 +833,18 @@ def run_confluence_check(
 
     # All gates passed — build signal
     if atr > 0:
-        entry_spread = atr * 0.5
+        # Asymmetric entry zone: bias toward the discount/premium side for better fills.
+        # LONG: buy zone is below current price (discount); allow slight upside buffer.
+        # SHORT: sell zone is above current price (premium); allow slight downside buffer.
+        if side == Side.LONG:
+            entry_low = current_price - atr * 0.5
+            entry_high = current_price + atr * 0.15
+        else:
+            entry_low = current_price - atr * 0.15
+            entry_high = current_price + atr * 0.5
     else:
-        entry_spread = abs(current_price * 0.001)  # 0.1 % tight entry zone fallback
-    entry_low = current_price - entry_spread
-    entry_high = current_price + entry_spread
+        entry_low = current_price - abs(current_price * 0.001)
+        entry_high = current_price + abs(current_price * 0.001)
 
     tp1_dyn, tp2_dyn, tp3_dyn = _compute_dynamic_rr(current_price, five_min_candles, tp1_rr, tp2_rr, tp3_rr, regime=regime)
     tp1, tp2, tp3 = calculate_targets(current_price, stop_loss, side, tp1_dyn, tp2_dyn, tp3_dyn)
@@ -1037,11 +1081,27 @@ def detect_rsi_divergence(candles: list[CandleData], side: Side, period: int = 1
     if len(window) < period + 3:
         return False
 
-    # Compute RSI for each candle in window using expanding subsets
-    rsi_values: list[float] = []
-    for i in range(len(window)):
-        sub = window[: i + 1]
-        rsi_values.append(calculate_rsi(sub, period=period))
+    # Compute RSI series in a single O(n) pass using Wilder's incremental smoothing.
+    # Avoids the O(n²) cost of recomputing full RSI from scratch for every candle.
+    closes = [c.close for c in window]
+    # Seed with the first *period* changes
+    gains = [max(closes[i] - closes[i - 1], 0.0) for i in range(1, period + 1)]
+    losses = [max(closes[i - 1] - closes[i], 0.0) for i in range(1, period + 1)]
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+
+    rsi_values: list[float] = [50.0] * (period + 1)  # first period+1 values seeded
+    for i in range(period + 1, len(closes)):
+        delta = closes[i] - closes[i - 1]
+        gain = max(delta, 0.0)
+        loss = max(-delta, 0.0)
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
+        if avg_loss == 0.0:
+            rsi_values.append(100.0)
+        else:
+            rs = avg_gain / avg_loss
+            rsi_values.append(100.0 - (100.0 / (1.0 + rs)))
 
     if side == Side.LONG:
         # Find swing lows: local minima in price (low)
@@ -1114,13 +1174,6 @@ def calculate_macd(
 
     closes = [c.close for c in candles]
 
-    def _ema_series(values: list[float], period: int) -> list[float]:
-        k = 2.0 / (period + 1)
-        ema = [values[0]]
-        for v in values[1:]:
-            ema.append(v * k + ema[-1] * (1 - k))
-        return ema
-
     fast_ema = _ema_series(closes, fast)
     slow_ema = _ema_series(closes, slow)
 
@@ -1155,13 +1208,6 @@ def detect_macd_confirmation(
         return False
 
     closes = [c.close for c in candles]
-
-    def _ema_series(values: list[float], period: int) -> list[float]:
-        k = 2.0 / (period + 1)
-        ema = [values[0]]
-        for v in values[1:]:
-            ema.append(v * k + ema[-1] * (1 - k))
-        return ema
 
     fast_ema = _ema_series(closes, fast)
     slow_ema = _ema_series(closes, slow)
@@ -1409,8 +1455,11 @@ def run_confluence_check_relaxed(
         return None
 
     # Gate ④ — MSS using wider window (with displacement filter per Blueprint §2.2)
+    # CH2 uses a relaxed 60th-percentile volume threshold (vs 70th for CH1).
     mss_candles = five_min_candles[-(mss_window + 1):] if len(five_min_candles) >= mss_window + 1 else five_min_candles
-    if not detect_market_structure_shift(mss_candles, side, min_displacement_pct=effective_displacement):
+    if not detect_market_structure_shift(
+        mss_candles, side, min_displacement_pct=effective_displacement, vol_threshold=0.60
+    ):
         logger.info(
             "[GATE_FAIL][RELAXED] %s %s: gate=mss reason=no_structure_shift",
             symbol, side.value,
@@ -1422,9 +1471,17 @@ def run_confluence_check_relaxed(
 
     # All gates passed — build signal
     atr = calculate_atr(five_min_candles)
-    entry_spread = atr * 0.5 if atr > 0 else abs(current_price * 0.001)
-    entry_low = current_price - entry_spread
-    entry_high = current_price + entry_spread
+    # Asymmetric entry zone: bias toward the discount/premium side for better fills.
+    if atr > 0:
+        if side == Side.LONG:
+            entry_low = current_price - atr * 0.5
+            entry_high = current_price + atr * 0.15
+        else:
+            entry_low = current_price - atr * 0.15
+            entry_high = current_price + atr * 0.5
+    else:
+        entry_low = current_price - abs(current_price * 0.001)
+        entry_high = current_price + abs(current_price * 0.001)
 
     tp1_dyn, tp2_dyn, tp3_dyn = _compute_dynamic_rr(current_price, five_min_candles, tp1_rr, tp2_rr, tp3_rr, regime=regime)
     tp1, tp2, tp3 = calculate_targets(current_price, stop_loss, side, tp1_dyn, tp2_dyn, tp3_dyn)
@@ -1439,7 +1496,7 @@ def run_confluence_check_relaxed(
     fvg_present = detect_fair_value_gap(scoring_candles, side, current_price=current_price)
     ob_present = detect_order_block(scoring_candles, side, atr=atr)
 
-    # Weighted confluence score
+    # Weighted confluence score — mirrors CH1 scoring so CH2 can reach HIGH confidence
     score = 0
     score += 20 if macro_bias == side else 0   # Gate ①
     score += 15                                 # Gate ② (zone — passed above)
@@ -1451,6 +1508,19 @@ def run_confluence_check_relaxed(
     # RSI divergence bonus (+10 when divergence confirms trade direction)
     rsi_div = detect_rsi_divergence(five_min_candles, side, period=_RSI_DIVERGENCE_PERIOD)
     score += 10 if rsi_div else 0
+
+    # New indicator bonus scores (same as CH1 — so CH2 can reach HIGH confidence)
+    macd_ok = detect_macd_confirmation(five_min_candles, side)
+    score += 10 if macd_ok else 0
+
+    bb_squeeze = detect_bollinger_squeeze(five_min_candles)
+    score += 10 if bb_squeeze else 0
+
+    cvd_ok = detect_cvd_confirmation(five_min_candles, side)
+    score += 10 if cvd_ok else -5  # divergence penalty
+
+    ribbon_ok = detect_ema_ribbon_alignment(five_min_candles, side)
+    score += 10 if ribbon_ok else 0
 
     # Gate ⑧ — optional funding rate sentiment adjustment (arbitrage gate)
     if funding_rate is not None:
@@ -1814,7 +1884,7 @@ def run_confluence_check_ch3_easy(
 
     # Gate 4 -- MSS/ChoCh (50th percentile volume threshold -- very relaxed)
     if not detect_market_structure_shift(
-        five_min_candles, side, min_displacement_pct=effective_displacement
+        five_min_candles, side, min_displacement_pct=effective_displacement, vol_threshold=0.50
     ):
         logger.info(
             "[GATE_FAIL][CH3] %s %s: gate=mss reason=no_structure_shift",
@@ -1824,9 +1894,17 @@ def run_confluence_check_ch3_easy(
 
     # All mandatory gates passed -- build signal with bonus scoring
     atr = calculate_atr(five_min_candles)
-    entry_spread = atr * 0.5 if atr > 0 else abs(current_price * 0.001)
-    entry_low = current_price - entry_spread
-    entry_high = current_price + entry_spread
+    # Asymmetric entry zone: bias toward the discount/premium side for better fills.
+    if atr > 0:
+        if side == Side.LONG:
+            entry_low = current_price - atr * 0.5
+            entry_high = current_price + atr * 0.15
+        else:
+            entry_low = current_price - atr * 0.15
+            entry_high = current_price + atr * 0.5
+    else:
+        entry_low = current_price - abs(current_price * 0.001)
+        entry_high = current_price + abs(current_price * 0.001)
 
     tp1_dyn, tp2_dyn, tp3_dyn = _compute_dynamic_rr(
         current_price, five_min_candles, CH3_TP1_RR, CH3_TP2_RR, CH3_TP3_RR, regime=regime,

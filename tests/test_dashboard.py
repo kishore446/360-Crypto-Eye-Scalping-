@@ -114,45 +114,62 @@ class TestDashboard:
         assert "Open PnL" in summary
 
     def test_sharpe_requires_at_least_3_trades(self):
-        """Sharpe ratio should return 0.0 for fewer than 3 closed trades."""
+        """Sharpe ratio should return 0.0 for fewer than 3 daily observations."""
+        # Two trades on the same day → only 1 daily bucket → return 0.0
         self.db.record_result(_make_trade(outcome="WIN", pnl_pct=2.0))
         self.db.record_result(_make_trade(outcome="LOSS", pnl_pct=-1.0))
         assert self.db.sharpe_ratio() == 0.0
 
     def test_sharpe_uses_bessels_correction(self):
         """
-        Sharpe ratio must use sample variance (n-1) not population variance (n).
-        For returns [2.0, -1.0, 1.5]:
+        Sharpe ratio must use sample variance (n-1) not population variance (n),
+        and must annualise with sqrt(365) for 24/7 crypto markets.
+
+        Trades are spread across 3 different days so each produces one daily bucket.
+        Daily returns: [2.0, -1.0, 1.5]
           mean = 2.5/3 ≈ 0.8333
           sample variance = sum((r - mean)^2) / (3-1)
-          NOT population variance = sum((r - mean)^2) / 3
+          annualised Sharpe = mean / sqrt(sample_var) * sqrt(365)
         """
         import math
-        returns = [2.0, -1.0, 1.5]
-        for r in returns:
+        day_seconds = 86400
+        base_ts = time.time()
+        daily_returns = [2.0, -1.0, 1.5]
+        for i, r in enumerate(daily_returns):
             outcome = "WIN" if r > 0 else "LOSS"
-            self.db.record_result(_make_trade(outcome=outcome, pnl_pct=r))
+            tr = _make_trade(outcome=outcome, pnl_pct=r)
+            # Each trade on a distinct calendar day
+            object.__setattr__(tr, "closed_at", base_ts - (len(daily_returns) - i) * day_seconds)
+            self.db.record_result(tr)
 
-        mean_r = sum(returns) / len(returns)
-        sample_var = sum((r - mean_r) ** 2 for r in returns) / (len(returns) - 1)
-        expected_sharpe = round(mean_r / math.sqrt(sample_var), 4)
+        mean_r = sum(daily_returns) / len(daily_returns)
+        sample_var = sum((r - mean_r) ** 2 for r in daily_returns) / (len(daily_returns) - 1)
+        expected_sharpe = round(mean_r / math.sqrt(sample_var) * math.sqrt(365), 4)
 
         assert self.db.sharpe_ratio() == pytest.approx(expected_sharpe, rel=1e-4)
 
     def test_sharpe_differs_from_biased_estimate_with_few_samples(self):
-        """Sample variance (n-1) > population variance (n), so Sharpe is LOWER with correction."""
+        """
+        Sample variance (n-1) > population variance (n), so Sharpe is LOWER with
+        Bessel's correction.  Trades on separate days to produce 3 daily observations.
+        """
         import math
-        returns = [3.0, -1.0, 2.0]  # n=3
-        for r in returns:
+        day_seconds = 86400
+        base_ts = time.time()
+        daily_returns = [3.0, -1.0, 2.0]
+        for i, r in enumerate(daily_returns):
             outcome = "WIN" if r > 0 else "LOSS"
-            self.db.record_result(_make_trade(outcome=outcome, pnl_pct=r))
+            tr = _make_trade(outcome=outcome, pnl_pct=r)
+            object.__setattr__(tr, "closed_at", base_ts - (len(daily_returns) - i) * day_seconds)
+            self.db.record_result(tr)
 
         sharpe_actual = self.db.sharpe_ratio()
 
-        # Compute the old (biased) Sharpe for comparison
-        mean_r = sum(returns) / len(returns)
-        pop_var = sum((r - mean_r) ** 2 for r in returns) / len(returns)
-        biased_sharpe = mean_r / math.sqrt(pop_var)
+        # Biased Sharpe (population variance, no annualisation) for reference comparison
+        mean_r = sum(daily_returns) / len(daily_returns)
+        pop_var = sum((r - mean_r) ** 2 for r in daily_returns) / len(daily_returns)
+        # Annualised biased Sharpe
+        biased_sharpe = mean_r / math.sqrt(pop_var) * math.sqrt(365)
 
         # With Bessel's correction, std is larger → Sharpe is smaller
         assert sharpe_actual < biased_sharpe

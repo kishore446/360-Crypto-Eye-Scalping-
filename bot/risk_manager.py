@@ -70,12 +70,18 @@ class TrailingStopConfig:
     trail_step_pct:
         Minimum price move (as a fraction of entry price) required before the
         trailing SL level is updated.  Prevents excessive micro-adjustments.
+    min_trail_distance_atr_mult:
+        Minimum trailing distance expressed as a multiple of ATR.  The trailing
+        SL will never be set closer than ``ATR * min_trail_distance_atr_mult``
+        from the current price, preventing noise-driven stop-outs in volatile
+        markets.  Set to 0 to disable the floor (not recommended).
     """
 
     enabled: bool = True
     atr_multiplier: float = 1.5
     activation_after_be: bool = True
     trail_step_pct: float = 0.1  # minimum move before trail updates
+    min_trail_distance_atr_mult: float = 1.0  # ATR floor for trailing distance
 
 
 @dataclass
@@ -111,11 +117,18 @@ class ActiveSignal:
         """Return True when current price has reached the BE trigger level."""
         if self.be_triggered or self.closed:
             return False
-        distance_to_tp1 = abs(self.result.tp1 - self.entry_mid)
+        # Use the actual entry edge (not midpoint) for a more accurate BE trigger.
+        # LONG: trader enters near entry_low (discount); reference the low edge.
+        # SHORT: trader enters near entry_high (premium); reference the high edge.
+        if self.result.side == Side.LONG:
+            entry_ref = self.result.entry_low
+        else:
+            entry_ref = self.result.entry_high
+        distance_to_tp1 = abs(self.result.tp1 - entry_ref)
         trigger_price = (
-            self.entry_mid + BE_TRIGGER_FRACTION * distance_to_tp1
+            entry_ref + BE_TRIGGER_FRACTION * distance_to_tp1
             if self.result.side == Side.LONG
-            else self.entry_mid - BE_TRIGGER_FRACTION * distance_to_tp1
+            else entry_ref - BE_TRIGGER_FRACTION * distance_to_tp1
         )
         if self.result.side == Side.LONG:
             return current_price >= trigger_price
@@ -458,6 +471,11 @@ class RiskManager:
         side = signal.result.side
         entry = signal.entry_mid
         trail_distance = (atr * cfg.atr_multiplier) if atr is not None else (cfg.trail_step_pct * entry)
+
+        # Enforce ATR-based minimum trail distance to avoid noise-driven stop-outs
+        if atr is not None and atr > 0 and cfg.min_trail_distance_atr_mult > 0:
+            min_trail = atr * cfg.min_trail_distance_atr_mult
+            trail_distance = max(trail_distance, min_trail)
 
         if side == Side.LONG:
             # Initialise the high-water mark and set an initial trailing SL
