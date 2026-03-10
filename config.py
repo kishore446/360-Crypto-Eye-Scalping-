@@ -180,7 +180,7 @@ try:
         coinglass_api_key: str = ""
 
         # ── Signal Broadcast Rate Limiting ────────────────────────────────────
-        min_signal_gap_seconds: int = 300  # 5 minutes minimum between signals per channel
+        min_signal_gap_seconds: int = 60  # 1 minute minimum between signals per channel
 
         # ── Admin Alerting ────────────────────────────────────────────────────
         admin_alert_enabled: bool = True
@@ -573,7 +573,7 @@ except ImportError:
     SPOT_SCAN_BATCH_DELAY: float = float(os.environ.get("SPOT_SCAN_BATCH_DELAY", "0.5"))
     WHALE_ALERT_API_KEY: str = os.environ.get("WHALE_ALERT_API_KEY", "")
     COINGLASS_API_KEY: str = os.environ.get("COINGLASS_API_KEY", "")
-    MIN_SIGNAL_GAP_SECONDS: int = int(os.environ.get("MIN_SIGNAL_GAP_SECONDS", "300"))
+    MIN_SIGNAL_GAP_SECONDS: int = int(os.environ.get("MIN_SIGNAL_GAP_SECONDS", "60"))
     ADMIN_ALERT_ENABLED: bool = os.environ.get("ADMIN_ALERT_ENABLED", "true").lower() in ("true", "1", "yes")
     ADMIN_ALERT_WIN_RATE_THRESHOLD: int = int(os.environ.get("ADMIN_ALERT_WIN_RATE_THRESHOLD", "40"))
     OI_DIVERGENCE_ENABLED: bool = os.environ.get("OI_DIVERGENCE_ENABLED", "true").lower() in ("true", "1", "yes")

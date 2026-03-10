@@ -108,18 +108,20 @@ class ResilientExchange:
                 self._weight_used = 0
                 self._weight_reset_at = now + 60
 
-            # Reserve weight upfront to prevent concurrent threads
-            # from all passing the check before any increments
-            self._weight_used += cost
-
-            if self._weight_used >= _WEIGHT_LIMIT - _WEIGHT_BUFFER:
+            # Check threshold BEFORE incrementing so the logged counter is
+            # accurate and we don't over-count weight when sleeping.
+            if self._weight_used + cost >= _WEIGHT_LIMIT - _WEIGHT_BUFFER:
                 sleep_time = max(0.1, self._weight_reset_at - now)
                 logger.warning(
                     "Rate limit approaching (%d/%d), sleeping %.1fs",
-                    self._weight_used,
+                    self._weight_used + cost,
                     _WEIGHT_LIMIT,
                     sleep_time,
                 )
+
+            # Reserve weight upfront to prevent concurrent threads
+            # from all passing the check before any increments
+            self._weight_used += cost
 
         # Sleep outside the lock so other threads are not blocked
         if sleep_time > 0.0:
