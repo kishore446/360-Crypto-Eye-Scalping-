@@ -50,11 +50,12 @@ class ResilientExchange:
     # ── Circuit breaker ───────────────────────────────────────────────────────
 
     def _check_circuit(self) -> None:
-        if time.time() < self._circuit_open_until:
-            remaining = self._circuit_open_until - time.time()
-            raise CircuitBreakerOpen(
-                f"Circuit breaker open — retry in {remaining:.0f}s"
-            )
+        with self._lock:
+            if time.time() < self._circuit_open_until:
+                remaining = self._circuit_open_until - time.time()
+                raise CircuitBreakerOpen(
+                    f"Circuit breaker open — retry in {remaining:.0f}s"
+                )
 
     def _record_success(self) -> None:
         with self._lock:
@@ -86,19 +87,21 @@ class ResilientExchange:
             del self._cache[k]
 
     def _get_cached(self, symbol: str, timeframe: str) -> Optional[Any]:
-        key = self._cache_key(symbol, timeframe)
-        if key in self._cache:
-            expires_at, data = self._cache[key]
-            if time.time() < expires_at:
-                return data
-        self._evict_expired_cache()
-        return None
+        with self._lock:
+            key = self._cache_key(symbol, timeframe)
+            if key in self._cache:
+                expires_at, data = self._cache[key]
+                if time.time() < expires_at:
+                    return data
+            self._evict_expired_cache()
+            return None
 
     def _set_cached(self, symbol: str, timeframe: str, data: Any) -> None:
         ttl = _CACHE_TTL.get(timeframe.lower(), 0)
         if ttl > 0:
-            key = self._cache_key(symbol, timeframe)
-            self._cache[key] = (time.time() + ttl, data)
+            with self._lock:
+                key = self._cache_key(symbol, timeframe)
+                self._cache[key] = (time.time() + ttl, data)
 
     # ── Retry helpers ─────────────────────────────────────────────────────────
 

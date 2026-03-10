@@ -4,11 +4,10 @@ Correlation Guard
 Detects over-concentration of same-side signals in a correlated asset group.
 
 Groups:
-  BTC_MAJORS : BTC, ETH
-  L1_ALTS    : SOL, ADA, AVAX, DOT, LINK
-  MEME       : DOGE, SHIB, PEPE, FLOKI, WIF, BONK
-  DEFI       : UNI, AAVE, MKR, CRV, SUSHI
-  L2         : MATIC, ARB, OP, STRK, MANTA
+  BTC_GROUP  : BTC, ETH, SOL, AVAX, NEAR
+  MEME_GROUP : DOGE, SHIB, PEPE, FLOKI, BONK
+  L2_GROUP   : ARB, OP, MATIC, MANTA, STRK
+  DEFI_GROUP : UNI, AAVE, LINK, MKR, SNX
 
 Fires a warning when ≥ max_same_group same-side signals concentrate in one group.
 """
@@ -23,11 +22,10 @@ if TYPE_CHECKING:
 __all__ = ["check_correlation_risk", "CORRELATION_GROUPS"]
 
 CORRELATION_GROUPS: dict[str, list[str]] = {
-    "BTC_MAJORS": ["BTC", "ETH"],
-    "L1_ALTS": ["SOL", "ADA", "AVAX", "DOT", "LINK"],
-    "MEME": ["DOGE", "SHIB", "PEPE", "FLOKI", "WIF", "BONK"],
-    "DEFI": ["UNI", "AAVE", "MKR", "CRV", "SUSHI"],
-    "L2": ["MATIC", "ARB", "OP", "STRK", "MANTA"],
+    "BTC_GROUP": ["BTC", "ETH", "SOL", "AVAX", "NEAR"],
+    "MEME_GROUP": ["DOGE", "SHIB", "PEPE", "FLOKI", "BONK"],
+    "L2_GROUP": ["ARB", "OP", "MATIC", "MANTA", "STRK"],
+    "DEFI_GROUP": ["UNI", "AAVE", "LINK", "MKR", "SNX"],
 }
 
 
