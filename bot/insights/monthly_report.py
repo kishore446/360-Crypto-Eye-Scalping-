@@ -83,8 +83,8 @@ def format_monthly_report(dashboard: "Dashboard", month: int, year: int) -> str:
     # Per-channel breakdown
     channel_lines: list[str] = []
     for tier, label in [
-        ("CH1_HARD", "CH1"), ("CH2_MEDIUM", "CH2"),
-        ("CH3_EASY", "CH3"), ("CH4_SPOT", "CH4"),
+        ("CH1_SCALPING", "CH1"), ("CH2_INTRADAY", "CH2"),
+        ("CH3_TREND", "CH3"), ("CH4_SPOT", "CH4"),
     ]:
         subset = [r for r in closed if r.channel_tier == tier]
         n = len(subset)

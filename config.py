@@ -25,15 +25,15 @@ try:
         admin_chat_id: int = 0
 
         # ── Multi-Channel Telegram ────────────────────────────────────────────
-        telegram_channel_id_hard: int = 0      # CH1: Hard Scalp (replaces telegram_channel_id)
-        telegram_channel_id_medium: int = 0    # CH2: Medium Scalp
-        telegram_channel_id_easy: int = 0      # CH3: Easy Breakout
-        telegram_channel_id_spot: int = 0      # CH4: Spot Momentum
-        telegram_channel_id_insights: int = 0  # CH5: Market Insights
-        telegram_channel_id_altgems: int = 0   # CH6: Altcoin Gems
-        telegram_channel_id_whale: int = 0     # CH7: Whale Tracker
-        telegram_channel_id_education: int = 0 # CH8: Education
-        telegram_channel_id_vip: int = 0       # CH9: VIP Discussion
+        telegram_channel_id_scalping: int = 0    # CH1: Scalping (replaces telegram_channel_id)
+        telegram_channel_id_intraday: int = 0    # CH2: Intraday / Swing
+        telegram_channel_id_trend: int = 0       # CH3: Trend / Positional
+        telegram_channel_id_spot: int = 0        # CH4: Spot Momentum
+        telegram_channel_id_insights: int = 0    # CH5: Market Insights
+        telegram_channel_id_altgems: int = 0     # CH6: Altcoin Gems
+        telegram_channel_id_whale: int = 0       # CH7: Whale Tracker
+        telegram_channel_id_education: int = 0   # CH8: Education
+        telegram_channel_id_vip: int = 0         # CH9: VIP Discussion
 
         # ── Channel Thresholds ───────────────────────────────────────────────
         ch2_news_window_minutes: int = 30         # Medium channel relaxed news window
@@ -283,15 +283,21 @@ try:
     ADMIN_CHAT_ID: int = settings.admin_chat_id
 
     # ── Multi-channel IDs — CH1 falls back to TELEGRAM_CHANNEL_ID ───────────
-    TELEGRAM_CHANNEL_ID_HARD: int = settings.telegram_channel_id_hard or settings.telegram_channel_id
-    TELEGRAM_CHANNEL_ID_MEDIUM: int = settings.telegram_channel_id_medium
-    TELEGRAM_CHANNEL_ID_EASY: int = settings.telegram_channel_id_easy
+    TELEGRAM_CHANNEL_ID_SCALPING: int = settings.telegram_channel_id_scalping or settings.telegram_channel_id
+    TELEGRAM_CHANNEL_ID_INTRADAY: int = settings.telegram_channel_id_intraday
+    TELEGRAM_CHANNEL_ID_TREND: int = settings.telegram_channel_id_trend
     TELEGRAM_CHANNEL_ID_SPOT: int = settings.telegram_channel_id_spot
     TELEGRAM_CHANNEL_ID_INSIGHTS: int = settings.telegram_channel_id_insights
     TELEGRAM_CHANNEL_ID_ALTGEMS: int = settings.telegram_channel_id_altgems
     TELEGRAM_CHANNEL_ID_WHALE: int = settings.telegram_channel_id_whale
     TELEGRAM_CHANNEL_ID_EDUCATION: int = settings.telegram_channel_id_education
     TELEGRAM_CHANNEL_ID_VIP: int = settings.telegram_channel_id_vip
+
+    # Backward-compat aliases — existing deployments using the old env var names
+    # will continue to work transparently.
+    TELEGRAM_CHANNEL_ID_HARD: int = TELEGRAM_CHANNEL_ID_SCALPING
+    TELEGRAM_CHANNEL_ID_MEDIUM: int = TELEGRAM_CHANNEL_ID_INTRADAY
+    TELEGRAM_CHANNEL_ID_EASY: int = TELEGRAM_CHANNEL_ID_TREND
 
     CH2_NEWS_WINDOW_MINUTES: int = settings.ch2_news_window_minutes
     CH3_VOLUME_SPIKE_RATIO: float = settings.ch3_volume_spike_ratio
@@ -470,8 +476,10 @@ try:
     TIMEFRAMES: dict[str, int] = {
         "1D": 1440,
         "4H": 240,
+        "1H": 60,
         "15m": 15,
         "5m": 5,
+        "1m": 1,
     }
 
 except ImportError:
@@ -480,15 +488,30 @@ except ImportError:
     TELEGRAM_CHANNEL_ID: int = int(os.environ.get("TELEGRAM_CHANNEL_ID", "0"))
     ADMIN_CHAT_ID: int = int(os.environ.get("ADMIN_CHAT_ID", "0"))
 
-    TELEGRAM_CHANNEL_ID_HARD: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_HARD", "0")) or TELEGRAM_CHANNEL_ID
-    TELEGRAM_CHANNEL_ID_MEDIUM: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_MEDIUM", "0"))
-    TELEGRAM_CHANNEL_ID_EASY: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_EASY", "0"))
+    TELEGRAM_CHANNEL_ID_SCALPING: int = (
+        int(os.environ.get("TELEGRAM_CHANNEL_ID_SCALPING", "0"))
+        or int(os.environ.get("TELEGRAM_CHANNEL_ID_HARD", "0"))
+        or TELEGRAM_CHANNEL_ID
+    )
+    TELEGRAM_CHANNEL_ID_INTRADAY: int = (
+        int(os.environ.get("TELEGRAM_CHANNEL_ID_INTRADAY", "0"))
+        or int(os.environ.get("TELEGRAM_CHANNEL_ID_MEDIUM", "0"))
+    )
+    TELEGRAM_CHANNEL_ID_TREND: int = (
+        int(os.environ.get("TELEGRAM_CHANNEL_ID_TREND", "0"))
+        or int(os.environ.get("TELEGRAM_CHANNEL_ID_EASY", "0"))
+    )
     TELEGRAM_CHANNEL_ID_SPOT: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_SPOT", "0"))
     TELEGRAM_CHANNEL_ID_INSIGHTS: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_INSIGHTS", "0"))
     TELEGRAM_CHANNEL_ID_ALTGEMS: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_ALTGEMS", "0"))
     TELEGRAM_CHANNEL_ID_WHALE: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_WHALE", "0"))
     TELEGRAM_CHANNEL_ID_EDUCATION: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_EDUCATION", "0"))
     TELEGRAM_CHANNEL_ID_VIP: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_VIP", "0"))
+
+    # Backward-compat aliases
+    TELEGRAM_CHANNEL_ID_HARD: int = TELEGRAM_CHANNEL_ID_SCALPING
+    TELEGRAM_CHANNEL_ID_MEDIUM: int = TELEGRAM_CHANNEL_ID_INTRADAY
+    TELEGRAM_CHANNEL_ID_EASY: int = TELEGRAM_CHANNEL_ID_TREND
 
     CH2_NEWS_WINDOW_MINUTES: int = int(os.environ.get("CH2_NEWS_WINDOW_MINUTES", "30"))
     CH3_VOLUME_SPIKE_RATIO: float = float(os.environ.get("CH3_VOLUME_SPIKE_RATIO", "1.2"))
@@ -650,7 +673,7 @@ except ImportError:
     # ── OI Heatmap ────────────────────────────────────────────────────────────
     OI_HEATMAP_INTERVAL_HOURS: int = int(os.environ.get("OI_HEATMAP_INTERVAL_HOURS", "4"))
 
-    TIMEFRAMES: dict[str, int] = {"1D": 1440, "4H": 240, "15m": 15, "5m": 5}
+    TIMEFRAMES: dict[str, int] = {"1D": 1440, "4H": 240, "1H": 60, "15m": 15, "5m": 5, "1m": 1}
 
 # Ensure the data directory exists so that dashboard.json, signals.json,
 # and 360eye.db can be created on first run without raising FileNotFoundError.

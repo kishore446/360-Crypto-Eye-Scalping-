@@ -242,8 +242,8 @@ class TestOnCandleCloseGates:
         fake_result.format_message.return_value = "signal text"
         fake_result.side = _Side.LONG
 
-        # Patch hard_scalp.run to return our fake result (CH1 path)
-        with patch("bot.channels.hard_scalp.run", return_value=fake_result):
+        # Patch scalping.run to return our fake result (CH1 path)
+        with patch("bot.channels.scalping.run", return_value=fake_result):
             self._run(_bot.on_candle_close("BTC", "5m"))
 
         self._risk.add_signal.assert_called_once_with(fake_result, origin_channel=ANY, created_regime=ANY)
@@ -262,12 +262,12 @@ class TestOnCandleCloseGates:
 
         call_count = 0
 
-        def _hard_scalp(*args, **kwargs):
+        def _scalping_run(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             return fake_result  # always succeeds
 
-        with patch("bot.channels.hard_scalp.run", side_effect=_hard_scalp):
+        with patch("bot.channels.scalping.run", side_effect=_scalping_run):
             self._run(_bot.on_candle_close("BTC", "5m"))
 
         # Should stop after the first side (LONG) succeeds
@@ -348,13 +348,13 @@ class TestFallbackScanJob:
             mock_conf.assert_not_called()
 
     def test_activates_when_ws_unhealthy(self, monkeypatch):
-        """Fallback job runs hard_scalp.run when WebSocket is unhealthy."""
+        """Fallback job runs scalping.run when WebSocket is unhealthy."""
         import bot.bot as _bot
 
         unhealthy_mgr = _make_ws_manager(connected=False)
         monkeypatch.setattr(_bot, "ws_manager", unhealthy_mgr)
 
-        with patch("bot.channels.hard_scalp.run", return_value=None) as mock_hard:
+        with patch("bot.channels.scalping.run", return_value=None) as mock_hard:
             _bot._run_fallback_scan_job()
             assert mock_hard.called
 
@@ -365,7 +365,7 @@ class TestFallbackScanJob:
         stale_mgr = _make_ws_manager(connected=True, last_msg_offset=_STALE_THRESHOLD + 10)
         monkeypatch.setattr(_bot, "ws_manager", stale_mgr)
 
-        with patch("bot.channels.hard_scalp.run", return_value=None) as mock_hard:
+        with patch("bot.channels.scalping.run", return_value=None) as mock_hard:
             _bot._run_fallback_scan_job()
             assert mock_hard.called
 
@@ -385,7 +385,7 @@ class TestFallbackScanJob:
             mock_conf.assert_not_called()
 
     def test_fallback_signal_broadcast(self, monkeypatch):
-        """Fallback scan broadcasts signal when hard_scalp gate passes."""
+        """Fallback scan broadcasts signal when scalping gate passes."""
         import bot.bot as _bot
         from bot.signal_engine import Side as _Side
         from bot.signal_engine import SignalResult
@@ -399,7 +399,7 @@ class TestFallbackScanJob:
         fake_result.format_message.return_value = "fallback signal"
         fake_result.side = _Side.LONG
 
-        with patch("bot.channels.hard_scalp.run", return_value=fake_result):
+        with patch("bot.channels.scalping.run", return_value=fake_result):
             with patch("bot.bot._broadcast_to_channel", new_callable=AsyncMock):
                 _bot._run_fallback_scan_job()
 

@@ -2,9 +2,9 @@
 Signal Router — routes generated signals to the correct Telegram channel(s).
 
 Channel tiers:
-  HARD          → CH1 — full confluence, HIGH confidence only
-  MEDIUM        → CH2 — relaxed gates, HIGH+MEDIUM confidence
-  EASY          → CH3 — breakout only, all confidence
+  SCALPING      → CH1 — Scalping / Quick Trades (1–5 min)
+  INTRADAY      → CH2 — Intraday / Swing (15–60 min)
+  TREND         → CH3 — Trend / Positional (4H–1D)
   SPOT          → CH4 — spot momentum, all confidence
   INSIGHTS      → CH5 — informational posts only (not signals)
   ALTGEMS       → CH6 — altcoin gems (low-cap DCA/swing)
@@ -13,8 +13,8 @@ Channel tiers:
   VIP_DISCUSSION→ CH9 — member analysis & discussion
 
 Deduplication:
-  If the same symbol fires on a stricter channel (HARD) within the
-  ``dedup_window_minutes`` window, the MEDIUM and EASY channels are
+  If the same symbol fires on a stricter channel (SCALPING) within the
+  ``dedup_window_minutes`` window, the INTRADAY and TREND channels are
   suppressed to avoid duplicate alerts for the same setup.
 """
 from __future__ import annotations
@@ -30,9 +30,9 @@ except Exception:  # pragma: no cover
 
 
 class ChannelTier(str, Enum):
-    HARD = "hard"
-    MEDIUM = "medium"
-    EASY = "easy"
+    SCALPING = "scalping"       # CH1 — Scalping / Quick Trades (1–5 min)
+    INTRADAY = "intraday"       # CH2 — Intraday / Swing (15–60 min)
+    TREND = "trend"             # CH3 — Trend / Positional (4H–1D)
     SPOT = "spot"
     INSIGHTS = "insights"
     ALTGEMS = "altgems"         # CH6
@@ -42,12 +42,12 @@ class ChannelTier(str, Enum):
 
 
 # Tiers that can suppress lower-priority channels via dedup.
-# CH1 (HARD) and CH2 (MEDIUM) both suppress lower tiers.
-_STRICT_TIERS = (ChannelTier.HARD, ChannelTier.MEDIUM)
+# CH1 (SCALPING) and CH2 (INTRADAY) both suppress lower tiers.
+_STRICT_TIERS = (ChannelTier.SCALPING, ChannelTier.INTRADAY)
 # Tiers that can be suppressed by a stricter tier, and also have a
 # same-channel cooldown applied (prevents the same channel from
 # broadcasting the same symbol repeatedly within the dedup window).
-_SUPPRESSIBLE_TIERS = (ChannelTier.MEDIUM, ChannelTier.EASY)
+_SUPPRESSIBLE_TIERS = (ChannelTier.INTRADAY, ChannelTier.TREND)
 
 
 class SignalRouter:
@@ -55,9 +55,9 @@ class SignalRouter:
 
     def __init__(
         self,
-        channel_hard: int,
-        channel_medium: int,
-        channel_easy: int,
+        channel_scalping: int,
+        channel_intraday: int,
+        channel_trend: int,
         channel_spot: int,
         channel_insights: int,
         channel_altgems: int = 0,
@@ -67,9 +67,9 @@ class SignalRouter:
         dedup_window_minutes: int = _DEDUP_WINDOW_MINUTES,
     ) -> None:
         self._channels: dict[ChannelTier, int] = {
-            ChannelTier.HARD: channel_hard,
-            ChannelTier.MEDIUM: channel_medium,
-            ChannelTier.EASY: channel_easy,
+            ChannelTier.SCALPING: channel_scalping,
+            ChannelTier.INTRADAY: channel_intraday,
+            ChannelTier.TREND: channel_trend,
             ChannelTier.SPOT: channel_spot,
             ChannelTier.INSIGHTS: channel_insights,
             ChannelTier.ALTGEMS: channel_altgems,

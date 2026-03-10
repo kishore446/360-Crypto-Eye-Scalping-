@@ -45,9 +45,9 @@ from telegram.ext import (
 
 from bot.auto_close_monitor import AutoCloseMonitor
 from bot.backtester import Backtester, HistoricalDataFetcher
-from bot.channels import easy_breakout as _easy_breakout
-from bot.channels import hard_scalp as _hard_scalp
-from bot.channels import medium_scalp as _medium_scalp
+from bot.channels import intraday as _intraday
+from bot.channels import scalping as _scalping
+from bot.channels import trend_positional as _trend_positional
 from bot.correlation_guard import check_correlation_risk
 from bot.dashboard import Dashboard, TradeResult
 from bot.exchange import _resilient_exchange, _spot_resilient_exchange
@@ -89,12 +89,12 @@ from config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHANNEL_ID,
     TELEGRAM_CHANNEL_ID_ALTGEMS,
-    TELEGRAM_CHANNEL_ID_EASY,
     TELEGRAM_CHANNEL_ID_EDUCATION,
-    TELEGRAM_CHANNEL_ID_HARD,
     TELEGRAM_CHANNEL_ID_INSIGHTS,
-    TELEGRAM_CHANNEL_ID_MEDIUM,
+    TELEGRAM_CHANNEL_ID_INTRADAY,
+    TELEGRAM_CHANNEL_ID_SCALPING,
     TELEGRAM_CHANNEL_ID_SPOT,
+    TELEGRAM_CHANNEL_ID_TREND,
     TELEGRAM_CHANNEL_ID_VIP,
     TELEGRAM_CHANNEL_ID_WHALE,
 )
@@ -111,9 +111,9 @@ cooldown_manager = CooldownManager()
 
 # Multi-channel signal router
 signal_router = SignalRouter(
-    channel_hard=TELEGRAM_CHANNEL_ID_HARD,
-    channel_medium=TELEGRAM_CHANNEL_ID_MEDIUM,
-    channel_easy=TELEGRAM_CHANNEL_ID_EASY,
+    channel_scalping=TELEGRAM_CHANNEL_ID_SCALPING,
+    channel_intraday=TELEGRAM_CHANNEL_ID_INTRADAY,
+    channel_trend=TELEGRAM_CHANNEL_ID_TREND,
     channel_spot=TELEGRAM_CHANNEL_ID_SPOT,
     channel_insights=TELEGRAM_CHANNEL_ID_INSIGHTS,
     channel_altgems=TELEGRAM_CHANNEL_ID_ALTGEMS,
@@ -179,8 +179,8 @@ async def _reply(update: Update, text: str, parse_mode: str = "Markdown") -> Non
 
 
 async def _broadcast(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
-    """Send *text* to the primary Telegram channel (CH1 Hard or legacy fallback)."""
-    channel_id = TELEGRAM_CHANNEL_ID_HARD or TELEGRAM_CHANNEL_ID
+    """Send *text* to the primary Telegram channel (CH1 Scalping or legacy fallback)."""
+    channel_id = TELEGRAM_CHANNEL_ID_SCALPING or TELEGRAM_CHANNEL_ID
     if channel_id == 0:
         logger.debug("Skipping _broadcast — no channel ID configured.")
         return
@@ -288,11 +288,11 @@ async def cmd_signal_gen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Route to the correct channel based on confidence level
     if result.confidence == Confidence.HIGH:
-        tier = ChannelTier.HARD
+        tier = ChannelTier.SCALPING
     elif result.confidence == Confidence.MEDIUM:
-        tier = ChannelTier.MEDIUM
+        tier = ChannelTier.INTRADAY
     else:
-        tier = ChannelTier.EASY
+        tier = ChannelTier.TREND
 
     target_channel = signal_router.get_channel_id(tier)
     risk_manager.add_signal(result, origin_channel=target_channel)
@@ -517,17 +517,17 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     active_sigs = risk_manager.active_signals
     total_active = len(active_sigs)
     channel_counts: dict[str, int] = {
-        "Hard": 0, "Medium": 0, "Easy": 0, "Spot": 0,
+        "Scalping": 0, "Intraday": 0, "Trend": 0, "Spot": 0,
         "AltGems": 0, "Whale": 0, "Edu": 0, "VIP": 0, "Other": 0,
     }
     for sig in active_sigs:
         ch = sig.origin_channel
-        if ch and ch == signal_router.get_channel_id(ChannelTier.HARD):
-            channel_counts["Hard"] += 1
-        elif ch and ch == signal_router.get_channel_id(ChannelTier.MEDIUM):
-            channel_counts["Medium"] += 1
-        elif ch and ch == signal_router.get_channel_id(ChannelTier.EASY):
-            channel_counts["Easy"] += 1
+        if ch and ch == signal_router.get_channel_id(ChannelTier.SCALPING):
+            channel_counts["Scalping"] += 1
+        elif ch and ch == signal_router.get_channel_id(ChannelTier.INTRADAY):
+            channel_counts["Intraday"] += 1
+        elif ch and ch == signal_router.get_channel_id(ChannelTier.TREND):
+            channel_counts["Trend"] += 1
         elif ch and ch == signal_router.get_channel_id(ChannelTier.SPOT):
             channel_counts["Spot"] += 1
         elif ch and ch == signal_router.get_channel_id(ChannelTier.ALTGEMS):
@@ -541,9 +541,9 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         else:
             channel_counts["Other"] += 1
     active_breakdown = (
-        f"  🔴 Hard: {channel_counts['Hard']} | "
-        f"🟡 Medium: {channel_counts['Medium']} | "
-        f"🔵 Easy: {channel_counts['Easy']} | "
+        f"  🔴 Scalping: {channel_counts['Scalping']} | "
+        f"🟡 Intraday: {channel_counts['Intraday']} | "
+        f"🔵 Trend: {channel_counts['Trend']} | "
         f"💎 Spot: {channel_counts['Spot']}"
     )
 
@@ -563,9 +563,9 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         ch_stats = dashboard.per_channel_stats()
         for tier_key, label in [
-            ("CH1_HARD", "Hard"),
-            ("CH2_MEDIUM", "Medium"),
-            ("CH3_EASY", "Easy"),
+            ("CH1_SCALPING", "Scalping"),
+            ("CH2_INTRADAY", "Intraday"),
+            ("CH3_TREND", "Trend"),
             ("CH4_SPOT", "Spot"),
         ]:
             s = ch_stats.get(tier_key, {})
@@ -589,9 +589,9 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"🕐 Uptime: {hours}h {minutes}m\n"
         f"{perf_section}\n"
         f"📢 Channel IDs:\n"
-        f"  CH1 Hard:    {signal_router.get_channel_id(ChannelTier.HARD) or 'not set'}\n"
-        f"  CH2 Medium:  {signal_router.get_channel_id(ChannelTier.MEDIUM) or 'not set'}\n"
-        f"  CH3 Easy:    {signal_router.get_channel_id(ChannelTier.EASY) or 'not set'}\n"
+        f"  CH1 Scalping:    {signal_router.get_channel_id(ChannelTier.SCALPING) or 'not set'}\n"
+        f"  CH2 Intraday:  {signal_router.get_channel_id(ChannelTier.INTRADAY) or 'not set'}\n"
+        f"  CH3 Trend:    {signal_router.get_channel_id(ChannelTier.TREND) or 'not set'}\n"
         f"  CH4 Spot:    {signal_router.get_channel_id(ChannelTier.SPOT) or 'not set'}\n"
         f"  CH5 Insights:{signal_router.get_channel_id(ChannelTier.INSIGHTS) or 'not set'}\n"
         f"  CH6 AltGems: {signal_router.get_channel_id(ChannelTier.ALTGEMS) or 'not set'}\n"
@@ -686,9 +686,9 @@ async def cmd_regime(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     msg = (
         f"🌍 *Market Regime: {regime} {regime_emoji}*\n\n"
         f"{effect}\n\n"
-        f"CH1 Hard Scalp:  {'LONGS SUPPRESSED' if regime == 'BEAR' else 'active'}\n"
-        f"CH2 Medium Scalp: {'LONGS SUPPRESSED' if regime == 'BEAR' else 'active'}\n"
-        f"CH3 Easy Breakout: always active (regime-independent)\n"
+        f"CH1 Scalping:  {'LONGS SUPPRESSED' if regime == 'BEAR' else 'active'}\n"
+        f"CH2 Intraday: {'LONGS SUPPRESSED' if regime == 'BEAR' else 'active'}\n"
+        f"CH3 Trend/Positional: always active (regime-independent)\n"
         f"CH4 Spot Momentum: always active (regime-independent)\n"
         f"CH5 Insights:      always active (informational)\n"
         f"CH6 AltGems:       always active (regime-independent)\n"
@@ -717,9 +717,9 @@ async def cmd_channels(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     msg = (
         "📢 *360 Crypto Eye — Channel Status*\n\n"
-        f"CH1 Hard Scalp:    {_ch_status(ChannelTier.HARD)}\n"
-        f"CH2 Medium Scalp:  {_ch_status(ChannelTier.MEDIUM)}\n"
-        f"CH3 Easy Breakout: {_ch_status(ChannelTier.EASY)}\n"
+        f"CH1 Scalping:    {_ch_status(ChannelTier.SCALPING)}\n"
+        f"CH2 Intraday:  {_ch_status(ChannelTier.INTRADAY)}\n"
+        f"CH3 Trend/Positional: {_ch_status(ChannelTier.TREND)}\n"
         f"CH4 Spot Momentum: {_ch_status(ChannelTier.SPOT)}\n"
         f"CH5 Insights:      {_ch_status(ChannelTier.INSIGHTS)}\n"
         f"CH6 AltGems:       {_ch_status(ChannelTier.ALTGEMS)}\n"
@@ -809,7 +809,7 @@ def _run_trailing_sl_job(context_or_bot=None) -> None:
 
         last_3 = raw_5m_rows[-3:]
         current_sl = sig.result.stop_loss
-        target_channel = sig.origin_channel if sig.origin_channel else (TELEGRAM_CHANNEL_ID_HARD or TELEGRAM_CHANNEL_ID)
+        target_channel = sig.origin_channel if sig.origin_channel else (TELEGRAM_CHANNEL_ID_SCALPING or TELEGRAM_CHANNEL_ID)
 
         if sig.result.side == Side.LONG:
             # Per the spec: "Higher Low" = min low of the last 3 candles.
@@ -898,7 +898,7 @@ def _run_stale_signal_job() -> None:
     for sig in list(risk_manager.active_signals):
         if sig.is_stale():
             symbol = sig.result.symbol
-            target_channel = sig.origin_channel if sig.origin_channel else (TELEGRAM_CHANNEL_ID_HARD or TELEGRAM_CHANNEL_ID)
+            target_channel = sig.origin_channel if sig.origin_channel else (TELEGRAM_CHANNEL_ID_SCALPING or TELEGRAM_CHANNEL_ID)
             risk_manager.close_signal(symbol, reason="stale")
             signal_tracker.clear_signal(sig.result.signal_id)
             logger.info("Auto-closed stale signal: %s", symbol)
@@ -993,7 +993,7 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                         outcome="LOSS",
                         pnl_pct=round(_pnl_pct, 4),
                         timeframe="5m",
-                        channel_tier="CH1_HARD",
+                        channel_tier="CH1_SCALPING",
                     )
                     _pm_msg = generate_postmortem(
                         trade_result=_pm_result,
@@ -1129,13 +1129,13 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
 
         regime = _bot_state.market_regime
 
-        # ── CH1 Hard Scalp ─────────────────────────────────────────────────
+        # ── CH1 Scalping ─────────────────────────────────────────────────
         # Skip CH1 when loss-streak cooldown is active.
         if _in_cooldown:
             ch1_result = None
         else:
             try:
-                ch1_result = _hard_scalp.run(
+                ch1_result = _scalping.run(
                     symbol=base_symbol,
                     current_price=price,
                     side=side,
@@ -1169,9 +1169,9 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
             )
             ch1_result = None
 
-        if ch1_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.HARD):
-            risk_manager.add_signal(ch1_result, origin_channel=signal_router.get_channel_id(ChannelTier.HARD), created_regime=regime)
-            signal_router.record_signal(base_symbol, ChannelTier.HARD)
+        if ch1_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.SCALPING):
+            risk_manager.add_signal(ch1_result, origin_channel=signal_router.get_channel_id(ChannelTier.SCALPING), created_regime=regime)
+            signal_router.record_signal(base_symbol, ChannelTier.SCALPING)
             # ── Correlation guard check ──────────────────────────────────────
             if CORRELATION_ALERT_ENABLED:
                 corr_warn = check_correlation_risk(risk_manager.active_signals, max_same_group=CORRELATION_MAX_SAME_GROUP)
@@ -1182,14 +1182,14 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                         logger.warning("Correlation alert DM failed: %s", _corr_exc)
             logger.info("CH1 signal: %s %s", base_symbol, side.value)
             _now = time.time()
-            _tier_key = ChannelTier.HARD.value
+            _tier_key = ChannelTier.SCALPING.value
             _last_broadcast = _last_signal_broadcast_time.get(_tier_key, 0.0)
             if _now - _last_broadcast >= MIN_SIGNAL_GAP_SECONDS:
                 _last_signal_broadcast_time[_tier_key] = _now
                 try:
-                    await _broadcast_to_channel(ch1_result.format_message(), signal_router.get_channel_id(ChannelTier.HARD))
+                    await _broadcast_to_channel(ch1_result.format_message(), signal_router.get_channel_id(ChannelTier.SCALPING))
                     # Fallback: also send to legacy TELEGRAM_CHANNEL_ID if different
-                    if TELEGRAM_CHANNEL_ID and TELEGRAM_CHANNEL_ID != signal_router.get_channel_id(ChannelTier.HARD):
+                    if TELEGRAM_CHANNEL_ID and TELEGRAM_CHANNEL_ID != signal_router.get_channel_id(ChannelTier.SCALPING):
                         await _broadcast_to_channel(ch1_result.format_message(), TELEGRAM_CHANNEL_ID)
                     _signal_broadcast_ts = time.time()
                     _delivery_latency_ms = int((_signal_broadcast_ts - _candle_close_ts) * 1000)
@@ -1218,14 +1218,14 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                 )
             break  # one signal per symbol per candle close
 
-        # ── CH2 Medium Scalp ───────────────────────────────────────────────
-        if signal_router.is_channel_enabled(ChannelTier.MEDIUM):
+        # ── CH2 Intraday ───────────────────────────────────────────────
+        if signal_router.is_channel_enabled(ChannelTier.INTRADAY):
             # Skip CH2 when loss-streak cooldown is active.
             if _in_cooldown:
                 ch2_result = None
             else:
                 try:
-                    ch2_result = _medium_scalp.run(
+                    ch2_result = _intraday.run(
                         symbol=base_symbol,
                         current_price=price,
                         side=side,
@@ -1246,17 +1246,17 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                     logger.error("CH2 confluence error for %s %s: %s", base_symbol, side.value, exc)
                     ch2_result = None
 
-            if ch2_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.MEDIUM):
-                risk_manager.add_signal(ch2_result, origin_channel=signal_router.get_channel_id(ChannelTier.MEDIUM), created_regime=regime)
-                signal_router.record_signal(base_symbol, ChannelTier.MEDIUM)
+            if ch2_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.INTRADAY):
+                risk_manager.add_signal(ch2_result, origin_channel=signal_router.get_channel_id(ChannelTier.INTRADAY), created_regime=regime)
+                signal_router.record_signal(base_symbol, ChannelTier.INTRADAY)
                 logger.info("CH2 signal: %s %s", base_symbol, side.value)
                 _now = time.time()
-                _tier_key = ChannelTier.MEDIUM.value
+                _tier_key = ChannelTier.INTRADAY.value
                 _last_broadcast = _last_signal_broadcast_time.get(_tier_key, 0.0)
                 if _now - _last_broadcast >= MIN_SIGNAL_GAP_SECONDS:
                     _last_signal_broadcast_time[_tier_key] = _now
                     try:
-                        await _broadcast_to_channel(ch2_result.format_message(), signal_router.get_channel_id(ChannelTier.MEDIUM))
+                        await _broadcast_to_channel(ch2_result.format_message(), signal_router.get_channel_id(ChannelTier.INTRADAY))
                         _signal_broadcast_ts = time.time()
                         _delivery_latency_ms = int((_signal_broadcast_ts - _candle_close_ts) * 1000)
                         logger.info(
@@ -1273,11 +1273,11 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                         int(_now - _last_broadcast),
                     )
 
-        # ── CH3 Easy Breakout ──────────────────────────────────────────────
+        # ── CH3 Trend/Positional ──────────────────────────────────────────────
         # CH3 runs regardless of cooldown (conservative channel, 24/7 trading).
-        if signal_router.is_channel_enabled(ChannelTier.EASY):
+        if signal_router.is_channel_enabled(ChannelTier.TREND):
             try:
-                ch3_result = _easy_breakout.run(
+                ch3_result = _trend_positional.run(
                     symbol=base_symbol,
                     current_price=price,
                     five_min_candles=five_m_candles,
@@ -1287,7 +1287,7 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                 logger.error("CH3 breakout error for %s: %s", base_symbol, exc)
                 ch3_result = None
 
-            if ch3_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.EASY):
+            if ch3_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.TREND):
                 # Convert BreakoutResult → SignalResult for risk_manager compatibility.
                 # entry_price is split into a ±0.5% zone; tp3 is extrapolated from tp1/tp2.
                 _entry_low = ch3_result.entry_price * 0.995
@@ -1311,10 +1311,10 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                 try:
                     risk_manager.add_signal(
                         ch3_signal_result,
-                        origin_channel=signal_router.get_channel_id(ChannelTier.EASY),
+                        origin_channel=signal_router.get_channel_id(ChannelTier.TREND),
                         created_regime=regime,
                     )
-                    signal_router.record_signal(base_symbol, ChannelTier.EASY)
+                    signal_router.record_signal(base_symbol, ChannelTier.TREND)
                 except RuntimeError as _cap_exc:
                     logger.warning("CH3 3-pair cap reached for %s: %s", base_symbol, _cap_exc)
                     return
@@ -1323,12 +1323,12 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
                     return
                 logger.info("CH3 breakout: %s %s", base_symbol, ch3_result.side.value)
                 _now = time.time()
-                _tier_key = ChannelTier.EASY.value
+                _tier_key = ChannelTier.TREND.value
                 _last_broadcast = _last_signal_broadcast_time.get(_tier_key, 0.0)
                 if _now - _last_broadcast >= MIN_SIGNAL_GAP_SECONDS:
                     _last_signal_broadcast_time[_tier_key] = _now
                     try:
-                        await _broadcast_to_channel(ch3_result.format_message(), signal_router.get_channel_id(ChannelTier.EASY))
+                        await _broadcast_to_channel(ch3_result.format_message(), signal_router.get_channel_id(ChannelTier.TREND))
                         _signal_broadcast_ts = time.time()
                         _delivery_latency_ms = int((_signal_broadcast_ts - _candle_close_ts) * 1000)
                         logger.info(
@@ -1439,10 +1439,10 @@ def _run_fallback_scan_job() -> None:
 
                     regime = _bot_state.market_regime
 
-                    # CH1 Hard Scalp (fallback path)
+                    # CH1 Scalping (fallback path)
                     try:
-                        from bot.channels import hard_scalp as _hard_scalp
-                        ch1_result = _hard_scalp.run(
+                        from bot.channels import scalping as _scalping
+                        ch1_result = _scalping.run(
                             symbol=base_symbol,
                             current_price=price,
                             side=side,
@@ -1461,14 +1461,14 @@ def _run_fallback_scan_job() -> None:
                         logger.error("Fallback CH1 error for %s %s: %s", base_symbol, side.value, exc)
                         ch1_result = None
 
-                    if ch1_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.HARD):
-                        risk_manager.add_signal(ch1_result, origin_channel=signal_router.get_channel_id(ChannelTier.HARD), created_regime=regime)
-                        signal_router.record_signal(base_symbol, ChannelTier.HARD)
+                    if ch1_result is not None and not signal_router.should_suppress_duplicate(base_symbol, ChannelTier.SCALPING):
+                        risk_manager.add_signal(ch1_result, origin_channel=signal_router.get_channel_id(ChannelTier.SCALPING), created_regime=regime)
+                        signal_router.record_signal(base_symbol, ChannelTier.SCALPING)
                         logger.info("Fallback CH1 signal: %s %s", base_symbol, side.value)
 
                         async def _send_ch1(msg: str = ch1_result.format_message()) -> None:
-                            await _broadcast_to_channel(msg, signal_router.get_channel_id(ChannelTier.HARD))
-                            if TELEGRAM_CHANNEL_ID and TELEGRAM_CHANNEL_ID != signal_router.get_channel_id(ChannelTier.HARD):
+                            await _broadcast_to_channel(msg, signal_router.get_channel_id(ChannelTier.SCALPING))
+                            if TELEGRAM_CHANNEL_ID and TELEGRAM_CHANNEL_ID != signal_router.get_channel_id(ChannelTier.SCALPING):
                                 await _broadcast_to_channel(msg, TELEGRAM_CHANNEL_ID)
 
                         try:
@@ -1652,11 +1652,11 @@ def process_webhook(payload: dict) -> Optional[tuple[str, ChannelTier]]:
 
     # Determine the target channel tier from signal confidence
     if result.confidence == Confidence.HIGH:
-        tier = ChannelTier.HARD
+        tier = ChannelTier.SCALPING
     elif result.confidence == Confidence.MEDIUM:
-        tier = ChannelTier.MEDIUM
+        tier = ChannelTier.INTRADAY
     else:
-        tier = ChannelTier.EASY
+        tier = ChannelTier.TREND
 
     risk_manager.add_signal(result, origin_channel=signal_router.get_channel_id(tier))
     signal_router.record_signal(symbol, tier)  # Track for dedup
@@ -2717,7 +2717,7 @@ def build_application() -> Application:
             logger.error("Weekly report generation failed: %s", exc)
             return
         insights_id = signal_router.get_channel_id(ChannelTier.INSIGHTS)
-        target_id = insights_id or TELEGRAM_CHANNEL_ID_HARD or TELEGRAM_CHANNEL_ID
+        target_id = insights_id or TELEGRAM_CHANNEL_ID_SCALPING or TELEGRAM_CHANNEL_ID
         if target_id == 0:
             logger.debug("Weekly report: no target channel configured.")
             return

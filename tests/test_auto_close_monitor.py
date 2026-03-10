@@ -217,7 +217,7 @@ class TestFormatCloseMessage:
             pnl_pct=pnl,
             opened_at=time.time() - 3600,
             closed_at=time.time(),
-            channel_tier="CH1_HARD",
+            channel_tier="CH1_SCALPING",
         )
 
     def test_tp2_message_contains_outcome(self):

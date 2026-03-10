@@ -196,14 +196,14 @@ def test_channel_tier_populated_from_origin_channel(monitor):
     """_check_tp_sl_hit must populate channel_tier from signal.origin_channel."""
     from bot.signal_router import ChannelTier
     origin_id = -100111
-    monitor._router.get_tier_for_channel_id.return_value = ChannelTier.HARD
+    monitor._router.get_tier_for_channel_id.return_value = ChannelTier.SCALPING
 
     result = _make_signal_result()
     signal = _make_active_signal(result, origin_channel=origin_id)
 
     close = monitor._check_tp_sl_hit(signal, current_price=110.5)
     assert close is not None
-    assert close.channel_tier == "HARD"
+    assert close.channel_tier == "SCALPING"
 
 
 def test_channel_tier_aggregate_when_no_origin(monitor):
@@ -220,12 +220,12 @@ def test_channel_tier_aggregate_when_no_origin(monitor):
 def test_stale_close_channel_tier_populated(monitor):
     """_build_stale_result must also populate channel_tier."""
     from bot.signal_router import ChannelTier
-    monitor._router.get_tier_for_channel_id.return_value = ChannelTier.MEDIUM
+    monitor._router.get_tier_for_channel_id.return_value = ChannelTier.INTRADAY
     result = _make_signal_result()
     signal = _make_active_signal(result, origin_channel=-100222)
 
     close = monitor._build_stale_result(signal)
-    assert close.channel_tier == "MEDIUM"
+    assert close.channel_tier == "INTRADAY"
 
 
 # ── BUG #3: test_tp_sequential_tracking ──────────────────────────────────────
@@ -494,9 +494,9 @@ class TestNewChannelTiers:
 
     def test_router_accepts_new_channels(self):
         router = SignalRouter(
-            channel_hard=-101,
-            channel_medium=-102,
-            channel_easy=-103,
+            channel_scalping=-101,
+            channel_intraday=-102,
+            channel_trend=-103,
             channel_spot=-104,
             channel_insights=-105,
             channel_altgems=-106,
@@ -511,9 +511,9 @@ class TestNewChannelTiers:
 
     def test_new_channels_disabled_by_default(self):
         router = SignalRouter(
-            channel_hard=-101,
-            channel_medium=-102,
-            channel_easy=-103,
+            channel_scalping=-101,
+            channel_intraday=-102,
+            channel_trend=-103,
             channel_spot=-104,
             channel_insights=-105,
         )
@@ -524,15 +524,15 @@ class TestNewChannelTiers:
 
     def test_get_tier_for_channel_id(self):
         router = SignalRouter(
-            channel_hard=-101,
-            channel_medium=-102,
-            channel_easy=-103,
+            channel_scalping=-101,
+            channel_intraday=-102,
+            channel_trend=-103,
             channel_spot=-104,
             channel_insights=-105,
             channel_altgems=-106,
         )
-        assert router.get_tier_for_channel_id(-101) == ChannelTier.HARD
-        assert router.get_tier_for_channel_id(-102) == ChannelTier.MEDIUM
+        assert router.get_tier_for_channel_id(-101) == ChannelTier.SCALPING
+        assert router.get_tier_for_channel_id(-102) == ChannelTier.INTRADAY
         assert router.get_tier_for_channel_id(-106) == ChannelTier.ALTGEMS
         assert router.get_tier_for_channel_id(-999) is None
         assert router.get_tier_for_channel_id(0) is None

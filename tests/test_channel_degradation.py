@@ -19,8 +19,8 @@ class TestChannelDegradationInitial:
     def test_no_channels_degraded_initially(self):
         db = _make_mock_dashboard({})
         mgr = ChannelDegradationManager(db)
-        assert mgr.get_extra_confluence("CH1_HARD") == 0
-        assert mgr.is_channel_suppressed("CH1_HARD") is False
+        assert mgr.get_extra_confluence("CH1_SCALPING") == 0
+        assert mgr.is_channel_suppressed("CH1_SCALPING") is False
 
     def test_degraded_tiers_empty_initially(self):
         db = _make_mock_dashboard({})
@@ -36,37 +36,37 @@ class TestChannelDegradationInitial:
 class TestChannelDegradationTriggers:
     def test_channel_degraded_below_35_wr(self):
         db = _make_mock_dashboard({
-            "CH1_HARD": {"win_rate": 30.0, "total_signals": 20},
+            "CH1_SCALPING": {"win_rate": 30.0, "total_signals": 20},
         })
         mgr = ChannelDegradationManager(db)
         alerts = mgr.check_and_update()
         assert len(alerts) == 1
         assert "Degraded" in alerts[0]
-        assert mgr.get_extra_confluence("CH1_HARD") == 15
-        assert mgr.is_channel_suppressed("CH1_HARD") is False
+        assert mgr.get_extra_confluence("CH1_SCALPING") == 15
+        assert mgr.is_channel_suppressed("CH1_SCALPING") is False
 
     def test_channel_suppressed_below_25_wr(self):
         db = _make_mock_dashboard({
-            "CH1_HARD": {"win_rate": 20.0, "total_signals": 20},
+            "CH1_SCALPING": {"win_rate": 20.0, "total_signals": 20},
         })
         mgr = ChannelDegradationManager(db)
         alerts = mgr.check_and_update()
         assert len(alerts) == 1
         assert "Suppressed" in alerts[0]
-        assert mgr.is_channel_suppressed("CH1_HARD") is True
+        assert mgr.is_channel_suppressed("CH1_SCALPING") is True
 
     def test_no_degradation_with_insufficient_data(self):
         db = _make_mock_dashboard({
-            "CH1_HARD": {"win_rate": 10.0, "total_signals": 3},
+            "CH1_SCALPING": {"win_rate": 10.0, "total_signals": 3},
         })
         mgr = ChannelDegradationManager(db)
         alerts = mgr.check_and_update()
         assert alerts == []
-        assert mgr.get_extra_confluence("CH1_HARD") == 0
+        assert mgr.get_extra_confluence("CH1_SCALPING") == 0
 
     def test_no_degradation_above_35_wr(self):
         db = _make_mock_dashboard({
-            "CH1_HARD": {"win_rate": 60.0, "total_signals": 20},
+            "CH1_SCALPING": {"win_rate": 60.0, "total_signals": 20},
         })
         mgr = ChannelDegradationManager(db)
         alerts = mgr.check_and_update()
@@ -74,54 +74,54 @@ class TestChannelDegradationTriggers:
 
     def test_multiple_channels_can_degrade_independently(self):
         db = _make_mock_dashboard({
-            "CH1_HARD": {"win_rate": 30.0, "total_signals": 20},
-            "CH2_MEDIUM": {"win_rate": 20.0, "total_signals": 15},
-            "CH3_EASY": {"win_rate": 60.0, "total_signals": 10},
+            "CH1_SCALPING": {"win_rate": 30.0, "total_signals": 20},
+            "CH2_INTRADAY": {"win_rate": 20.0, "total_signals": 15},
+            "CH3_TREND": {"win_rate": 60.0, "total_signals": 10},
         })
         mgr = ChannelDegradationManager(db)
         alerts = mgr.check_and_update()
         assert len(alerts) == 2
-        assert mgr.is_channel_suppressed("CH2_MEDIUM") is True
-        assert mgr.get_extra_confluence("CH1_HARD") == 15
-        assert mgr.get_extra_confluence("CH3_EASY") == 0
+        assert mgr.is_channel_suppressed("CH2_INTRADAY") is True
+        assert mgr.get_extra_confluence("CH1_SCALPING") == 15
+        assert mgr.get_extra_confluence("CH3_TREND") == 0
 
 
 class TestChannelDegradationRecovery:
     def test_channel_restores_above_50_wr(self):
         db_bad = _make_mock_dashboard({
-            "CH1_HARD": {"win_rate": 30.0, "total_signals": 20},
+            "CH1_SCALPING": {"win_rate": 30.0, "total_signals": 20},
         })
         mgr = ChannelDegradationManager(db_bad)
         mgr.check_and_update()
-        assert mgr.get_extra_confluence("CH1_HARD") == 15
+        assert mgr.get_extra_confluence("CH1_SCALPING") == 15
 
         db_good = _make_mock_dashboard({
-            "CH1_HARD": {"win_rate": 55.0, "total_signals": 25},
+            "CH1_SCALPING": {"win_rate": 55.0, "total_signals": 25},
         })
         mgr._dashboard = db_good
         alerts = mgr.check_and_update()
         assert any("Restored" in a for a in alerts)
-        assert mgr.get_extra_confluence("CH1_HARD") == 0
+        assert mgr.get_extra_confluence("CH1_SCALPING") == 0
 
     def test_suppressed_channel_restores(self):
         db_bad = _make_mock_dashboard({
-            "CH1_HARD": {"win_rate": 20.0, "total_signals": 20},
+            "CH1_SCALPING": {"win_rate": 20.0, "total_signals": 20},
         })
         mgr = ChannelDegradationManager(db_bad)
         mgr.check_and_update()
-        assert mgr.is_channel_suppressed("CH1_HARD") is True
+        assert mgr.is_channel_suppressed("CH1_SCALPING") is True
 
         db_good = _make_mock_dashboard({
-            "CH1_HARD": {"win_rate": 55.0, "total_signals": 25},
+            "CH1_SCALPING": {"win_rate": 55.0, "total_signals": 25},
         })
         mgr._dashboard = db_good
         alerts = mgr.check_and_update()
         assert any("Restored" in a for a in alerts)
-        assert mgr.is_channel_suppressed("CH1_HARD") is False
+        assert mgr.is_channel_suppressed("CH1_SCALPING") is False
 
     def test_no_duplicate_alerts_for_already_degraded_channel(self):
         db_bad = _make_mock_dashboard({
-            "CH1_HARD": {"win_rate": 30.0, "total_signals": 20},
+            "CH1_SCALPING": {"win_rate": 30.0, "total_signals": 20},
         })
         mgr = ChannelDegradationManager(db_bad)
         first_alerts = mgr.check_and_update()

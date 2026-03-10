@@ -68,9 +68,9 @@ def get_regime_params(regime: str) -> dict:
     -------
     dict with keys:
 
-    - ``min_confluence_ch1`` (int): Minimum score for CH1 Hard Scalp.
-    - ``min_confluence_ch2`` (int): Minimum score for CH2 Medium Scalp.
-    - ``min_confluence_ch3`` (int): Minimum score for CH3 Easy Breakout.
+    - ``min_confluence_ch1`` (int): Minimum score for CH1 Scalping.
+    - ``min_confluence_ch2`` (int): Minimum score for CH2 Intraday.
+    - ``min_confluence_ch3`` (int): Minimum score for CH3 Trend/Positional.
     - ``max_active_signals`` (int): Maximum concurrent active signals.
     - ``tp1_multiplier`` (float): Multiplier applied to CH TP1.
     - ``tp2_multiplier`` (float): Multiplier applied to CH TP2.

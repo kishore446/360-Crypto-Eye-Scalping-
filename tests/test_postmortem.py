@@ -12,7 +12,7 @@ def _make_trade(
     side: str = "LONG",
     outcome: str = "WIN",
     pnl_pct: float = 3.2,
-    channel_tier: str = "CH1_HARD",
+    channel_tier: str = "CH1_SCALPING",
 ) -> TradeResult:
     ts = time.time() - 8280  # 2h 18m ago
     return TradeResult(
@@ -88,7 +88,7 @@ class TestGeneratePostmortem:
         assert "h" in msg or "m" in msg
 
     def test_channel_label(self):
-        trade = _make_trade(channel_tier="CH1_HARD")
+        trade = _make_trade(channel_tier="CH1_SCALPING")
         msg = generate_postmortem(trade, [], regime="BULL", session="LONDON")
         assert "CH1" in msg
 

@@ -15,46 +15,46 @@ class TestTelegramChannelIdDeprecation:
         import config
         assert hasattr(config, "TELEGRAM_CHANNEL_ID")
 
-    def test_channel_hard_is_primary_channel(self):
-        """TELEGRAM_CHANNEL_ID_HARD should be the primary hard scalp channel."""
+    def test_channel_scalping_is_primary_channel(self):
+        """TELEGRAM_CHANNEL_ID_SCALPING should be the primary scalping channel."""
         import config
-        assert hasattr(config, "TELEGRAM_CHANNEL_ID_HARD")
+        assert hasattr(config, "TELEGRAM_CHANNEL_ID_SCALPING")
 
     def test_all_five_channels_exist(self):
         """All 5 channel IDs should be importable from config."""
         import config
-        assert hasattr(config, "TELEGRAM_CHANNEL_ID_HARD")
-        assert hasattr(config, "TELEGRAM_CHANNEL_ID_MEDIUM")
-        assert hasattr(config, "TELEGRAM_CHANNEL_ID_EASY")
+        assert hasattr(config, "TELEGRAM_CHANNEL_ID_SCALPING")
+        assert hasattr(config, "TELEGRAM_CHANNEL_ID_INTRADAY")
+        assert hasattr(config, "TELEGRAM_CHANNEL_ID_TREND")
         assert hasattr(config, "TELEGRAM_CHANNEL_ID_SPOT")
         assert hasattr(config, "TELEGRAM_CHANNEL_ID_INSIGHTS")
 
     def test_channel_hard_falls_back_to_legacy(self):
         """If only legacy TELEGRAM_CHANNEL_ID is set, CH1 should use it."""
         # This tests the fallback logic in config.py:
-        # TELEGRAM_CHANNEL_ID_HARD = settings.telegram_channel_id_hard or settings.telegram_channel_id
+        # TELEGRAM_CHANNEL_ID_SCALPING = settings.telegram_channel_id_scalping or settings.telegram_channel_id
         env = {
             "TELEGRAM_CHANNEL_ID": "-100123456789",
-            "TELEGRAM_CHANNEL_ID_HARD": "0",
+            "TELEGRAM_CHANNEL_ID_SCALPING": "0",
         }
         legacy = int(env["TELEGRAM_CHANNEL_ID"])
-        hard = int(env["TELEGRAM_CHANNEL_ID_HARD"])
+        hard = int(env["TELEGRAM_CHANNEL_ID_SCALPING"])
         effective = hard or legacy
         assert effective == legacy
 
 
 class TestBroadcastFunctionUsesHardChannel:
-    """Verify _broadcast() now uses TELEGRAM_CHANNEL_ID_HARD as primary."""
+    """Verify _broadcast() now uses TELEGRAM_CHANNEL_ID_SCALPING as primary."""
 
     def test_broadcast_uses_channel_hard_not_legacy(self, monkeypatch):
-        """_broadcast() should use TELEGRAM_CHANNEL_ID_HARD as the primary channel."""
+        """_broadcast() should use TELEGRAM_CHANNEL_ID_SCALPING as the primary channel."""
         from unittest.mock import AsyncMock, MagicMock
 
         import bot.bot as _bot
 
         sent_to = []
 
-        monkeypatch.setattr(_bot, "TELEGRAM_CHANNEL_ID_HARD", -100_111_111_111)
+        monkeypatch.setattr(_bot, "TELEGRAM_CHANNEL_ID_SCALPING", -100_111_111_111)
         monkeypatch.setattr(_bot, "TELEGRAM_CHANNEL_ID", -100_999_999_999)
 
         context = MagicMock()
@@ -62,19 +62,19 @@ class TestBroadcastFunctionUsesHardChannel:
 
         asyncio.get_event_loop().run_until_complete(_bot._broadcast(context, "Test message"))
 
-        # Should have sent to CH1_HARD, not legacy
+        # Should have sent to CH1_SCALPING, not legacy
         assert -100_111_111_111 in sent_to
         assert -100_999_999_999 not in sent_to
 
     def test_broadcast_falls_back_to_legacy_when_hard_is_zero(self, monkeypatch):
-        """When TELEGRAM_CHANNEL_ID_HARD is 0, falls back to TELEGRAM_CHANNEL_ID."""
+        """When TELEGRAM_CHANNEL_ID_SCALPING is 0, falls back to TELEGRAM_CHANNEL_ID."""
         from unittest.mock import AsyncMock, MagicMock
 
         import bot.bot as _bot
 
         sent_to = []
 
-        monkeypatch.setattr(_bot, "TELEGRAM_CHANNEL_ID_HARD", 0)
+        monkeypatch.setattr(_bot, "TELEGRAM_CHANNEL_ID_SCALPING", 0)
         monkeypatch.setattr(_bot, "TELEGRAM_CHANNEL_ID", -100_999_999_999)
 
         context = MagicMock()
@@ -93,7 +93,7 @@ class TestBroadcastFunctionUsesHardChannel:
 
         sent_to = []
 
-        monkeypatch.setattr(_bot, "TELEGRAM_CHANNEL_ID_HARD", 0)
+        monkeypatch.setattr(_bot, "TELEGRAM_CHANNEL_ID_SCALPING", 0)
         monkeypatch.setattr(_bot, "TELEGRAM_CHANNEL_ID", 0)
 
         context = MagicMock()
@@ -109,20 +109,20 @@ class TestSignalRouterChannels:
     def test_hard_channel_routes_to_ch1(self):
         from bot.signal_router import ChannelTier, SignalRouter
         router = SignalRouter(
-            channel_hard=-100_111,
-            channel_medium=-100_222,
-            channel_easy=-100_333,
+            channel_scalping=-100_111,
+            channel_intraday=-100_222,
+            channel_trend=-100_333,
             channel_spot=-100_444,
             channel_insights=-100_555,
         )
-        assert router.get_channel_id(ChannelTier.HARD) == -100_111
+        assert router.get_channel_id(ChannelTier.SCALPING) == -100_111
 
     def test_spot_channel_routes_to_ch4(self):
         from bot.signal_router import ChannelTier, SignalRouter
         router = SignalRouter(
-            channel_hard=-100_111,
-            channel_medium=-100_222,
-            channel_easy=-100_333,
+            channel_scalping=-100_111,
+            channel_intraday=-100_222,
+            channel_trend=-100_333,
             channel_spot=-100_444,
             channel_insights=-100_555,
         )
@@ -131,9 +131,9 @@ class TestSignalRouterChannels:
     def test_insights_channel_routes_to_ch5(self):
         from bot.signal_router import ChannelTier, SignalRouter
         router = SignalRouter(
-            channel_hard=-100_111,
-            channel_medium=-100_222,
-            channel_easy=-100_333,
+            channel_scalping=-100_111,
+            channel_intraday=-100_222,
+            channel_trend=-100_333,
             channel_spot=-100_444,
             channel_insights=-100_555,
         )
@@ -142,27 +142,27 @@ class TestSignalRouterChannels:
     def test_disabled_channel_returns_zero(self):
         from bot.signal_router import ChannelTier, SignalRouter
         router = SignalRouter(
-            channel_hard=0,
-            channel_medium=0,
-            channel_easy=0,
+            channel_scalping=0,
+            channel_intraday=0,
+            channel_trend=0,
             channel_spot=0,
             channel_insights=0,
         )
-        assert not router.is_channel_enabled(ChannelTier.HARD)
+        assert not router.is_channel_enabled(ChannelTier.SCALPING)
         assert not router.is_channel_enabled(ChannelTier.SPOT)
 
     def test_all_channels_correctly_reported_enabled(self):
         from bot.signal_router import ChannelTier, SignalRouter
         router = SignalRouter(
-            channel_hard=-100_111,
-            channel_medium=-100_222,
-            channel_easy=-100_333,
+            channel_scalping=-100_111,
+            channel_intraday=-100_222,
+            channel_trend=-100_333,
             channel_spot=-100_444,
             channel_insights=-100_555,
         )
         # Core CH1-CH5 channels should be enabled
         for tier in (
-            ChannelTier.HARD, ChannelTier.MEDIUM, ChannelTier.EASY,
+            ChannelTier.SCALPING, ChannelTier.INTRADAY, ChannelTier.TREND,
             ChannelTier.SPOT, ChannelTier.INSIGHTS,
         ):
             assert router.is_channel_enabled(tier), f"{tier} should be enabled"
