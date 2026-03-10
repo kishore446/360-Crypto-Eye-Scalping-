@@ -319,7 +319,8 @@ def format_signal_replay(dashboard: object, days: int = 7) -> str:
                 closed_at = datetime.fromisoformat(closed_at)
             except ValueError:
                 continue
-        # Handle both naive and aware datetimes for compatibility
+        # Handle both naive and aware datetimes: Dashboard trades from older
+        # data or external sources may lack timezone info — assume UTC.
         if closed_at.tzinfo is None:
             closed_at = closed_at.replace(tzinfo=timezone.utc)
         if (cutoff - closed_at).days <= days:

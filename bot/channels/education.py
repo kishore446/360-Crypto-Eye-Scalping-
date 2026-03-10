@@ -5,6 +5,7 @@ and a glossary accessible via /learn command.
 """
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Optional
 
@@ -593,7 +594,7 @@ def detect_pattern_btc_4h(candles: list[dict]) -> PatternResult:
 
 # Module-level counter persisted across calls (rotates through lessons)
 _lesson_index: int = 0
-_lesson_lock = __import__("threading").Lock()
+_lesson_lock = threading.Lock()
 
 
 def get_next_lesson() -> tuple[dict[str, str], int]:
