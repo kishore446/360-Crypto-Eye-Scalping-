@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from bot.confluence_score import (
+    MAX_RAW_SCORE,
     WEIGHTS,
     ConfluenceFactors,
     build_confluence_factors,
@@ -10,9 +11,14 @@ from bot.confluence_score import (
 from bot.signal_engine import CandleData, Side
 
 
+def _normalise(raw: int) -> int:
+    """Expected normalised score matching the formula in compute_confluence_score."""
+    return round(raw * 100 / MAX_RAW_SCORE)
+
+
 class TestComputeConfluenceScore:
     def test_all_original_factors_true(self):
-        """All 7 original factors true should sum to their combined weight."""
+        """All 7 original factors produce a normalised 0-100 score."""
         factors = ConfluenceFactors(
             macro_bias_aligned=True,
             in_discount_premium_zone=True,
@@ -22,7 +28,7 @@ class TestComputeConfluenceScore:
             ob_present=True,
             session_active=True,
         )
-        expected = (
+        raw = (
             WEIGHTS["macro_bias_aligned"]
             + WEIGHTS["in_discount_premium_zone"]
             + WEIGHTS["liquidity_swept"]
@@ -31,7 +37,24 @@ class TestComputeConfluenceScore:
             + WEIGHTS["ob_present"]
             + WEIGHTS["session_active"]
         )
-        assert compute_confluence_score(factors) == expected
+        assert compute_confluence_score(factors) == _normalise(raw)
+
+    def test_all_factors_true_returns_100(self):
+        """All factors true → normalised score is 100."""
+        factors = ConfluenceFactors(
+            macro_bias_aligned=True,
+            in_discount_premium_zone=True,
+            liquidity_swept=True,
+            mss_confirmed=True,
+            fvg_present=True,
+            ob_present=True,
+            session_active=True,
+            macd_confirmed=True,
+            bb_squeeze=True,
+            cvd_confirmed=True,
+            ema_ribbon_aligned=True,
+        )
+        assert compute_confluence_score(factors) == 100
 
     def test_all_false_returns_zero(self):
         factors = ConfluenceFactors(
@@ -45,12 +68,22 @@ class TestComputeConfluenceScore:
         )
         assert compute_confluence_score(factors) == 0
 
-    def test_individual_weights(self):
+    def test_score_within_0_100(self):
+        """Score must always be in [0, 100] regardless of inputs."""
+        factors = ConfluenceFactors(**{k: True for k in WEIGHTS if WEIGHTS[k] > 0})
+        score = compute_confluence_score(factors)
+        assert 0 <= score <= 100
+
+    def test_individual_weights_produce_normalised_scores(self):
+        """Each single-factor score matches the normalised equivalent of its raw weight."""
         for key, weight in WEIGHTS.items():
             if weight == 0:
                 continue  # skip zero-weight tracking fields
             factors = ConfluenceFactors(**{key: True})
-            assert compute_confluence_score(factors) == weight
+            assert compute_confluence_score(factors) == _normalise(weight), (
+                f"Factor '{key}' (raw weight {weight}): expected normalised "
+                f"{_normalise(weight)}, got {compute_confluence_score(factors)}"
+            )
 
     def test_partial_score(self):
         factors = ConfluenceFactors(
@@ -58,14 +91,16 @@ class TestComputeConfluenceScore:
             liquidity_swept=True,
             mss_confirmed=True,
         )
-        expected = WEIGHTS["macro_bias_aligned"] + WEIGHTS["liquidity_swept"] + WEIGHTS["mss_confirmed"]
-        assert compute_confluence_score(factors) == expected
+        raw = WEIGHTS["macro_bias_aligned"] + WEIGHTS["liquidity_swept"] + WEIGHTS["mss_confirmed"]
+        assert compute_confluence_score(factors) == _normalise(raw)
 
     def test_new_indicator_weights(self):
-        """New indicator fields should each add their weight to the score."""
+        """New indicator fields each contribute their normalised weight to the score."""
         for key in ("macd_confirmed", "bb_squeeze", "cvd_confirmed", "ema_ribbon_aligned"):
             factors = ConfluenceFactors(**{key: True})
-            assert compute_confluence_score(factors) == WEIGHTS[key]
+            assert compute_confluence_score(factors) == _normalise(WEIGHTS[key]), (
+                f"Factor '{key}' normalised score mismatch"
+            )
 
 
 class TestBuildConfluenceFactors:

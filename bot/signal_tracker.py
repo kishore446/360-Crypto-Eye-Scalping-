@@ -19,15 +19,27 @@ class SignalTracker:
     Tracks signal lifecycle events: TP1/TP2/TP3 hits, SL hits, BE triggers,
     and trailing stop-loss updates after TP2.
     Thread-safe.
+
+    When ``auto_close_active`` is ``True`` (set after ``AutoCloseMonitor``
+    starts), this class acts purely as an update-broadcaster for trailing SL
+    ratchet messages.  All TP/SL detection is delegated to ``AutoCloseMonitor``
+    to prevent double-processing and duplicate Telegram broadcasts (BUG #1 fix).
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._state: dict[str, dict] = {}
+        # Set to True once AutoCloseMonitor is running so TP/SL detection here
+        # is skipped — AutoCloseMonitor is the sole owner of TP/SL detection.
+        self.auto_close_active: bool = False
 
     def check_signal(self, signal, current_price: float) -> list[str]:
         """
         Check a signal against current price and return broadcast messages for any newly hit levels.
+
+        When ``auto_close_active`` is True, TP/SL detection is skipped entirely
+        (AutoCloseMonitor handles it exclusively to avoid race conditions).
+        Only trailing SL ratchet update messages are emitted in that mode.
 
         After TP2 is reached, a trailing SL is maintained using ATR if ATR data is available.
         The effective trailing SL is updated whenever price makes a new extreme in the trade direction.
@@ -54,6 +66,16 @@ class SignalTracker:
 
         side = signal.result.side
         from bot.signal_engine import Side
+
+        # BUG #1 fix: when AutoCloseMonitor is running, skip TP/SL detection
+        # entirely to avoid race conditions and duplicate broadcasts.  Only emit
+        # trailing SL ratchet update messages (informational only).
+        if self.auto_close_active:
+            if state["tp2_hit"] and not state["tp3_hit"]:
+                trail_msg = self._update_trail_sl(signal, current_price, state, side)
+                if trail_msg:
+                    messages.append(trail_msg)
+            return messages
 
         risk_distance = abs(signal.entry_mid - signal.result.stop_loss)
         safe_risk = risk_distance if risk_distance > 0 else 1.0  # guard against division by zero

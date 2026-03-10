@@ -306,7 +306,19 @@ class AutoCloseMonitor:
             if current_price <= sl:
                 return _make_result("SL", current_price, "LONG", (current_price - entry) / entry * 100)
             if current_price >= r.tp3:
-                # BUG #3: Record skipped lower TPs sequentially before TP3
+                # BUG #2 fix: when price has gapped past TP3 in a single tick with no
+                # prior TP hits, skip sequential TP1→TP2 recording and close the full
+                # position at TP3 (the more conservative, lower price).  Sequential
+                # partials only make sense when price crosses each level individually.
+                #
+                # TP1 and TP2 are added to tp_hit so that subsequent monitoring ticks
+                # (if any) do not try to re-emit those levels — preventing false
+                # duplicate partial-exit events after a gap close.
+                if not tp_hit:
+                    tp_hit.add("TP1")
+                    tp_hit.add("TP2")
+                    tp_hit.add("TP3")
+                    return _make_result("TP3", r.tp3, "LONG", (r.tp3 - entry) / entry * 100)
                 if "TP1" not in tp_hit:
                     tp_hit.add("TP1")
                     return _make_result("TP1", r.tp1, "LONG", (r.tp1 - entry) / entry * 100)
@@ -332,6 +344,15 @@ class AutoCloseMonitor:
             if current_price >= sl:
                 return _make_result("SL", current_price, "SHORT", (entry - current_price) / entry * 100)
             if current_price <= r.tp3:
+                # BUG #2 fix: same gap logic for SHORT — when price has gapped below TP3
+                # with no prior TP hits, close the full position at TP3 (the more
+                # conservative, higher price for a SHORT).  TP1 and TP2 are marked in
+                # tp_hit to prevent duplicate partial-exit events on subsequent ticks.
+                if not tp_hit:
+                    tp_hit.add("TP1")
+                    tp_hit.add("TP2")
+                    tp_hit.add("TP3")
+                    return _make_result("TP3", r.tp3, "SHORT", (entry - r.tp3) / entry * 100)
                 if "TP1" not in tp_hit:
                     tp_hit.add("TP1")
                     return _make_result("TP1", r.tp1, "SHORT", (entry - r.tp1) / entry * 100)

@@ -1,7 +1,12 @@
 """
 Multi-Timeframe Confluence Score
 =================================
-Computes a weighted score (0-100) across all confluence factors.
+Computes a weighted score normalised to **0-100** across all confluence factors.
+
+The raw weights below sum to 150 (``MAX_RAW_SCORE``).  ``compute_confluence_score``
+divides the raw sum by 1.5 so the returned value is always in the range [0, 100].
+All minimum-score thresholds in config (``CH1_MIN_CONFLUENCE``, etc.) are on the
+normalised 0-100 scale.
 """
 from __future__ import annotations
 
@@ -63,7 +68,7 @@ WEIGHTS = {
     "bb_squeeze": 10,
     "cvd_confirmed": 10,
     "ema_ribbon_aligned": 10,
-    # Below are tracked but not included in the 100-point base total
+    # Below are tracked but not included in the scored total
     "funding_favorable": 0,
     "oi_divergence": 0,
     "btc_correlated": 0,
@@ -71,35 +76,43 @@ WEIGHTS = {
     "vwap_favorable": 0,
 }
 
+# Sum of all non-zero weights — used to normalise the raw score to 0-100.
+MAX_RAW_SCORE: int = sum(v for v in WEIGHTS.values() if v > 0)  # 150
+
 
 def compute_confluence_score(factors: ConfluenceFactors) -> int:
     """
-    Compute weighted score 0-100 from the provided factors.
+    Compute weighted confluence score normalised to 0-100.
+
+    The raw weights sum to 150 (``MAX_RAW_SCORE``).  The raw total is divided
+    by 1.5 and rounded so the returned value is always in [0, 100].  This
+    ensures the minimum-score config thresholds (e.g. ``CH1_MIN_CONFLUENCE=70``)
+    represent 70 % signal quality, not the misleading 47 % of the old raw scale.
     """
-    score = 0
+    raw = 0
     if factors.macro_bias_aligned:
-        score += WEIGHTS["macro_bias_aligned"]
+        raw += WEIGHTS["macro_bias_aligned"]
     if factors.in_discount_premium_zone:
-        score += WEIGHTS["in_discount_premium_zone"]
+        raw += WEIGHTS["in_discount_premium_zone"]
     if factors.liquidity_swept:
-        score += WEIGHTS["liquidity_swept"]
+        raw += WEIGHTS["liquidity_swept"]
     if factors.mss_confirmed:
-        score += WEIGHTS["mss_confirmed"]
+        raw += WEIGHTS["mss_confirmed"]
     if factors.fvg_present:
-        score += WEIGHTS["fvg_present"]
+        raw += WEIGHTS["fvg_present"]
     if factors.ob_present:
-        score += WEIGHTS["ob_present"]
+        raw += WEIGHTS["ob_present"]
     if factors.session_active:
-        score += WEIGHTS["session_active"]
+        raw += WEIGHTS["session_active"]
     if factors.macd_confirmed:
-        score += WEIGHTS["macd_confirmed"]
+        raw += WEIGHTS["macd_confirmed"]
     if factors.bb_squeeze:
-        score += WEIGHTS["bb_squeeze"]
+        raw += WEIGHTS["bb_squeeze"]
     if factors.cvd_confirmed:
-        score += WEIGHTS["cvd_confirmed"]
+        raw += WEIGHTS["cvd_confirmed"]
     if factors.ema_ribbon_aligned:
-        score += WEIGHTS["ema_ribbon_aligned"]
-    return score
+        raw += WEIGHTS["ema_ribbon_aligned"]
+    return round(raw * 100 / MAX_RAW_SCORE)
 
 
 def build_confluence_factors(

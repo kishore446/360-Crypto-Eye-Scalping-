@@ -814,6 +814,10 @@ def _run_trailing_sl_job(context_or_bot=None) -> None:
         if sig.result.side == Side.LONG:
             # Per the spec: "Higher Low" = min low of the last 3 candles.
             # SL only moves up (never down) for LONG.
+            # Ownership note: this job owns the candle-based "Higher Low / Lower High"
+            # trailing SL (sig.result.stop_loss).  RiskManager._update_trailing_sl()
+            # owns the ATR-based trailing SL (sig.trailing_sl_price).  Both must stay
+            # in sync so the ratchet check on the next tick uses the latest value (BUG #5/#7 fix).
             new_sl = min(row[3] for row in last_3)
             # Enforce break-even floor: never move SL below entry once BE triggered
             if sig.be_triggered:
@@ -823,6 +827,9 @@ def _run_trailing_sl_job(context_or_bot=None) -> None:
                 new_sl = max(new_sl, sig.trailing_sl_price)
             if new_sl > current_sl:
                 sig.result.stop_loss = new_sl
+                # BUG #7 fix: keep trailing_sl_price in sync so the next-tick ratchet
+                # check in RiskManager._update_trailing_sl() sees the updated floor.
+                sig.trailing_sl_price = new_sl
                 updates.append((
                     f"📈 #{sig.result.symbol}/USDT LONG: "
                     f"Trailing SL raised {current_sl:.4f} → {new_sl:.4f} "
@@ -841,6 +848,8 @@ def _run_trailing_sl_job(context_or_bot=None) -> None:
                 new_sl = min(new_sl, sig.trailing_sl_price)
             if new_sl < current_sl:
                 sig.result.stop_loss = new_sl
+                # BUG #7 fix: keep trailing_sl_price in sync (see LONG branch above).
+                sig.trailing_sl_price = new_sl
                 updates.append((
                     f"📉 #{sig.result.symbol}/USDT SHORT: "
                     f"Trailing SL lowered {current_sl:.4f} → {new_sl:.4f} "
@@ -2203,7 +2212,16 @@ def build_application() -> Application:
                 "Spot WebSocket manager started for %d pairs.",
                 len(spot_symbols),
             )
+        # BUG #4 fix: pass the shared Application bot instance to AutoCloseMonitor
+        # so it reuses the existing HTTP connection pool instead of creating a new
+        # Bot() instance per close-broadcast (prevents connection pool leaks and
+        # Telegram rate-limit risk).
+        auto_close_monitor._telegram_bot = application.bot
         await auto_close_monitor.start()
+        # BUG #1 fix: once AutoCloseMonitor is running it becomes the sole owner
+        # of TP/SL detection.  Signal SignalTracker to skip TP/SL checks and only
+        # emit trailing-SL ratchet messages to avoid race conditions / double-broadcasts.
+        signal_tracker.auto_close_active = True
         logger.info(
             "WebSocket manager started for %d pairs (primary scanning path).",
             len(_dynamic_pairs),

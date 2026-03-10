@@ -154,12 +154,17 @@ class TestRiskManager:
         msgs = self.rm.update_prices({"BTC": 106.0})
         assert any("Risk-Free Mode ON" in m for m in msgs)
 
-    def test_update_prices_triggers_stale_close(self):
+    def test_update_prices_does_not_trigger_stale_close(self):
+        """BUG #3 fix: stale-close is now exclusively owned by AutoCloseMonitor.
+        update_prices() must NOT close stale signals (it would use the wrong global
+        STALE_SIGNAL_HOURS instead of per-channel overrides)."""
         active = self.rm.add_signal(_make_signal(symbol="ETH", side=Side.LONG))
         active.opened_at = time.time() - (STALE_SIGNAL_HOURS + 1) * 3600
         msgs = self.rm.update_prices({"ETH": 100.0})
-        assert any("stale" in m.lower() for m in msgs)
-        assert active.closed is True
+        # No stale message should be emitted — AutoCloseMonitor handles this
+        assert not any("stale" in m.lower() for m in msgs)
+        # Signal must remain open — only AutoCloseMonitor may close stale signals
+        assert active.closed is False
 
     def test_update_prices_no_price_available(self):
         self.rm.add_signal(_make_signal(symbol="RARE"))

@@ -94,18 +94,31 @@ class TestCheckTpSlHit:
         assert close2.outcome == "TP2"
 
     def test_long_tp3_hit(self, monitor):
-        """When price hits TP3 directly, TP1 then TP2 then TP3 are returned sequentially."""
+        """BUG #2 fix: when price gaps past TP3 with no prior TP hits, close directly at TP3."""
         result = _make_signal_result()
         signal = _make_active_signal(result)
+        # Price jumps straight past TP3 with no prior partial exits — gap scenario.
+        # Expected: single TP3 close (skip sequential TP1→TP2 that would take 30+ s).
         close1 = monitor._check_tp_sl_hit(signal, current_price=120.5)
         assert close1 is not None
-        assert close1.outcome == "TP1"
+        assert close1.outcome == "TP3", (
+            "Gap past TP3 with no prior hits should close with TP3 directly, not TP1 first"
+        )
+        # No further close expected — signal is fully done
         close2 = monitor._check_tp_sl_hit(signal, current_price=120.5)
-        assert close2 is not None
-        assert close2.outcome == "TP2"
-        close3 = monitor._check_tp_sl_hit(signal, current_price=120.5)
-        assert close3 is not None
-        assert close3.outcome == "TP3"
+        assert close2 is None, "TP3 gap-close should fully settle in one call"
+
+    def test_long_tp3_sequential_after_partial_hits(self, monitor):
+        """Sequential TP tracking still works when TP1 and TP2 were hit on earlier ticks."""
+        result = _make_signal_result()
+        signal = _make_active_signal(result)
+        # TP1 and TP2 were already partially closed in previous ticks
+        monitor._check_tp_sl_hit(signal, current_price=110.5)  # TP1
+        monitor._check_tp_sl_hit(signal, current_price=115.5)  # TP2
+        # Now price reaches TP3 — should return TP3
+        close = monitor._check_tp_sl_hit(signal, current_price=120.5)
+        assert close is not None
+        assert close.outcome == "TP3"
 
     def test_long_sl_hit(self, monitor):
         result = _make_signal_result()
@@ -114,6 +127,23 @@ class TestCheckTpSlHit:
         assert close is not None
         assert close.outcome == "SL"
         assert close.pnl_pct < 0
+
+    def test_short_tp3_gap_closes_at_tp3(self, monitor):
+        """BUG #2 fix: SHORT price gap past TP3 with no prior hits → close directly at TP3."""
+        result = _make_signal_result(
+            side=Side.SHORT,
+            entry_low=100.0, entry_high=102.0,
+            tp1=92.0, tp2=88.0, tp3=84.0,
+            stop_loss=107.0,
+        )
+        signal = _make_active_signal(result)
+        # Price crashes straight past TP3 (84) with no prior partial closes
+        close = monitor._check_tp_sl_hit(signal, current_price=83.0)
+        assert close is not None
+        assert close.outcome == "TP3", (
+            "SHORT gap past TP3 with no prior hits should close with TP3, not TP1 first"
+        )
+        assert close.exit_price == pytest.approx(84.0), "Exit price should be TP3 level, not current"
 
     def test_short_tp1_hit(self, monitor):
         result = _make_signal_result(

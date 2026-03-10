@@ -129,9 +129,8 @@ class SignalResult:
         stars = {"High": "⭐⭐⭐", "Medium": "⭐⭐", "Low": "⭐"}.get(self.confidence.value, "⭐")
         confidence_line = f"Confidence: {self.confidence.value} {stars}"
         if self.confluence_score > 0:
-            # Normalise raw score to a 0-100 scale (max raw score ≈ 150)
-            normalised = min(round(self.confluence_score / 150 * 100), 100)
-            confidence_line += f" | Score: {normalised}/100"
+            # confluence_score is already normalised to 0-100 by compute_confluence_score()
+            confidence_line += f" | Score: {min(self.confluence_score, 100)}/100"
 
         risk_line = f"\n⚠️ {self.risk_note}" if self.risk_note else ""
 

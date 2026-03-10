@@ -544,10 +544,15 @@ class RiskManager:
             percentage fallback is used.
 
         Returns a list of human-readable broadcast messages for any events
-        that were triggered (BE, trailing SL close, stale-close, etc.).
+        that were triggered (BE, trailing SL close, etc.).
+
+        Note: stale-close logic is intentionally NOT handled here.  It is
+        exclusively owned by ``AutoCloseMonitor._check_signals()``, which
+        applies per-channel stale-hour overrides (CH4 Spot = 24 h, etc.).
+        Running a duplicate stale check here with the global ``STALE_SIGNAL_HOURS``
+        would prematurely close CH4/spot signals (BUG #3 fix).
         """
         messages: list[str] = []
-        now = time.time()
 
         with self._lock:
             for signal in self._signals:
@@ -555,16 +560,6 @@ class RiskManager:
                     continue
                 sym = signal.result.symbol
                 price = prices.get(sym)
-
-                # ── stale check ──────────────────────────────────────────────────
-                if signal.is_stale(now):
-                    signal.close("stale")
-                    self._mark_dirty(signal)
-                    messages.append(
-                        f"⚠️ #{sym}/USDT {signal.result.side.value} signal CLOSED "
-                        f"(stale — no activity for >{STALE_SIGNAL_HOURS}h)."
-                    )
-                    continue
 
                 if price is None:
                     continue
