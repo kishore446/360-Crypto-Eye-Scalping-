@@ -37,7 +37,7 @@ try:
 
         # ── Channel Thresholds ───────────────────────────────────────────────
         ch2_news_window_minutes: int = 30         # Medium channel relaxed news window
-        ch3_volume_spike_ratio: float = 1.5       # 150% volume spike for easy breakout
+        ch3_volume_spike_ratio: float = 1.2       # 120% volume spike for easy breakout
         ch4_scan_interval_hours: int = 4          # Spot channel scan frequency
         ch4_accumulation_threshold: float = 0.30  # Within 30% of 90d low for spot
 
@@ -115,7 +115,7 @@ try:
         ch1_tp1_rr: float = 1.2
         ch1_tp2_rr: float = 2.0
         ch1_tp3_rr: float = 3.0
-        ch1_min_confluence: int = 70
+        ch1_min_confluence: int = 60
         ch2_leverage_min: int = 10
         ch2_leverage_max: int = 15
         ch2_tp1_rr: float = 1.5
@@ -174,8 +174,8 @@ try:
         # ── Spot Scanner ──────────────────────────────────────────────────────
         spot_scan_enabled: bool = True
         spot_scan_interval_minutes: int = 60
-        spot_min_24h_volume_usdt: int = 100_000  # $100k minimum
-        spot_gem_volume_spike_ratio: float = 3.0  # 3x volume = dormant awakening
+        spot_min_24h_volume_usdt: int = 50_000   # $50k minimum
+        spot_gem_volume_spike_ratio: float = 2.0  # 2x volume = dormant awakening
         spot_gem_breakout_lookback_days: int = 30  # 30-day high for breakout
         spot_gem_accumulation_range_pct: float = 0.10  # 10% tight range
         spot_new_listing_lookback_days: int = 90
@@ -491,7 +491,7 @@ except ImportError:
     TELEGRAM_CHANNEL_ID_VIP: int = int(os.environ.get("TELEGRAM_CHANNEL_ID_VIP", "0"))
 
     CH2_NEWS_WINDOW_MINUTES: int = int(os.environ.get("CH2_NEWS_WINDOW_MINUTES", "30"))
-    CH3_VOLUME_SPIKE_RATIO: float = float(os.environ.get("CH3_VOLUME_SPIKE_RATIO", "1.5"))
+    CH3_VOLUME_SPIKE_RATIO: float = float(os.environ.get("CH3_VOLUME_SPIKE_RATIO", "1.2"))
     CH4_SCAN_INTERVAL_HOURS: int = int(os.environ.get("CH4_SCAN_INTERVAL_HOURS", "4"))
     CH4_ACCUMULATION_THRESHOLD: float = float(os.environ.get("CH4_ACCUMULATION_THRESHOLD", "0.30"))
 
@@ -544,7 +544,7 @@ except ImportError:
     CH1_TP1_RR: float = float(os.environ.get("CH1_TP1_RR", "1.2"))
     CH1_TP2_RR: float = float(os.environ.get("CH1_TP2_RR", "2.0"))
     CH1_TP3_RR: float = float(os.environ.get("CH1_TP3_RR", "3.0"))
-    CH1_MIN_CONFLUENCE: int = int(os.environ.get("CH1_MIN_CONFLUENCE", "70"))
+    CH1_MIN_CONFLUENCE: int = int(os.environ.get("CH1_MIN_CONFLUENCE", "60"))
     CH2_LEVERAGE_MIN: int = int(os.environ.get("CH2_LEVERAGE_MIN", "10"))
     CH2_LEVERAGE_MAX: int = int(os.environ.get("CH2_LEVERAGE_MAX", "15"))
     CH2_TP1_RR: float = float(os.environ.get("CH2_TP1_RR", "1.5"))
@@ -583,8 +583,8 @@ except ImportError:
     FUTURES_SCAN_BATCH_DELAY: float = float(os.environ.get("FUTURES_SCAN_BATCH_DELAY", "0.5"))
     SPOT_SCAN_ENABLED: bool = os.environ.get("SPOT_SCAN_ENABLED", "true").lower() in ("true", "1", "yes")
     SPOT_SCAN_INTERVAL_MINUTES: int = int(os.environ.get("SPOT_SCAN_INTERVAL_MINUTES", "60"))
-    SPOT_MIN_24H_VOLUME_USDT: int = int(os.environ.get("SPOT_MIN_24H_VOLUME_USDT", "100000"))
-    SPOT_GEM_VOLUME_SPIKE_RATIO: float = float(os.environ.get("SPOT_GEM_VOLUME_SPIKE_RATIO", "3.0"))
+    SPOT_MIN_24H_VOLUME_USDT: int = int(os.environ.get("SPOT_MIN_24H_VOLUME_USDT", "50000"))
+    SPOT_GEM_VOLUME_SPIKE_RATIO: float = float(os.environ.get("SPOT_GEM_VOLUME_SPIKE_RATIO", "2.0"))
     SPOT_GEM_BREAKOUT_LOOKBACK_DAYS: int = int(os.environ.get("SPOT_GEM_BREAKOUT_LOOKBACK_DAYS", "30"))
     SPOT_GEM_ACCUMULATION_RANGE_PCT: float = float(os.environ.get("SPOT_GEM_ACCUMULATION_RANGE_PCT", "0.10"))
     SPOT_NEW_LISTING_LOOKBACK_DAYS: int = int(os.environ.get("SPOT_NEW_LISTING_LOOKBACK_DAYS", "90"))

@@ -1384,6 +1384,7 @@ def run_confluence_check_relaxed(
     funding_rate: Optional[float] = None,
     oi_change: Optional[float] = None,
     regime: str = "UNKNOWN",
+    allowed_gate_failures: int = 0,
     **kwargs,
 ) -> Optional[SignalResult]:
     """
@@ -1420,6 +1421,10 @@ def run_confluence_check_relaxed(
     oi_change:
         Optional OI percentage change (positive = OI rising).  When provided,
         adjusts the score by ±5 based on OI / price divergence signals.
+    allowed_gate_failures:
+        How many of the 4 signal gates (bias, zone, sweep, MSS) may fail
+        before the signal is rejected.  Default 0 (all must pass).  Set to 1
+        to implement the "4-of-5" logic required for CH2.
     """
     try:
         from config import MIN_DISPLACEMENT_PCT as _cfg_displacement
@@ -1428,6 +1433,7 @@ def run_confluence_check_relaxed(
     effective_displacement = min_displacement_pct if min_displacement_pct is not None else _cfg_displacement
 
     # Gate ⑤ — relaxed news blackout (30-min window instead of 60)
+    # News is a hard-fail gate even with allowed_gate_failures > 0 (safety gate).
     if news_in_window:
         logger.info(
             "[GATE_FAIL][RELAXED] %s %s: gate=news reason=high_impact_imminent",
@@ -1435,53 +1441,67 @@ def run_confluence_check_relaxed(
         )
         return None
 
+    # Gates ①②③④ — track failures to support N-of-4 logic
+    gate_failures = 0
+
     # Gate ① — 4H-only macro bias
     macro_bias = assess_macro_bias_relaxed(four_hour_candles)
-    if macro_bias != side:
+    gate1_pass = macro_bias == side
+    if not gate1_pass:
+        gate_failures += 1
         logger.info(
-            "[GATE_FAIL][RELAXED] %s %s: gate=macro_bias_4h reason=conflict bias=%s",
+            "[GATE_FAIL][RELAXED] %s %s: gate=macro_bias_4h reason=conflict bias=%s (failures=%d/%d)",
             symbol, side.value, macro_bias.value if macro_bias else "None",
+            gate_failures, allowed_gate_failures + 1,
         )
-        return None
+        if gate_failures > allowed_gate_failures:
+            return None
 
     # Gate ② — discount / premium zone (50% threshold — same as CH1)
-    if side == Side.LONG and not is_discount_zone(current_price, range_low, range_high):
+    if side == Side.LONG:
+        gate2_pass = is_discount_zone(current_price, range_low, range_high)
+    else:
+        gate2_pass = is_premium_zone(current_price, range_low, range_high)
+    if not gate2_pass:
+        gate_failures += 1
         logger.info(
-            "[GATE_FAIL][RELAXED] %s %s: gate=zone reason=price_not_in_discount",
-            symbol, side.value,
+            "[GATE_FAIL][RELAXED] %s %s: gate=zone reason=price_not_in_%s (failures=%d/%d)",
+            symbol, side.value, "discount" if side == Side.LONG else "premium",
+            gate_failures, allowed_gate_failures + 1,
         )
-        return None
-    if side == Side.SHORT and not is_premium_zone(current_price, range_low, range_high):
-        logger.info(
-            "[GATE_FAIL][RELAXED] %s %s: gate=zone reason=price_not_in_premium",
-            symbol, side.value,
-        )
-        return None
+        if gate_failures > allowed_gate_failures:
+            return None
 
     # Gate ③ — liquidity sweep (wider window)
     _sweep_check_candles = five_min_candles[-sweep_window:]
-    if not any(
+    gate3_pass = any(
         (side == Side.LONG and c.low < key_liquidity_level and c.close > key_liquidity_level)
         or (side == Side.SHORT and c.high > key_liquidity_level and c.close < key_liquidity_level)
         for c in _sweep_check_candles
-    ):
+    )
+    if not gate3_pass:
+        gate_failures += 1
         logger.info(
-            "[GATE_FAIL][RELAXED] %s %s: gate=liquidity_sweep reason=no_sweep_in_%dc_window",
-            symbol, side.value, sweep_window,
+            "[GATE_FAIL][RELAXED] %s %s: gate=liquidity_sweep reason=no_sweep_in_%dc_window (failures=%d/%d)",
+            symbol, side.value, sweep_window, gate_failures, allowed_gate_failures + 1,
         )
-        return None
+        if gate_failures > allowed_gate_failures:
+            return None
 
     # Gate ④ — MSS using wider window (with displacement filter per Blueprint §2.2)
     # CH2 uses a relaxed 60th-percentile volume threshold (vs 70th for CH1).
     mss_candles = five_min_candles[-(mss_window + 1):] if len(five_min_candles) >= mss_window + 1 else five_min_candles
-    if not detect_market_structure_shift(
+    gate4_pass = detect_market_structure_shift(
         mss_candles, side, min_displacement_pct=effective_displacement, vol_threshold=0.60
-    ):
+    )
+    if not gate4_pass:
+        gate_failures += 1
         logger.info(
-            "[GATE_FAIL][RELAXED] %s %s: gate=mss reason=no_structure_shift",
-            symbol, side.value,
+            "[GATE_FAIL][RELAXED] %s %s: gate=mss reason=no_structure_shift (failures=%d/%d)",
+            symbol, side.value, gate_failures, allowed_gate_failures + 1,
         )
-        return None
+        if gate_failures > allowed_gate_failures:
+            return None
 
     # Candles to use for FVG / OB scoring (prefer 15m per Blueprint §2.1)
     scoring_candles = fifteen_min_candles if fifteen_min_candles else five_min_candles
@@ -1515,10 +1535,10 @@ def run_confluence_check_relaxed(
 
     # Weighted confluence score — mirrors CH1 scoring so CH2 can reach HIGH confidence
     score = 0
-    score += 20 if macro_bias == side else 0   # Gate ①
-    score += 15                                 # Gate ② (zone — passed above)
-    score += 20                                 # Gate ③ (sweep — passed above)
-    score += 20                                 # Gate ④ (MSS — passed above)
+    score += 20 if gate1_pass else 0            # Gate ① (macro bias)
+    score += 15 if gate2_pass else 0            # Gate ② (zone)
+    score += 20 if gate3_pass else 0            # Gate ③ (sweep)
+    score += 20 if gate4_pass else 0            # Gate ④ (MSS)
     score += 10 if fvg_present else 0           # Gate ⑥
     score += 15 if ob_present else 0            # Gate ⑦
 
@@ -1807,6 +1827,7 @@ def run_confluence_check_ch2_medium(
         funding_rate=funding_rate,
         oi_change=oi_change,
         regime=regime,
+        allowed_gate_failures=1,  # CH2: require 4-of-5 signal gates to pass
     )
     if result is None:
         return None

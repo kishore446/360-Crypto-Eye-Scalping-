@@ -38,14 +38,14 @@ def _make_daily_candles_with_volume_spike(n: int, spike_ratio: float = 4.0) -> l
 
 def _make_breakout_candles(n: int, base_price: float = 1.0, breakout_pct: float = 0.05) -> list[list[float]]:
     """Return daily candles where the last candle breaks above historical high with volume.
-    Volume is 2.5x (above 2x breakout threshold but below 3x dormant-awakening threshold).
+    Volume is 2.5x (above 1.5x breakout threshold but below 3x dormant-awakening threshold).
     """
     candles = _make_daily_candles(n, base_price)
     # Set all historical closes to base_price
     for c in candles[:-1]:
         c[4] = base_price
         c[5] = 1_000.0
-    # Last candle breaks above (volume 2.5x — above 2x breakout threshold, below 3x awakening)
+    # Last candle breaks above (volume 2.5x — above 1.5x breakout threshold, below 3x awakening)
     candles[-1][4] = base_price * (1 + breakout_pct)
     candles[-1][2] = base_price * (1 + breakout_pct)  # high
     candles[-1][5] = 2_500.0  # 2.5x volume — triggers breakout but not dormant awakening
