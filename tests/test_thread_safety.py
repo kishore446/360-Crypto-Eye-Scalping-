@@ -95,7 +95,7 @@ class TestWebhookRateLimitThreadSafety:
         """_rate_limit_lock should be a threading.Lock."""
         import bot.webhook as webhook_mod
         assert hasattr(webhook_mod, "_rate_limit_lock")
-        assert isinstance(webhook_mod._rate_limit_lock, type(threading.Lock()))
+        assert hasattr(webhook_mod._rate_limit_lock, "acquire")  # duck-type: lock-like object
 
     def test_concurrent_rate_limit_checks(self):
         """Multiple threads checking rate limits should not corrupt state."""

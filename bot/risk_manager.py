@@ -138,7 +138,7 @@ class RiskManager:
             try:
                 from bot.database import init_db, migrate_from_json
                 init_db()
-                migrate_from_json(str(json_path), "")
+                migrate_from_json(str(json_path), "")  # empty string = skip dashboard migration
                 logger.info("Migrated signals from JSON to SQLite: %s", json_path)
             except Exception as exc:
                 logger.warning("JSON migration failed (%s); falling back to JSON load.", exc)
