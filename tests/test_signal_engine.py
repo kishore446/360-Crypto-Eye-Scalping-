@@ -795,3 +795,331 @@ class TestAtrBasedDisplacement:
         # Large displacement relative to price: 0.5/100 = 0.5% > 0.15% → passes
         candles = self._make_candles_with_displacement(0.5)
         assert detect_market_structure_shift(candles, Side.LONG, atr=0.0) is True
+
+
+# ── BUG 1: MSS vol_threshold parameter ───────────────────────────────────────
+
+class TestMSSVolThreshold:
+    """detect_market_structure_shift respects the vol_threshold parameter."""
+
+    def _make_candles(self, last_vol_rank_frac: float) -> list[CandleData]:
+        """Return candles where the last candle ranks at *last_vol_rank_frac* in volume."""
+        n = 20
+        # Uniform volumes so the last candle can be positioned at a specific percentile
+        base_vol = 100.0
+        candles = [
+            CandleData(open=100 + i * 0.1, high=100 + i * 0.1 + 0.2,
+                       low=100 + i * 0.1 - 0.1, close=100 + i * 0.1 + 0.1,
+                       volume=base_vol)
+            for i in range(n - 1)
+        ]
+        # swing_high of last 7 prior candles will be last candle's high; override
+        swing_hi = max(c.high for c in candles[-7:])
+        last_vol = base_vol * (last_vol_rank_frac * n)  # approximate rank
+        last_close = swing_hi + 0.5  # clearly breaks swing high
+        candles.append(CandleData(
+            open=last_close - 0.1,
+            high=last_close + 0.1,
+            low=last_close - 0.2,
+            close=last_close,
+            volume=last_vol,
+        ))
+        return candles
+
+    def test_default_threshold_is_0_70(self):
+        from inspect import signature
+        sig = signature(detect_market_structure_shift)
+        assert sig.parameters["vol_threshold"].default == pytest.approx(0.70)
+
+    def test_ch2_threshold_0_60_allows_medium_volume(self):
+        """A candle that passes 60th percentile but not 70th should pass with vol_threshold=0.60.
+
+        Volumes: [100, 100, 100, 200, 200, 115]
+        vol_rank of last (115): count(v<=115)/6 = 4/6 ≈ 0.667
+        0.667 >= 0.70 is False → fails default  → result_strict=False
+        0.667 >= 0.60 is True  → passes relaxed → result_relaxed=True
+        """
+        candles = [
+            # Three low-volume candles
+            CandleData(open=100.0, high=100.5, low=99.5, close=100.2, volume=100),
+            CandleData(open=100.2, high=100.6, low=99.8, close=100.3, volume=100),
+            CandleData(open=100.3, high=100.7, low=99.9, close=100.4, volume=100),
+            # Two high-volume candles (push rank down for the medium-vol last candle)
+            CandleData(open=100.4, high=101.0, low=100.0, close=100.8, volume=200),
+            CandleData(open=100.8, high=101.5, low=100.5, close=101.2, volume=200),
+            # Last candle: vol=115 → rank = count(v<=115)/6 = 4/6 ≈ 0.667; breaks swing high
+            CandleData(open=101.2, high=103.0, low=101.0, close=102.5, volume=115),
+        ]
+        # default (0.70) — rank 0.667 < 0.70 → should fail
+        result_strict = detect_market_structure_shift(candles, Side.LONG, vol_threshold=0.70)
+        # relaxed (0.60) — rank 0.667 >= 0.60 → should pass (if swing high is broken)
+        result_relaxed = detect_market_structure_shift(candles, Side.LONG, vol_threshold=0.60)
+        assert result_strict is False
+        assert result_relaxed is True
+
+    def test_ch3_threshold_0_50_allows_lower_volume(self):
+        """A candle that passes 50th percentile but not 60th should pass with vol_threshold=0.50.
+
+        Volumes: [100, 100, 200, 200, 200, 115]
+        vol_rank of last (115): count(v<=115)/6 = 3/6 = 0.50
+        0.50 >= 0.60 is False → fails CH2
+        0.50 >= 0.50 is True  → passes CH3
+        """
+        candles = [
+            # Two low-volume candles
+            CandleData(open=100.0, high=100.5, low=99.5, close=100.2, volume=100),
+            CandleData(open=100.2, high=100.6, low=99.8, close=100.3, volume=100),
+            # Three high-volume candles (push rank down for the medium-vol last candle)
+            CandleData(open=100.3, high=100.8, low=100.0, close=100.6, volume=200),
+            CandleData(open=100.6, high=101.2, low=100.3, close=101.0, volume=200),
+            CandleData(open=101.0, high=101.6, low=100.7, close=101.4, volume=200),
+            # Last candle: vol=115 → rank = count(v<=115)/6 = 3/6 = 0.50; breaks swing high
+            CandleData(open=101.4, high=103.0, low=101.2, close=102.8, volume=115),
+        ]
+        result_medium = detect_market_structure_shift(candles, Side.LONG, vol_threshold=0.60)
+        result_easy = detect_market_structure_shift(candles, Side.LONG, vol_threshold=0.50)
+        assert result_medium is False
+        assert result_easy is True
+
+
+# ── BUG 3: Score normalisation in format_message ─────────────────────────────
+
+class TestScoreNormalisation:
+    """format_message() shows score normalised to /100."""
+
+    def test_high_raw_score_capped_at_100(self):
+        sig = SignalResult(
+            symbol="BTC",
+            side=Side.LONG,
+            confidence=Confidence.HIGH,
+            entry_low=99.0,
+            entry_high=101.0,
+            tp1=103.0,
+            tp2=106.0,
+            tp3=110.0,
+            stop_loss=97.0,
+            structure_note="test",
+            context_note="test",
+            leverage_min=10,
+            leverage_max=20,
+            signal_id="SIG-TEST",
+            confluence_score=150,
+        )
+        msg = sig.format_message()
+        # Normalised: min(round(150/150*100), 100) = 100
+        assert "Score: 100/100" in msg
+
+    def test_mid_raw_score_normalised(self):
+        sig = SignalResult(
+            symbol="ETH",
+            side=Side.SHORT,
+            confidence=Confidence.MEDIUM,
+            entry_low=99.0,
+            entry_high=101.0,
+            tp1=97.0,
+            tp2=94.0,
+            tp3=90.0,
+            stop_loss=103.0,
+            structure_note="test",
+            context_note="test",
+            leverage_min=10,
+            leverage_max=20,
+            signal_id="SIG-TEST",
+            confluence_score=75,
+        )
+        msg = sig.format_message()
+        # Normalised: round(75/150*100) = 50
+        assert "Score: 50/100" in msg
+
+    def test_zero_score_omitted(self):
+        sig = SignalResult(
+            symbol="BTC",
+            side=Side.LONG,
+            confidence=Confidence.LOW,
+            entry_low=99.0,
+            entry_high=101.0,
+            tp1=103.0,
+            tp2=106.0,
+            tp3=110.0,
+            stop_loss=97.0,
+            structure_note="test",
+            context_note="test",
+            leverage_min=10,
+            leverage_max=20,
+            signal_id="SIG-TEST",
+            confluence_score=0,
+        )
+        msg = sig.format_message()
+        assert "Score:" not in msg
+
+
+# ── OPT 4: Signal ID in format_message ───────────────────────────────────────
+
+class TestSignalIdInMessage:
+    """format_message() includes the Signal ID line."""
+
+    def test_signal_id_present_in_message(self):
+        sig = SignalResult(
+            symbol="BTC",
+            side=Side.LONG,
+            confidence=Confidence.HIGH,
+            entry_low=99.0,
+            entry_high=101.0,
+            tp1=103.0,
+            tp2=106.0,
+            tp3=110.0,
+            stop_loss=97.0,
+            structure_note="test",
+            context_note="test",
+            leverage_min=10,
+            leverage_max=20,
+            signal_id="SIG-ABCDEF123456",
+            confluence_score=90,
+        )
+        msg = sig.format_message()
+        assert "Signal ID: SIG-ABCDEF123456" in msg
+
+
+# ── BUG 4: Asymmetric entry zone ─────────────────────────────────────────────
+
+class TestAsymmetricEntryZone:
+    """Entry zone should be biased toward the discount/premium side."""
+
+    def _make_full_candles(self, base=100.0):
+        """Return candles + metadata needed to trigger a signal."""
+        avg_vol = 200.0
+        candles_5m = [
+            CandleData(open=base, high=base + 0.3, low=base - 0.3, close=base + 0.1, volume=avg_vol * 0.8),
+            CandleData(open=base + 0.1, high=base + 0.4, low=base - 0.1, close=base + 0.2, volume=avg_vol * 0.9),
+            CandleData(open=base, high=base + 0.2, low=base - 1.5, close=base - 0.5, volume=avg_vol * 1.1),  # sweep
+            CandleData(open=base - 0.5, high=base + 0.8, low=base - 0.6, close=base + 0.7, volume=avg_vol * 2.0),  # MSS
+        ]
+        return candles_5m
+
+    def test_long_entry_zone_biased_below_price(self):
+        """For LONG, entry_low should be further from price than entry_high."""
+        from bot.signal_engine import calculate_atr
+        base = 100.0
+        candles = self._make_full_candles(base)
+        atr = calculate_atr(candles)
+        current_price = base + 0.7  # last close
+
+        # Simulate the asymmetric zone calculation directly
+        entry_low = current_price - atr * 0.5
+        entry_high = current_price + atr * 0.15
+
+        low_distance = current_price - entry_low
+        high_distance = entry_high - current_price
+        assert low_distance > high_distance, (
+            f"LONG entry_low ({entry_low:.4f}) should be further from price "
+            f"than entry_high ({entry_high:.4f})"
+        )
+
+    def test_short_entry_zone_biased_above_price(self):
+        """For SHORT, entry_high should be further from price than entry_low."""
+        from bot.signal_engine import calculate_atr
+        base = 100.0
+        candles = self._make_full_candles(base)
+        atr = calculate_atr(candles)
+        current_price = base - 0.6
+
+        entry_low = current_price - atr * 0.15
+        entry_high = current_price + atr * 0.5
+
+        high_distance = entry_high - current_price
+        low_distance = current_price - entry_low
+        assert high_distance > low_distance, (
+            f"SHORT entry_high ({entry_high:.4f}) should be further from price "
+            f"than entry_low ({entry_low:.4f})"
+        )
+
+
+# ── TIMING 2: WATCHING near-miss callback ────────────────────────────────────
+
+class TestNearMissWatchingAlert:
+    """run_confluence_check() calls on_near_miss when exactly one gate fails."""
+
+    def _make_all_pass_except(self, failed_gate: str, base: float = 100.0):
+        """Return kwargs that pass all gates except *failed_gate*."""
+        avg_vol = 200.0
+        sweep_level = base - 1.0
+        candles_5m = [
+            CandleData(open=base, high=base + 0.3, low=base - 0.3, close=base + 0.1, volume=avg_vol * 0.8),
+            CandleData(open=base + 0.1, high=base + 0.4, low=base - 0.1, close=base + 0.2, volume=avg_vol * 0.9),
+            CandleData(open=base, high=base + 0.2, low=sweep_level - 0.1, close=sweep_level + 0.5,
+                       volume=avg_vol * 1.1),
+            CandleData(open=base, high=base + 0.9, low=base - 0.1, close=base + 0.7, volume=avg_vol * 2.0),
+        ]
+        daily = _bullish_daily_candles(n=20, base=50.0)
+        four_h = _bullish_4h_candles(n=5, base=90.0)
+
+        kwargs = dict(
+            symbol="BTC",
+            current_price=base,
+            side=Side.LONG,
+            range_low=base - 10,
+            range_high=base + 10,  # price at 100, midpoint at 100 → discount zone boundary
+            key_liquidity_level=sweep_level,
+            five_min_candles=candles_5m,
+            daily_candles=daily,
+            four_hour_candles=four_h,
+            news_in_window=False,
+            stop_loss=base - 2.0,
+        )
+
+        if failed_gate == "news":
+            kwargs["news_in_window"] = True
+        elif failed_gate == "zone":
+            # Move price above the midpoint so it's NOT in discount zone
+            kwargs["current_price"] = base + 1.0
+            kwargs["range_low"] = base - 2
+            kwargs["range_high"] = base + 2
+        elif failed_gate == "sweep":
+            kwargs["key_liquidity_level"] = base + 100  # impossible sweep level
+
+        return kwargs
+
+    def test_callback_invoked_on_near_miss(self):
+        """Exactly one gate (sweep) fails → near-miss callback should be invoked once."""
+        alerts: list[str] = []
+        kwargs = self._make_all_pass_except("sweep")
+        run_confluence_check(**kwargs, on_near_miss=lambda msg: alerts.append(msg))
+        # sweep gate fails → 4/5 gates pass → callback must fire exactly once
+        assert len(alerts) == 1, f"Expected 1 WATCHING alert but got {len(alerts)}"
+        assert "WATCHING" in alerts[0]
+        assert "BTC" in alerts[0]
+        assert "sweep" in alerts[0]
+
+    def test_no_callback_on_all_pass(self):
+        """When all gates pass the callback should not be invoked."""
+        alerts: list[str] = []
+        # Build candles that will pass every gate (high volume MSS)
+        base = 100.0
+        avg_vol = 300.0
+        sweep_level = base - 2.0
+        candles_5m = [
+            CandleData(open=base - 2, high=base - 1, low=base - 3, close=base - 1.5, volume=avg_vol * 0.7),
+            CandleData(open=base - 1.5, high=base - 0.5, low=base - 2, close=base - 1, volume=avg_vol * 0.8),
+            CandleData(open=base - 1, high=base, low=sweep_level - 0.5, close=sweep_level + 0.2,
+                       volume=avg_vol * 0.9),
+            CandleData(open=base - 0.5, high=base + 1.5, low=base - 0.5, close=base + 1.2,
+                       volume=avg_vol * 2.5),
+        ]
+        daily = _bullish_daily_candles(n=20, base=50.0)
+        four_h = _bullish_4h_candles(n=5, base=90.0)
+        run_confluence_check(
+            symbol="BTC",
+            current_price=base - 1,  # 99.0
+            side=Side.LONG,
+            range_low=base - 15,     # 85.0
+            range_high=base + 15,    # 115.0 — midpoint 100.0, price 99 is in discount zone ✓
+            key_liquidity_level=sweep_level,
+            five_min_candles=candles_5m,
+            daily_candles=daily,
+            four_hour_candles=four_h,
+            news_in_window=False,
+            stop_loss=base - 5.0,
+            on_near_miss=lambda msg: alerts.append(msg),
+        )
+        # Callback should NOT have been called when all gates pass
+        assert len(alerts) == 0

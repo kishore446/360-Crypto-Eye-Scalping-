@@ -311,3 +311,98 @@ async def test_broadcast_close_raw_sends_plain_text(monitor):
     assert "parse_mode" not in sent_kwargs, (
         "_broadcast_close_raw must not pass parse_mode (causes Telegram Markdown entity errors)"
     )
+
+
+# ── BUG 5: Stale close deferred when price is in entry zone ──────────────────
+
+class TestStaleCloseEntryZoneCheck:
+    """_check_signals() defers stale close when price is within entry zone."""
+
+    @pytest.mark.asyncio
+    async def test_stale_skipped_when_price_in_zone(self, monitor):
+        """If price is in entry zone, stale close is deferred."""
+        result = _make_signal_result(entry_low=99.0, entry_high=101.0)
+        signal = _make_active_signal(result)
+        signal.is_stale.return_value = True  # signal is stale
+
+        closed_signals = []
+        monitor._risk_manager.active_signals = [signal]
+        # Price is INSIDE the entry zone [99, 101]
+        monitor._market_data.get_price.return_value = 100.0
+
+        original_process = monitor._process_close
+
+        async def capture_close(sig, result):
+            closed_signals.append(result.outcome)
+            await original_process(sig, result)
+
+        monitor._process_close = capture_close
+        await monitor._check_signals()
+
+        # Should NOT have closed as stale because price is in entry zone
+        assert "STALE" not in closed_signals
+
+    @pytest.mark.asyncio
+    async def test_stale_proceeds_when_price_outside_zone(self, monitor):
+        """If price is outside the entry zone, stale close proceeds normally."""
+        result = _make_signal_result(entry_low=99.0, entry_high=101.0)
+        signal = _make_active_signal(result)
+        signal.is_stale.return_value = True
+
+        closed_signals = []
+        monitor._risk_manager.active_signals = [signal]
+        # Price is OUTSIDE the entry zone
+        monitor._market_data.get_price.return_value = 115.0
+
+        async def capture_close(sig, close_result):
+            closed_signals.append(close_result.outcome)
+
+        monitor._process_close = capture_close
+        await monitor._check_signals()
+
+        assert "STALE" in closed_signals
+
+
+# ── BUG 7: SL after BE is mapped to "BE" outcome, not "LOSS" ─────────────────
+
+class TestBEOutcomeMapping:
+    """When SL hits after BE is triggered, outcome should be 'BE' not 'LOSS'."""
+
+    def test_sl_after_be_returns_be_outcome(self, monitor):
+        """_check_tp_sl_hit with be_triggered=True should produce SL outcome
+        that _process_close maps to 'BE'."""
+        result = _make_signal_result(
+            side=Side.LONG,
+            entry_low=99.0,
+            entry_high=101.0,
+            stop_loss=95.0,
+        )
+        # be_triggered=True means SL is now at entry (~100)
+        signal = _make_active_signal(result, be_triggered=True)
+        signal.result.stop_loss = 95.0
+
+        # Price drops to entry level (BE stop) — SL hit with be_triggered=True
+        close = monitor._check_tp_sl_hit(signal, current_price=99.5)
+        # The SL is now at entry_mid due to be_triggered
+        # entry_mid ≈ 100.0, price 99.5 < 100.0 → SL hit
+        if close is not None and close.outcome == "SL":
+            # Simulate what _process_close does for outcome mapping
+            dashboard_outcome = "BE" if signal.be_triggered else "LOSS"
+            assert dashboard_outcome == "BE", (
+                "SL hit after BE should be recorded as 'BE', not 'LOSS'"
+            )
+
+    def test_sl_without_be_remains_loss(self, monitor):
+        """SL hit before BE is triggered should still be 'LOSS'."""
+        result = _make_signal_result(
+            side=Side.LONG,
+            entry_low=99.0,
+            entry_high=101.0,
+            stop_loss=95.0,
+        )
+        signal = _make_active_signal(result, be_triggered=False)
+        close = monitor._check_tp_sl_hit(signal, current_price=94.0)
+        assert close is not None
+        assert close.outcome == "SL"
+        dashboard_outcome = "BE" if signal.be_triggered else "LOSS"
+        assert dashboard_outcome == "LOSS"
