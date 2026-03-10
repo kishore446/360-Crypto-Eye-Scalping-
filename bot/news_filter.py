@@ -13,11 +13,14 @@ regardless of the data-source backing.
 from __future__ import annotations
 
 import datetime
+import logging
 import time
 from dataclasses import dataclass
 from typing import Sequence
 
 from config import NEWS_SKIP_WINDOW_MINUTES
+
+logger = logging.getLogger(__name__)
 
 # Sentinel value: a Unix timestamp old enough to always be considered stale.
 _FETCH_FAILED_SENTINEL = 1.0
@@ -96,8 +99,11 @@ class NewsCalendar:
     def is_high_impact_imminent(self, now: float | None = None) -> bool:
         """
         Return True if any HIGH-impact event is scheduled within the
-        look-ahead window defined by *skip_window_minutes*, or if
-        the calendar data is stale.
+        look-ahead window defined by *skip_window_minutes*.
+
+        Stale data is no longer treated as a freeze condition — instead a
+        warning is logged and signals are allowed through, to avoid a
+        permanent signal freeze when the news API is unavailable.
 
         Parameters
         ----------
@@ -106,9 +112,23 @@ class NewsCalendar:
             ``time.time()``.
         """
         if self.is_stale():
-            return True
+            logger.warning(
+                "NewsCalendar data is stale (last refresh %.0fs ago) — "
+                "allowing signals through rather than freezing.",
+                time.time() - self.last_successful_refresh,
+            )
+            return False  # stale data should NOT freeze signals
         now = now if now is not None else time.time()
         cutoff = now + self._skip_window_seconds
+        return any(
+            e.impact == "HIGH" and now <= e.timestamp <= cutoff
+            for e in self._events
+        )
+
+    def is_high_impact_in_window(self, window_minutes: int, now: float | None = None) -> bool:
+        """Return True if any HIGH-impact event is within *window_minutes* from now."""
+        now = now if now is not None else time.time()
+        cutoff = now + window_minutes * 60
         return any(
             e.impact == "HIGH" and now <= e.timestamp <= cutoff
             for e in self._events

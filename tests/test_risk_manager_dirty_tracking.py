@@ -73,8 +73,8 @@ class TestDirtyTracking:
             return original_save_signal(data)
 
         with patch("bot.database.save_signal", side_effect=capture_save):
-            # Trigger BE for BTC only (price at 105 — 50% to TP1=110)
-            self.rm.update_prices({"BTC": 105.0, "ETH": 100.0})
+            # Trigger BE for BTC only (price at 108 — above 70% to TP1=110)
+            self.rm.update_prices({"BTC": 108.0, "ETH": 100.0})
 
         # Only BTC should have been persisted (BE triggered)
         btc_id = sig_btc.result.signal_id or f"sig_{int(sig_btc.opened_at)}"

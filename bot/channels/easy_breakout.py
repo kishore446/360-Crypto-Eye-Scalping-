@@ -107,11 +107,11 @@ def run(
 
     side = Side.LONG if long_breakout else Side.SHORT
 
-    # Gate 3 — RSI momentum
+    # Gate 3 — RSI momentum (relaxed for breakout timing)
     rsi = calculate_rsi(five_min_candles, period=14)
-    if side == Side.LONG and rsi <= 55:
+    if side == Side.LONG and rsi <= 50:
         return None
-    if side == Side.SHORT and rsi >= 45:
+    if side == Side.SHORT and rsi >= 50:
         return None
 
     # Build simplified signal

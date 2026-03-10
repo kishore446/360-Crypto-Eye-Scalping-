@@ -63,15 +63,15 @@ class TestActiveSignal:
 
     def test_be_trigger_long(self):
         sig = ActiveSignal(result=_make_signal(side=Side.LONG))
-        # entry_mid=100, tp1=107.5 → BE triggers at 50% = 103.75
-        assert sig.should_trigger_be(103.0) is False
-        assert sig.should_trigger_be(104.0) is True
+        # entry_mid=100, tp1=107.5 → BE triggers at 70% = 105.25
+        assert sig.should_trigger_be(105.0) is False
+        assert sig.should_trigger_be(105.5) is True
 
     def test_be_trigger_short(self):
         sig = ActiveSignal(result=_make_signal(side=Side.SHORT))
-        # entry_mid=100, tp1=92.5 → BE triggers at 100 - 3.75 = 96.25
-        assert sig.should_trigger_be(97.0) is False
-        assert sig.should_trigger_be(96.0) is True
+        # entry_mid=100, tp1=92.5 → BE triggers at 100 - 5.25 = 94.75
+        assert sig.should_trigger_be(95.0) is False
+        assert sig.should_trigger_be(94.5) is True
 
     def test_be_not_triggered_twice(self):
         sig = ActiveSignal(result=_make_signal(side=Side.LONG))
@@ -150,8 +150,8 @@ class TestRiskManager:
 
     def test_update_prices_triggers_be(self):
         self.rm.add_signal(_make_signal(symbol="BTC", side=Side.LONG))
-        # Price well above BE trigger (entry=100, BE at ~103.75)
-        msgs = self.rm.update_prices({"BTC": 105.0})
+        # Price well above BE trigger (entry=100, tp1=107.5, BE at 70% = 105.25)
+        msgs = self.rm.update_prices({"BTC": 106.0})
         assert any("Risk-Free Mode ON" in m for m in msgs)
 
     def test_update_prices_triggers_stale_close(self):

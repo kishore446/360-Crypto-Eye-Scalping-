@@ -35,6 +35,10 @@ class SignalTracker:
         sig_id = signal.result.signal_id
         messages: list[str] = []
 
+        # Skip signals already closed by AutoCloseMonitor to prevent double-broadcast
+        if getattr(signal, 'closed', False):
+            return messages
+
         with self._lock:
             if sig_id not in self._state:
                 self._state[sig_id] = {
@@ -84,6 +88,8 @@ class SignalTracker:
                     f"✅ #{signal.result.symbol}/USDT TP3 HIT at {signal.result.tp3:.4f} "
                     f"— Full target reached. +{r:.1f}R"
                 )
+                if hasattr(signal, 'close') and callable(signal.close):
+                    signal.close("tp3_hit")
             elif state["tp2_hit"] and not state["tp3_hit"]:
                 # Update trailing SL if price has moved in our favour
                 trail_msg = self._update_trail_sl(signal, current_price, state, side)
@@ -98,6 +104,8 @@ class SignalTracker:
                         f"❌ #{signal.result.symbol}/USDT SL HIT at {effective_sl:.4f} "
                         f"— -1.0R (1% account loss)"
                     )
+                    if hasattr(signal, 'close') and callable(signal.close):
+                        signal.close("sl_hit")
         else:
             if not state["tp1_hit"] and current_price <= signal.result.tp1:
                 state["tp1_hit"] = True
@@ -128,6 +136,8 @@ class SignalTracker:
                     f"✅ #{signal.result.symbol}/USDT TP3 HIT at {signal.result.tp3:.4f} "
                     f"— Full target reached. +{r:.1f}R"
                 )
+                if hasattr(signal, 'close') and callable(signal.close):
+                    signal.close("tp3_hit")
             elif state["tp2_hit"] and not state["tp3_hit"]:
                 trail_msg = self._update_trail_sl(signal, current_price, state, side)
                 if trail_msg:
@@ -141,6 +151,8 @@ class SignalTracker:
                         f"❌ #{signal.result.symbol}/USDT SL HIT at {effective_sl:.4f} "
                         f"— -1.0R (1% account loss)"
                     )
+                    if hasattr(signal, 'close') and callable(signal.close):
+                        signal.close("sl_hit")
 
         return messages
 
