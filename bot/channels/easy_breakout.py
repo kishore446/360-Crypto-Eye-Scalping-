@@ -3,8 +3,8 @@ CH3 — Easy Breakout detector.
 
 Three-gate breakout scanner:
   1. Volume spike gate: current candle volume > CH3_VOLUME_SPIKE_RATIO × 20-period avg
-  2. 4H breakout gate: price > max 4H high OR price < min 4H low
-  3. RSI momentum gate: RSI(14) > 55 for LONG, RSI(14) < 45 for SHORT
+  2. 4H breakout gate: price > max 4H high OR price < min 4H low (last 6 candles ~24h)
+  3. RSI momentum gate: RSI(14) > 45 for LONG, RSI(14) < 55 for SHORT
 
 No macro bias gate, no news gate — this channel is informational breakout alerts.
 
@@ -27,7 +27,7 @@ from bot.signal_engine import (
 try:
     from config import CH3_VOLUME_SPIKE_RATIO as _VOL_RATIO
 except Exception:  # pragma: no cover
-    _VOL_RATIO = 1.5
+    _VOL_RATIO = 1.2
 
 
 @dataclass
@@ -77,7 +77,7 @@ def run(
         Recent 4-hour OHLCV candles (most-recent last).
     volume_spike_ratio:
         Volume must exceed this multiple of the 20-period average
-        (default: 1.5 = 150%).
+        (default: 1.2 = 120%).
 
     Returns
     -------
@@ -94,8 +94,8 @@ def run(
         return None
 
     # Gate 2 — 4H breakout (close above recent 4H high OR below recent 4H low)
-    # Use last 3 4H candles (~12 hours) to establish the breakout reference range
-    recent_4h = four_hour_candles[-3:] if len(four_hour_candles) >= 3 else four_hour_candles
+    # Use last 6 4H candles (~24 hours) to establish the breakout reference range
+    recent_4h = four_hour_candles[-6:] if len(four_hour_candles) >= 6 else four_hour_candles
     recent_4h_high = max(c.high for c in recent_4h)
     recent_4h_low = min(c.low for c in recent_4h)
 
@@ -109,9 +109,9 @@ def run(
 
     # Gate 3 — RSI momentum (relaxed for breakout timing)
     rsi = calculate_rsi(five_min_candles, period=14)
-    if side == Side.LONG and rsi <= 50:
+    if side == Side.LONG and rsi <= 45:
         return None
-    if side == Side.SHORT and rsi >= 50:
+    if side == Side.SHORT and rsi >= 55:
         return None
 
     # Build simplified signal

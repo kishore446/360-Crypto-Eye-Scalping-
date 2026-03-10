@@ -384,7 +384,7 @@ class SpotScanner:
             high_30d = max(closes[-lookback_days - 1 : -1])
             avg_vol_30d = sum(volumes[-lookback_days - 1 : -1]) / lookback_days
             last_vol = volumes[-1]
-            if current_price > high_30d and avg_vol_30d > 0 and last_vol > 2 * avg_vol_30d:
+            if current_price > high_30d and avg_vol_30d > 0 and last_vol > 1.5 * avg_vol_30d:
                 return SpotGemResult(
                     symbol=symbol,
                     gem_type="MOMENTUM_BREAKOUT",
@@ -405,19 +405,19 @@ class SpotScanner:
         # ── ACCUMULATION detection ─────────────────────────────────────────
         # A coin is "near its 90d low" if within 1.5x the accumulation range config.
         _near_low_threshold = self._accumulation_range_pct * 1.5
-        # Volume trend is "rising" if 2nd half of 14d is 10% above 1st half.
-        _volume_trend_multiplier = 1.1
+        # Volume trend uses median comparison to avoid single outlier days skewing result.
         lookback_90 = min(90, len(closes) - 1)
         if lookback_90 >= 10:
             low_90d = min(closes[-lookback_90:])
             high_90d = max(closes[-lookback_90:])
             range_pct = (high_90d - low_90d) / low_90d if low_90d > 0 else 1.0
             near_low = (current_price - low_90d) / low_90d < _near_low_threshold if low_90d > 0 else False
-            # Check rising volume trend over last 14 days
+            # Use median volume of each half to avoid single low-volume days killing the signal
             if len(volumes) >= 14:
-                first_half_vol = sum(volumes[-14:-7]) / 7
-                second_half_vol = sum(volumes[-7:]) / 7
-                rising_vol = second_half_vol > first_half_vol * _volume_trend_multiplier
+                first_half_median = statistics.median(volumes[-14:-7])
+                second_half_median = statistics.median(volumes[-7:])
+                # 5% median increase required — forgiving enough to survive one low-volume day
+                rising_vol = second_half_median > first_half_median * 1.05
 
                 if (
                     range_pct <= self._accumulation_range_pct * 3

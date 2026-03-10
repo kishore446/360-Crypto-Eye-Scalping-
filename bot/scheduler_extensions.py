@@ -44,6 +44,10 @@ except Exception:  # pragma: no cover
     TELEGRAM_CHANNEL_ID_VIP = 0
     TELEGRAM_CHANNEL_ID_WHALE = 0
 
+# Interval constants for new channel jobs
+_WHALE_ALERT_INTERVAL_HOURS = 4
+_VIP_BRIEFING_HOUR_UTC = 8  # Daily VIP briefing at 08:00 UTC
+
 # ── Shared symbol lists for scheduler jobs ────────────────────────────────────
 # Used by altseason index and OI heatmap jobs. Extracted here to avoid
 # duplication and make maintenance easier.
@@ -176,6 +180,41 @@ def register_new_schedulers(
             OI_HEATMAP_INTERVAL_HOURS,
         )
 
+    # ── CH7 Whale — periodic OI + liquidation summary ─────────────────────────
+    if TELEGRAM_CHANNEL_ID_WHALE != 0:
+        scheduler.add_job(
+            _job_whale_alert,
+            trigger=IntervalTrigger(hours=_WHALE_ALERT_INTERVAL_HOURS),
+            id="ch7_whale_alert",
+            replace_existing=True,
+            kwargs={
+                "bot_instance": bot_instance,
+                "exchange": exchange,
+                "channel_id": TELEGRAM_CHANNEL_ID_WHALE,
+            },
+        )
+        logger.info(
+            "Registered CH7 whale alert job (every %dh)", _WHALE_ALERT_INTERVAL_HOURS
+        )
+
+    # ── CH9 VIP — daily briefing ───────────────────────────────────────────────
+    if TELEGRAM_CHANNEL_ID_VIP != 0:
+        scheduler.add_job(
+            _job_vip_briefing,
+            trigger=CronTrigger(hour=_VIP_BRIEFING_HOUR_UTC, minute=0),
+            id="ch9_vip_briefing",
+            replace_existing=True,
+            kwargs={
+                "bot_instance": bot_instance,
+                "exchange": exchange,
+                "dashboard": dashboard,
+                "channel_id": TELEGRAM_CHANNEL_ID_VIP,
+            },
+        )
+        logger.info(
+            "Registered CH9 VIP briefing job (@%d:00 UTC daily)", _VIP_BRIEFING_HOUR_UTC
+        )
+
     logger.info("scheduler_extensions: all new scheduler jobs registered")
 
 
@@ -192,11 +231,13 @@ async def _job_altgem_scan(
         from bot.channels.altgem_scanner import (
             SECTORS,
             calculate_sector_returns,
+            detect_dormant_awakening,
             format_sector_rotation,
         )
 
         # Fetch ticker data for sector tokens
         sector_returns: dict[str, dict[str, float]] = {}
+        ticker_cache: dict[str, Any] = {}
         for sector, tokens in SECTORS.items():
             token_rets: dict[str, float] = {}
             for token in tokens:
@@ -205,14 +246,53 @@ async def _job_altgem_scan(
                     ticker = await exchange.fetch_ticker(symbol)
                     if ticker:
                         token_rets[token] = float(ticker.get("percentage", 0) or 0)
+                        ticker_cache[token] = ticker
                 except Exception:
                     pass
             sector_returns[sector] = token_rets
 
+        # Post sector rotation summary
         sector_avg = calculate_sector_returns(sector_returns)
         if sector_avg:
             msg = format_sector_rotation(sector_avg)
             await bot_instance.send_message(chat_id=channel_id, text=msg)
+
+        # Scan each sector token for dormant awakening gems
+        gem_alerts_posted = 0
+        for sector, tokens in SECTORS.items():
+            for token in tokens:
+                try:
+                    ticker = ticker_cache.get(token)
+                    if not ticker:
+                        continue
+                    volume_24h = float(ticker.get("quoteVolume", 0) or 0)
+                    price = float(ticker.get("last", 0) or 0)
+                    price_change_24h = float(ticker.get("percentage", 0) or 0)
+                    # Fetch 20-period candles for average volume
+                    symbol = token + "USDT"
+                    candles_raw = await exchange.fetch_ohlcv(symbol, "1d", limit=22)
+                    if not candles_raw or len(candles_raw) < 5:
+                        continue
+                    volumes = [float(c[5]) for c in candles_raw[:-1]]
+                    avg_volume_20 = sum(volumes[-20:]) / min(20, len(volumes)) if volumes else 0.0
+                    current_volume = float(candles_raw[-1][5])
+                    gem = detect_dormant_awakening(
+                        symbol=token,
+                        volume_24h_usdt=volume_24h,
+                        current_volume=current_volume,
+                        avg_volume_20=avg_volume_20,
+                        price=price,
+                        price_change_24h=price_change_24h,
+                    )
+                    if gem is not None:
+                        alert_msg = gem.format_message()
+                        await bot_instance.send_message(chat_id=channel_id, text=alert_msg)
+                        gem_alerts_posted += 1
+                except Exception as _gem_exc:
+                    logger.debug("Altgem scan skipped %s: %s", token, _gem_exc)
+
+        if gem_alerts_posted:
+            logger.info("CH6 altgem scan: posted %d gem alerts", gem_alerts_posted)
     except Exception as exc:
         logger.warning("CH6 altgem scan job failed: %s", exc)
 
@@ -334,3 +414,115 @@ async def _job_oi_heatmap(
         await bot_instance.send_message(chat_id=channel_id, text=msg)
     except Exception as exc:
         logger.warning("CH5 OI heatmap job failed: %s", exc)
+
+
+async def _job_whale_alert(
+    bot_instance: Any, exchange: Any, channel_id: int
+) -> None:
+    """Scheduled job: post OI + price change summary to CH7 (Whale Tracker)."""
+    if channel_id == 0:
+        return
+    try:
+        from bot.insights.oi_heatmap import format_oi_heatmap
+
+        # oi_changes proxies OI sentiment via 24h price change (true OI would require
+        # a separate Coinglass/OI API call, not available on standard exchange tickers).
+        oi_changes: dict[str, float] = {}
+        price_changes: dict[str, float] = {}
+        volumes: dict[str, float] = {}
+
+        for sym in OI_HEATMAP_SYMBOLS:
+            try:
+                ticker = await exchange.fetch_ticker(sym)
+                if ticker:
+                    pct = float(ticker.get("percentage", 0) or 0)
+                    oi_changes[sym] = pct
+                    price_changes[sym] = pct
+                    volumes[sym] = float(ticker.get("quoteVolume", 0) or 0)
+            except Exception:
+                pass
+
+        # Identify top movers (absolute % change)
+        sorted_movers = sorted(
+            price_changes.items(), key=lambda x: abs(x[1]), reverse=True
+        )[:5]
+
+        lines = ["🐋 WHALE TRACKER — OI & Volume Summary\n"]
+        for sym, chg in sorted_movers:
+            vol_m = volumes.get(sym, 0) / 1_000_000
+            arrow = "📈" if chg >= 0 else "📉"
+            base = sym.replace("USDT", "")
+            lines.append(f"{arrow} {base}: {chg:+.2f}% | Vol ${vol_m:.1f}M")
+
+        # Append full OI heatmap
+        oi_msg = format_oi_heatmap(oi_changes)
+        full_msg = "\n".join(lines) + "\n\n" + oi_msg
+        await bot_instance.send_message(chat_id=channel_id, text=full_msg)
+    except Exception as exc:
+        logger.warning("CH7 whale alert job failed: %s", exc)
+
+
+async def _job_vip_briefing(
+    bot_instance: Any, exchange: Any, dashboard: Any, channel_id: int
+) -> None:
+    """Scheduled job: post daily VIP briefing to CH9."""
+    if channel_id == 0:
+        return
+    try:
+        import datetime
+
+        lines = [
+            "👑 VIP DAILY BRIEFING",
+            f"📅 {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
+            "─────────────────────────────",
+        ]
+
+        # Market regime
+        try:
+            from bot.state import get_bot_state
+
+            state = get_bot_state()
+            regime = getattr(state, "market_regime", "UNKNOWN")
+            lines.append(f"📊 Regime: {regime}")
+        except Exception:
+            lines.append("📊 Regime: UNKNOWN")
+
+        # BTC snapshot
+        try:
+            btc = await exchange.fetch_ticker("BTCUSDT")
+            if btc:
+                btc_price = float(btc.get("last", 0) or 0)
+                btc_chg = float(btc.get("percentage", 0) or 0)
+                arrow = "📈" if btc_chg >= 0 else "📉"
+                lines.append(f"{arrow} BTC: ${btc_price:,.0f} ({btc_chg:+.2f}%)")
+        except Exception:
+            pass
+
+        # ETH snapshot
+        try:
+            eth = await exchange.fetch_ticker("ETHUSDT")
+            if eth:
+                eth_price = float(eth.get("last", 0) or 0)
+                eth_chg = float(eth.get("percentage", 0) or 0)
+                arrow = "📈" if eth_chg >= 0 else "📉"
+                lines.append(f"{arrow} ETH: ${eth_price:,.0f} ({eth_chg:+.2f}%)")
+        except Exception:
+            pass
+
+        lines.append("─────────────────────────────")
+
+        # Performance stats from dashboard
+        try:
+            total = dashboard.total_trades() if hasattr(dashboard, "total_trades") else 0
+            wr = dashboard.win_rate() if hasattr(dashboard, "win_rate") else 0.0
+            lines.append(f"📈 Win Rate: {wr:.1f}% | Trades: {total}")
+        except Exception:
+            lines.append("📈 Performance: N/A")
+
+        lines.append("─────────────────────────────")
+        lines.append("🔔 Stay disciplined. Follow the plan. Let edge play out.")
+
+        msg = "\n".join(lines)
+        await bot_instance.send_message(chat_id=channel_id, text=msg)
+    except Exception as exc:
+        logger.warning("CH9 VIP briefing job failed: %s", exc)
