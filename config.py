@@ -152,7 +152,7 @@ try:
         # Empty string = scan ALL Binance Futures USDT-M pairs (recommended).
         # Set to a comma-separated list to use as a whitelist override.
         # NOTE: WebSocket (ws_manager.py) should always be the primary feed.
-        # This interval governs the REST fallback; 30 s ≈ one 5m-candle tick.
+        # This interval governs the REST fallback; 30 s provides ~10 updates per 5m candle.
         auto_scan_pairs: str = ""
         auto_scan_interval_seconds: int = 30
         auto_scan_enabled_on_boot: bool = True

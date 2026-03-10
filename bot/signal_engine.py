@@ -780,9 +780,12 @@ def run_confluence_check(
         )
         # Broadcast preparation alert when a callback is provided
         if on_near_miss is not None:
+            _passed_count = sum(1 for v in required_gates.values() if v)
+            _total_count = len(required_gates)
             _watching_msg = (
                 f"🔍 WATCHING: #{symbol}/USDT {side.value}\n"
-                f"4/5 gates confirmed — waiting for <b>{_failed_gate}</b> confirmation.\n"
+                f"{_passed_count}/{_total_count} gates confirmed — waiting for "
+                f"<b>{_failed_gate}</b> confirmation.\n"
                 f"Prepare your orders now."
             )
             try:
@@ -1090,7 +1093,7 @@ def detect_rsi_divergence(candles: list[CandleData], side: Side, period: int = 1
     avg_gain = sum(gains) / period
     avg_loss = sum(losses) / period
 
-    rsi_values: list[float] = [50.0] * (period + 1)  # first period+1 values seeded
+    rsi_values: list[float] = [50.0] * (period + 1)  # placeholder for indices 0..period (not used in divergence check)
     for i in range(period + 1, len(closes)):
         delta = closes[i] - closes[i - 1]
         gain = max(delta, 0.0)

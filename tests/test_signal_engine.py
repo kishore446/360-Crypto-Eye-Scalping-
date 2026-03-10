@@ -1080,13 +1080,15 @@ class TestNearMissWatchingAlert:
         return kwargs
 
     def test_callback_invoked_on_near_miss(self):
+        """Exactly one gate (sweep) fails → near-miss callback should be invoked once."""
         alerts: list[str] = []
         kwargs = self._make_all_pass_except("sweep")
         run_confluence_check(**kwargs, on_near_miss=lambda msg: alerts.append(msg))
-        # If near-miss triggered, we get a WATCHING alert
-        if alerts:
-            assert "WATCHING" in alerts[0]
-            assert "BTC" in alerts[0]
+        # sweep gate fails → 4/5 gates pass → callback must fire exactly once
+        assert len(alerts) == 1, f"Expected 1 WATCHING alert but got {len(alerts)}"
+        assert "WATCHING" in alerts[0]
+        assert "BTC" in alerts[0]
+        assert "sweep" in alerts[0]
 
     def test_no_callback_on_all_pass(self):
         """When all gates pass the callback should not be invoked."""

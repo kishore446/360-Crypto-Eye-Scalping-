@@ -246,7 +246,8 @@ class Dashboard:
         # Group PnL by calendar day (UTC)
         daily: dict[int, float] = {}
         for r in closed:
-            day_key = int(r.closed_at // 86400)  # floor to day
+            # UTC day key (Unix timestamp in seconds // 86400)
+            day_key = int(r.closed_at // 86400)
             daily[day_key] = daily.get(day_key, 0.0) + r.pnl_pct
 
         returns = list(daily.values())
