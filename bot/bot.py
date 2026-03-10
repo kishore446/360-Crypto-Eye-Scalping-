@@ -1088,6 +1088,8 @@ async def on_candle_close(base_symbol: str, timeframe: str) -> None:
 
     for side in (Side.LONG, Side.SHORT):
         if not risk_manager.can_open_signal(side):
+            # MAX_SAME_SIDE_SIGNALS is imported from risk_manager and is the
+            # same constant used inside can_open_signal(), so the log is accurate.
             logger.warning(
                 "Signal cap reached for %s %s — skipping (max %d active same-side signals).",
                 base_symbol, side.value, MAX_SAME_SIDE_SIGNALS,
