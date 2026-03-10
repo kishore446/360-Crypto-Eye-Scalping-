@@ -13,11 +13,14 @@ regardless of the data-source backing.
 from __future__ import annotations
 
 import datetime
+import logging
 import time
 from dataclasses import dataclass
 from typing import Sequence
 
 from config import NEWS_SKIP_WINDOW_MINUTES
+
+logger = logging.getLogger(__name__)
 
 # Sentinel value: a Unix timestamp old enough to always be considered stale.
 _FETCH_FAILED_SENTINEL = 1.0
@@ -109,8 +112,7 @@ class NewsCalendar:
             ``time.time()``.
         """
         if self.is_stale():
-            import logging as _logging
-            _logging.getLogger(__name__).warning(
+            logger.warning(
                 "NewsCalendar data is stale (last refresh %.0fs ago) — "
                 "allowing signals through rather than freezing.",
                 time.time() - self.last_successful_refresh,
